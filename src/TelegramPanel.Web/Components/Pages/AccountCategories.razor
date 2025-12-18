@@ -1,0 +1,123 @@
+@page "/accounts/categories"
+@inject ISnackbar Snackbar
+
+<PageTitle>账号分类 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">账号分类管理</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="4">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">添加分类</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTextField @bind-Value="newCategoryName" Label="分类名称" Variant="Variant.Outlined" />
+                <MudColorPicker @bind-Value="newCategoryColor" Label="分类颜色" Variant="Variant.Outlined" Class="mt-3" />
+                <MudTextField @bind-Value="newCategoryDesc" Label="描述" Variant="Variant.Outlined" Lines="3" Class="mt-3" />
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
+                           Disabled="@string.IsNullOrEmpty(newCategoryName)" OnClick="AddCategory">
+                    添加分类
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" md="8">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">分类列表</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTable Items="@categories" Hover="true">
+                    <HeaderContent>
+                        <MudTh>分类名称</MudTh>
+                        <MudTh>颜色</MudTh>
+                        <MudTh>描述</MudTh>
+                        <MudTh>账号数量</MudTh>
+                        <MudTh>操作</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="分类名称">
+                            <MudChip Style="@($"background-color: {context.Color}")">@context.Name</MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="颜色">
+                            <div style="@($"width: 30px; height: 30px; background-color: {context.Color}; border-radius: 4px;")"></div>
+                        </MudTd>
+                        <MudTd DataLabel="描述">@context.Description</MudTd>
+                        <MudTd DataLabel="账号数量">@context.AccountCount</MudTd>
+                        <MudTd DataLabel="操作">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Info"
+                                           OnClick="@(() => EditCategory(context))" />
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => DeleteCategory(context.Id))" />
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText>暂无分类，请添加分类</MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private string newCategoryName = "";
+    private MudColor newCategoryColor = "#1976d2";
+    private string newCategoryDesc = "";
+
+    private List<CategoryModel> categories = new()
+    {
+        new CategoryModel { Id = 1, Name = "工作账号", Color = "#1976d2", Description = "用于工作的账号", AccountCount = 5 },
+        new CategoryModel { Id = 2, Name = "推广账号", Color = "#f44336", Description = "用于推广的账号", AccountCount = 10 },
+        new CategoryModel { Id = 3, Name = "测试账号", Color = "#4caf50", Description = "测试用账号", AccountCount = 3 }
+    };
+
+    private void AddCategory()
+    {
+        var newCategory = new CategoryModel
+        {
+            Id = categories.Max(c => c.Id) + 1,
+            Name = newCategoryName,
+            Color = newCategoryColor.ToString(),
+            Description = newCategoryDesc,
+            AccountCount = 0
+        };
+
+        categories.Add(newCategory);
+        Snackbar.Add($"分类 \"{newCategoryName}\" 添加成功", Severity.Success);
+
+        // 清空表单
+        newCategoryName = "";
+        newCategoryColor = "#1976d2";
+        newCategoryDesc = "";
+    }
+
+    private void EditCategory(CategoryModel category)
+    {
+        Snackbar.Add($"编辑分类：{category.Name}", Severity.Info);
+        // TODO: 实现编辑对话框
+    }
+
+    private void DeleteCategory(int id)
+    {
+        var category = categories.FirstOrDefault(c => c.Id == id);
+        if (category != null)
+        {
+            categories.Remove(category);
+            Snackbar.Add($"分类已删除", Severity.Success);
+        }
+    }
+
+    private class CategoryModel
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Color { get; set; } = "";
+        public string Description { get; set; } = "";
+        public int AccountCount { get; set; }
+    }
+}

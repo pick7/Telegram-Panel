@@ -28,6 +28,18 @@
                 <MudTextField @bind-Value="searchString" Placeholder="搜索账号..." Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
                               Immediate="true" />
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.SelectAll"
+                           Disabled="@loading" OnClick="SelectAllFiltered" Class="ml-2">
+                    全选
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Flip"
+                           Disabled="@loading" OnClick="InvertSelection" Class="ml-2">
+                    反选
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete"
+                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts" Class="ml-2">
+                    删除已选
+                </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
                            Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Class="ml-2">
                     批量刷新状态
@@ -256,6 +268,62 @@
         catch (Exception ex)
         {
             Snackbar.Add($"批量刷新失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private Task SelectAllFiltered()
+    {
+        selectedAccounts = filteredAccounts.ToHashSet();
+        return Task.CompletedTask;
+    }
+
+    private Task InvertSelection()
+    {
+        var targets = filteredAccounts.ToList();
+        foreach (var a in targets)
+        {
+            if (selectedAccounts.Contains(a))
+                selectedAccounts.Remove(a);
+            else
+                selectedAccounts.Add(a);
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task DeleteSelectedAccounts()
+    {
+        var targets = selectedAccounts.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何账号", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定要删除已选账号（{targets.Count} 个）吗？将同时清理 sessions 文件，且不可恢复。",
+            yesText: "删除", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            foreach (var a in targets)
+                await AccountManagement.DeleteAccountAsync(a.Id);
+
+            selectedAccounts.Clear();
+            await LoadAccounts();
+            Snackbar.Add("删除完成", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
         }
         finally
         {

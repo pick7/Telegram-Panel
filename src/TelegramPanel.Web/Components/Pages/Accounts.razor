@@ -4,6 +4,7 @@
 @inject AccountTelegramToolsService AccountTelegramTools
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject NavigationManager Navigation
 @using TelegramPanel.Data.Entities
 
 <PageTitle>账号列表 - Telegram Panel</PageTitle>
@@ -12,7 +13,8 @@
 
 <MudCard>
     <MudCardContent>
-        <MudTable Items="@filteredAccounts" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
+        <MudTable Items="@filteredAccounts" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
+                  MultiSelection="true" @bind-SelectedItems="selectedAccounts">
             <ToolBarContent>
                 <MudText Typo="Typo.h6">已导入账号 (@accounts.Count)</MudText>
                 <MudSpacer />
@@ -29,6 +31,14 @@
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
                            Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Class="ml-2">
                     批量刷新状态
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.FolderZip"
+                           Disabled="@loading" OnClick="ExportSelectedAccounts" Class="ml-2">
+                    导出已选
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.FolderZip"
+                           Disabled="@loading" OnClick="ExportCurrentAccounts" Class="ml-2">
+                    导出当前列表
                 </MudButton>
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
                            OnClick="LoadAccounts" Class="ml-2">刷新</MudButton>
@@ -117,6 +127,7 @@
     private string searchString = "";
     private int filterCategoryId = 0;
     private readonly Dictionary<int, TelegramAccountStatusResult> telegramStatus = new();
+    private HashSet<Account> selectedAccounts = new();
 
     private IEnumerable<Account> filteredAccounts =>
         accounts.Where(a =>
@@ -164,6 +175,9 @@
             foreach (var key in telegramStatus.Keys.Where(k => !ids.Contains(k)).ToList())
                 telegramStatus.Remove(key);
             await LoadCategories();
+
+            // 清理已选中但已不存在的账号
+            selectedAccounts = selectedAccounts.Where(a => ids.Contains(a.Id)).ToHashSet();
         }
         catch (Exception ex)
         {
@@ -247,6 +261,32 @@
         {
             loading = false;
         }
+    }
+
+    private void ExportSelectedAccounts()
+    {
+        var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("请先勾选要导出的账号", Severity.Info);
+            return;
+        }
+
+        var qs = string.Join(",", ids);
+        Navigation.NavigateTo($"/downloads/accounts.zip?ids={qs}", forceLoad: true);
+    }
+
+    private void ExportCurrentAccounts()
+    {
+        var ids = filteredAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("当前列表没有账号可导出", Severity.Info);
+            return;
+        }
+
+        var qs = string.Join(",", ids);
+        Navigation.NavigateTo($"/downloads/accounts.zip?ids={qs}", forceLoad: true);
     }
 
     private async Task OpenSystemInbox(Account account)

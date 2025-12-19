@@ -2,7 +2,9 @@ using MudBlazor.Services;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using TelegramPanel.Core;
+using TelegramPanel.Core.Services;
 using TelegramPanel.Data;
+using TelegramPanel.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -55,6 +57,7 @@ builder.Services.AddTelegramPanelData(connectionString);
 
 // Telegram Panel 核心服务
 builder.Services.AddTelegramPanelCore();
+builder.Services.AddScoped<AccountExportService>();
 
 // TODO: 添加 Hangfire
 // builder.Services.AddHangfire(config => config.UseInMemoryStorage());
@@ -206,6 +209,32 @@ app.UseSerilogRequestLogging();
 
 app.MapRazorComponents<TelegramPanel.Web.Components.App>()
     .AddInteractiveServerRenderMode();
+
+// 下载：导出账号 Zip（用于备份/迁移）
+app.MapGet("/downloads/accounts.zip", async (
+    HttpContext http,
+    AccountManagementService accountManagement,
+    AccountExportService exporter,
+    CancellationToken cancellationToken) =>
+{
+    var idsRaw = http.Request.Query["ids"].ToString();
+    HashSet<int>? ids = null;
+    if (!string.IsNullOrWhiteSpace(idsRaw))
+    {
+        ids = idsRaw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var x) ? x : 0)
+            .Where(x => x > 0)
+            .ToHashSet();
+    }
+
+    var all = (await accountManagement.GetAllAccountsAsync()).ToList();
+    var accounts = ids == null ? all : all.Where(a => ids.Contains(a.Id)).ToList();
+
+    var zipBytes = await exporter.BuildAccountsZipAsync(accounts, cancellationToken);
+    var fileName = $"telegram-panel-accounts-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip";
+    return Results.File(zipBytes, "application/zip", fileName);
+}).DisableAntiforgery();
 
 // TODO: Hangfire Dashboard
 // app.MapHangfireDashboard("/hangfire");

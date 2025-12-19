@@ -38,6 +38,10 @@ public class AccountService : IAccountService
         Directory.CreateDirectory(sessionsPath);
         var sessionPath = Path.Combine(sessionsPath, $"{phone}.session");
 
+        // 若已有旧的 SQLite 格式 session（Telethon/Pyrogram/Telegram Desktop 常见），会导致 WTelegramClient 直接读取失败，
+        // 这里先自动备份，确保“手机号登录”能顺利重新生成 WTelegram 的 session。
+        TryBackupSqliteSessionIfExists(sessionPath);
+
         var client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, sessionPath);
 
         _logger.LogInformation("Starting login for phone {Phone}", phone);
@@ -52,6 +56,47 @@ public class AccountService : IAccountService
             _ when client.User != null => new LoginResult(true, null, "登录成功", MapToAccountInfo(accountId, client)),
             _ => new LoginResult(false, null, $"未知状态: {result}")
         };
+    }
+
+    private void TryBackupSqliteSessionIfExists(string sessionPath)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(sessionPath);
+            if (!File.Exists(fullPath))
+                return;
+
+            if (!LooksLikeSqliteSession(fullPath))
+                return;
+
+            var dir = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
+            var name = Path.GetFileNameWithoutExtension(fullPath);
+            var ext = Path.GetExtension(fullPath);
+            var backupPath = Path.Combine(dir, $"{name}.sqlite.bak{ext}");
+            File.Move(fullPath, backupPath, overwrite: true);
+            _logger.LogWarning("Detected SQLite session, backed up from {SessionPath} to {BackupPath}", fullPath, backupPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to backup sqlite session: {SessionPath}", sessionPath);
+        }
+    }
+
+    private static bool LooksLikeSqliteSession(string filePath)
+    {
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            Span<byte> header = stackalloc byte[16];
+            var read = fs.Read(header);
+            if (read < 15) return false;
+            var text = System.Text.Encoding.ASCII.GetString(header[..15]);
+            return string.Equals(text, "SQLite format 3", StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task<LoginResult> SubmitCodeAsync(int accountId, string code)

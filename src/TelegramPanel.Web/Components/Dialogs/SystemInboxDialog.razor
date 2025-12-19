@@ -1,0 +1,90 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject AccountTelegramToolsService AccountTelegramTools
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">账号：@Phone（ID：@AccountId）</MudText>
+
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                这里显示 Telegram 系统通知（通常用于接收登录验证码）。若列表为空，可能是该账号从未在 Telegram 内收到系统消息。
+            </MudAlert>
+
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                           Disabled="@loading" OnClick="LoadMessages">
+                    刷新
+                </MudButton>
+                @if (lastLoadedAtUtc.HasValue)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Default">最后刷新：@lastLoadedAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                }
+            </MudStack>
+
+            @if (loading)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            else if (messages.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">暂无系统通知</MudText>
+            }
+            else
+            {
+                <MudList T="string" Dense="true">
+                    @foreach (var m in messages)
+                    {
+                        <MudListItem T="string">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@((m.DateUtc ?? DateTime.MinValue).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))</MudText>
+                            <MudText Typo="Typo.body2" Style="white-space: pre-wrap;">@m.Text</MudText>
+                        </MudListItem>
+                    }
+                </MudList>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Close">关闭</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int AccountId { get; set; }
+    [Parameter] public string Phone { get; set; } = "";
+
+    private bool loading;
+    private DateTime? lastLoadedAtUtc;
+    private List<TelegramSystemMessage> messages = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMessages();
+    }
+
+    private async Task LoadMessages()
+    {
+        loading = true;
+        try
+        {
+            var list = await AccountTelegramTools.GetLatestSystemMessagesAsync(AccountId, limit: 30);
+            messages = list.ToList();
+            lastLoadedAtUtc = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载系统通知失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void Close()
+    {
+        MudDialog.Close();
+    }
+}

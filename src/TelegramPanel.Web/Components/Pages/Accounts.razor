@@ -1,6 +1,7 @@
 @page "/accounts"
 @inject AccountManagementService AccountManagement
 @inject AccountCategoryManagementService CategoryManagement
+@inject AccountTelegramToolsService AccountTelegramTools
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @using TelegramPanel.Data.Entities
@@ -25,6 +26,10 @@
                 <MudTextField @bind-Value="searchString" Placeholder="搜索账号..." Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
                               Immediate="true" />
+                <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+                           Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Class="ml-2">
+                    批量刷新状态
+                </MudButton>
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
                            OnClick="LoadAccounts" Class="ml-2">刷新</MudButton>
             </ToolBarContent>
@@ -36,6 +41,7 @@
                 <MudTh>分类</MudTh>
                 <MudTh>频道/群组</MudTh>
                 <MudTh>状态</MudTh>
+                <MudTh>Telegram 状态</MudTh>
                 <MudTh>最后同步</MudTh>
                 <MudTh>操作</MudTh>
             </HeaderContent>
@@ -64,10 +70,28 @@
                         @(context.IsActive ? "活跃" : "停用")
                     </MudChip>
                 </MudTd>
+                <MudTd DataLabel="Telegram 状态">
+                    @if (telegramStatus.TryGetValue(context.Id, out var s))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@(s.Ok ? Color.Success : Color.Error)" Title="@(s.Details ?? s.Summary)">
+                            @s.Summary
+                        </MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default">未检测</MudChip>
+                    }
+                </MudTd>
                 <MudTd DataLabel="最后同步">@context.LastSyncAt.ToString("yyyy-MM-dd HH:mm")</MudTd>
                 <MudTd DataLabel="操作">
                     <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
                                    OnClick="@(() => ShowDetails(context))" Title="查看详情" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Sync" Size="Size.Small" Color="Color.Primary"
+                                   Disabled="@loading" OnClick="@(() => RefreshTelegramStatus(context))" Title="刷新 Telegram 状态" />
+                    <MudIconButton Icon="@Icons.Material.Filled.MarkEmailUnread" Size="Size.Small" Color="Color.Info"
+                                   Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))" Title="系统通知（验证码）" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Devices" Size="Size.Small" Color="Color.Info"
+                                   Disabled="@loading" OnClick="@(() => OpenDevices(context))" Title="在线设备" />
                     <MudIconButton Icon="@(context.IsActive ? Icons.Material.Filled.Stop : Icons.Material.Filled.PlayArrow)"
                                    Size="Size.Small" Color="@(context.IsActive ? Color.Warning : Color.Success)"
                                    OnClick="@(() => ToggleActive(context))"
@@ -92,6 +116,7 @@
     private bool loading = true;
     private string searchString = "";
     private int filterCategoryId = 0;
+    private readonly Dictionary<int, TelegramAccountStatusResult> telegramStatus = new();
 
     private IEnumerable<Account> filteredAccounts =>
         accounts.Where(a =>
@@ -134,6 +159,10 @@
         {
             var accountList = await AccountManagement.GetAllAccountsAsync();
             accounts = accountList.ToList();
+            // 刷新账号列表后，清理不存在账号的状态缓存
+            var ids = new HashSet<int>(accounts.Select(a => a.Id));
+            foreach (var key in telegramStatus.Keys.Where(k => !ids.Contains(k)).ToList())
+                telegramStatus.Remove(key);
             await LoadCategories();
         }
         catch (Exception ex)
@@ -151,6 +180,99 @@
         var (channels, groups) = await AccountManagement.GetAccountStatisticsAsync(account.Id);
         var message = $"账号详情：\n手机号：{account.Phone}\n用户名：{account.Username ?? "无"}\n用户ID：{account.UserId}\n分类：{account.Category?.Name ?? "未分类"}\n创建的频道：{channels} 个\n创建的群组：{groups} 个\n创建时间：{account.CreatedAt:yyyy-MM-dd HH:mm}\n最后同步：{account.LastSyncAt:yyyy-MM-dd HH:mm}\nSession路径：{account.SessionPath}";
         await DialogService.ShowMessageBox("账号详情", message, "关闭");
+    }
+
+    private async Task RefreshTelegramStatus(Account account)
+    {
+        try
+        {
+            loading = true;
+            var result = await AccountTelegramTools.RefreshAccountStatusAsync(account.Id);
+            telegramStatus[account.Id] = result;
+
+            // 资料刷新后重新加载（昵称/用户名/用户ID 可能更新）
+            await LoadAccounts();
+
+            Snackbar.Add($"账号 {account.Phone} 状态：{result.Summary}", result.Ok ? Severity.Success : Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"刷新失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task BatchRefreshTelegramStatus()
+    {
+        if (accounts.Count == 0)
+        {
+            Snackbar.Add("暂无账号可刷新", Severity.Info);
+            return;
+        }
+
+        loading = true;
+        try
+        {
+            var targets = filteredAccounts.ToList();
+            foreach (var a in targets)
+            {
+                try
+                {
+                    var result = await AccountTelegramTools.RefreshAccountStatusAsync(a.Id);
+                    telegramStatus[a.Id] = result;
+                }
+                catch (Exception ex)
+                {
+                    telegramStatus[a.Id] = new TelegramAccountStatusResult(
+                        Ok: false,
+                        Summary: "刷新失败",
+                        Details: ex.Message,
+                        CheckedAtUtc: DateTime.UtcNow);
+                }
+
+                StateHasChanged();
+            }
+
+            await LoadAccounts();
+            Snackbar.Add($"批量刷新完成：{targets.Count} 个账号", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"批量刷新失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task OpenSystemInbox(Account account)
+    {
+        var parameters = new DialogParameters
+        {
+            ["AccountId"] = account.Id,
+            ["Phone"] = account.Phone
+        };
+
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.SystemInboxDialog>("系统通知（验证码）", parameters, options);
+        await Task.CompletedTask;
+    }
+
+    private async Task OpenDevices(Account account)
+    {
+        var parameters = new DialogParameters
+        {
+            ["AccountId"] = account.Id,
+            ["Phone"] = account.Phone
+        };
+
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.OnlineDevicesDialog>("在线设备", parameters, options);
+        await Task.CompletedTask;
     }
 
     private async Task ToggleActive(Account account)

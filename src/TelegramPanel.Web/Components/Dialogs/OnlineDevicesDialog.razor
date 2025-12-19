@@ -1,0 +1,192 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject AccountTelegramToolsService AccountTelegramTools
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">账号：@Phone（ID：@AccountId）</MudText>
+
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                这里显示账号当前在线设备/会话，可对“非当前设备”执行踢出登录。
+            </MudAlert>
+
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                           Disabled="@loading" OnClick="LoadDevices">
+                    刷新
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Logout"
+                           Disabled="@loading" OnClick="KickAllOthers">
+                    踢出所有其他设备
+                </MudButton>
+            </MudStack>
+
+            @if (loading)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            else if (devices.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">暂无设备信息</MudText>
+            }
+            else
+            {
+                <MudTable Items="@devices" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                    <HeaderContent>
+                        <MudTh>当前</MudTh>
+                        <MudTh>应用/设备</MudTh>
+                        <MudTh>系统</MudTh>
+                        <MudTh>IP/地区</MudTh>
+                        <MudTh>最近活跃</MudTh>
+                        <MudTh>操作</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="当前">
+                            <MudChip T="string" Size="Size.Small" Color="@(context.Current ? Color.Success : Color.Default)">
+                                @(context.Current ? "是" : "否")
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="应用/设备">
+                            <MudText Typo="Typo.body2">@context.Title</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">ApiId=@context.ApiId @context.AppVersion</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="系统">
+                            <MudText Typo="Typo.body2">@($"{context.Platform} {context.SystemVersion}".Trim())</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="IP/地区">
+                            <MudText Typo="Typo.body2">@context.Ip</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@($"{context.Country} {context.Region}".Trim())</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="最近活跃">
+                            <MudText Typo="Typo.body2">@(context.LastActiveAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="操作">
+                            <MudButton Variant="Variant.Text" Color="Color.Error" Disabled="@(context.Current || loading)"
+                                       OnClick="@(() => KickOne(context))">
+                                踢出
+                            </MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Close">关闭</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int AccountId { get; set; }
+    [Parameter] public string Phone { get; set; } = "";
+
+    private bool loading;
+    private List<TelegramAuthorizationInfo> devices = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDevices();
+    }
+
+    private async Task LoadDevices()
+    {
+        loading = true;
+        try
+        {
+            var list = await AccountTelegramTools.GetAuthorizationsAsync(AccountId);
+            devices = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载设备失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task KickOne(TelegramAuthorizationInfo auth)
+    {
+        if (auth.Current)
+        {
+            Snackbar.Add("不能踢出当前设备", Severity.Warning);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认踢出",
+            $"确定要踢出该设备登录吗？\n{auth.Title}\nIP：{auth.Ip}\n最近活跃：{auth.LastActiveAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm:ss}",
+            yesText: "踢出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            var ok = await AccountTelegramTools.KickAuthorizationAsync(AccountId, auth.Hash);
+            if (ok)
+            {
+                Snackbar.Add("已踢出该设备", Severity.Success);
+                await LoadDevices();
+            }
+            else
+            {
+                Snackbar.Add("踢出失败（返回 false）", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"踢出失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task KickAllOthers()
+    {
+        bool? result = await DialogService.ShowMessageBox(
+            "确认踢出",
+            "确定要踢出所有其他设备吗？（当前设备会保留）",
+            yesText: "踢出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            var ok = await AccountTelegramTools.KickAllOtherAuthorizationsAsync(AccountId);
+            if (ok)
+            {
+                Snackbar.Add("已踢出所有其他设备", Severity.Success);
+                await LoadDevices();
+            }
+            else
+            {
+                Snackbar.Add("踢出失败（返回 false）", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"踢出失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void Close()
+    {
+        MudDialog.Close();
+    }
+}
+

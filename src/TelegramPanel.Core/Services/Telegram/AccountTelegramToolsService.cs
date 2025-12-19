@@ -1,0 +1,336 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
+using TelegramPanel.Data.Entities;
+using TL;
+using WTelegram;
+
+namespace TelegramPanel.Core.Services.Telegram;
+
+/// <summary>
+/// 账号诊断 / 系统通知 / 在线设备管理
+/// </summary>
+public class AccountTelegramToolsService
+{
+    private const long TelegramSystemUserId = 777000;
+
+    private readonly AccountManagementService _accountManagement;
+    private readonly ITelegramClientPool _clientPool;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<AccountTelegramToolsService> _logger;
+
+    public AccountTelegramToolsService(
+        AccountManagementService accountManagement,
+        ITelegramClientPool clientPool,
+        IConfiguration configuration,
+        ILogger<AccountTelegramToolsService> logger)
+    {
+        _accountManagement = accountManagement;
+        _clientPool = clientPool;
+        _configuration = configuration;
+        _logger = logger;
+    }
+
+    public async Task<TelegramAccountStatusResult> RefreshAccountStatusAsync(int accountId)
+    {
+        var checkedAt = DateTime.UtcNow;
+        try
+        {
+            var client = await GetOrCreateConnectedClientAsync(accountId);
+            var users = await client.Users_GetUsers(InputUser.Self);
+            var self = users.OfType<User>().FirstOrDefault();
+
+            if (self == null)
+            {
+                return new TelegramAccountStatusResult(
+                    Ok: false,
+                    Summary: "无法获取账号资料",
+                    Details: "Users_GetUsers(Self) 未返回 User",
+                    CheckedAtUtc: checkedAt);
+            }
+
+            var profile = new TelegramAccountProfile(
+                UserId: self.id,
+                Phone: self.phone,
+                Username: self.MainUsername,
+                FirstName: self.first_name,
+                LastName: self.last_name,
+                IsDeleted: self.flags.HasFlag(User.Flags.deleted),
+                IsScam: self.flags.HasFlag(User.Flags.scam),
+                IsFake: self.flags.HasFlag(User.Flags.fake),
+                IsRestricted: self.flags.HasFlag(User.Flags.restricted),
+                IsVerified: self.flags.HasFlag(User.Flags.verified),
+                IsPremium: self.flags.HasFlag(User.Flags.premium)
+            );
+
+            var account = await _accountManagement.GetAccountAsync(accountId);
+            if (account != null)
+            {
+                profile.ApplyTo(account);
+                await _accountManagement.UpdateAccountAsync(account);
+            }
+
+            var summary = "正常";
+            if (profile.IsDeleted)
+                summary = "账号已注销/被删除";
+            else if (profile.IsRestricted)
+                summary = "账号受限（Restricted）";
+
+            return new TelegramAccountStatusResult(
+                Ok: true,
+                Summary: summary,
+                Details: BuildProfileDetails(profile),
+                CheckedAtUtc: checkedAt,
+                Profile: profile);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            _logger.LogWarning(ex, "RefreshAccountStatus failed for account {AccountId}", accountId);
+            return new TelegramAccountStatusResult(
+                Ok: false,
+                Summary: summary,
+                Details: details,
+                CheckedAtUtc: checkedAt);
+        }
+    }
+
+    public async Task<IReadOnlyList<TelegramSystemMessage>> GetLatestSystemMessagesAsync(int accountId, int limit = 20)
+    {
+        if (limit <= 0) limit = 20;
+        if (limit > 100) limit = 100;
+
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var peer = await TryResolveSystemPeerAsync(client);
+        if (peer == null)
+            return Array.Empty<TelegramSystemMessage>();
+
+        var history = await client.Messages_GetHistory(peer, limit: limit);
+        var list = new List<TelegramSystemMessage>(history.Messages.Length);
+        foreach (var msgBase in history.Messages)
+        {
+            if (msgBase is not Message m)
+                continue;
+
+            var text = m.message ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(text))
+                continue;
+
+            list.Add(new TelegramSystemMessage(
+                Id: m.id,
+                DateUtc: m.Date.ToUniversalTime(),
+                Text: text.Trim()
+            ));
+        }
+
+        return list
+            .OrderByDescending(x => x.DateUtc ?? DateTime.MinValue)
+            .Take(limit)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<TelegramAuthorizationInfo>> GetAuthorizationsAsync(int accountId)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var auths = await client.Account_GetAuthorizations();
+
+        var list = new List<TelegramAuthorizationInfo>(auths.authorizations.Length);
+        foreach (var a in auths.authorizations)
+        {
+            list.Add(new TelegramAuthorizationInfo(
+                Hash: a.hash,
+                Current: a.flags.HasFlag(Authorization.Flags.current),
+                ApiId: a.api_id,
+                AppName: a.app_name,
+                AppVersion: a.app_version,
+                DeviceModel: a.device_model,
+                Platform: a.platform,
+                SystemVersion: a.system_version,
+                Ip: a.ip,
+                Country: a.country,
+                Region: a.region,
+                CreatedAtUtc: a.date_created == default ? null : a.date_created.ToUniversalTime(),
+                LastActiveAtUtc: a.date_active == default ? null : a.date_active.ToUniversalTime()
+            ));
+        }
+
+        return list
+            .OrderByDescending(x => x.Current)
+            .ThenByDescending(x => x.LastActiveAtUtc ?? DateTime.MinValue)
+            .ToList();
+    }
+
+    public async Task<bool> KickAuthorizationAsync(int accountId, long authorizationHash)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var ok = await client.Account_ResetAuthorization(authorizationHash);
+        return ok;
+    }
+
+    public async Task<bool> KickAllOtherAuthorizationsAsync(int accountId)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var ok = await client.Auth_ResetAuthorizations();
+        return ok;
+    }
+
+    private async Task<InputPeerUser?> TryResolveSystemPeerAsync(Client client)
+    {
+        try
+        {
+            var dialogs = await client.Messages_GetAllDialogs();
+            if (!dialogs.users.TryGetValue(TelegramSystemUserId, out var userBase))
+                return null;
+
+            if (userBase is not User u || u.access_hash == 0)
+                return null;
+
+            return new InputPeerUser(u.id, u.access_hash);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to resolve system peer");
+            return null;
+        }
+    }
+
+    private async Task<Client> GetOrCreateConnectedClientAsync(int accountId)
+    {
+        var existing = _clientPool.GetClient(accountId);
+        if (existing?.User != null)
+            return existing;
+
+        var account = await _accountManagement.GetAccountAsync(accountId)
+            ?? throw new InvalidOperationException($"账号不存在：{accountId}");
+
+        var apiId = ResolveApiId(account);
+        var apiHash = ResolveApiHash(account);
+        var sessionKey = ResolveSessionKey(account, apiHash);
+
+        if (string.IsNullOrWhiteSpace(account.SessionPath))
+            throw new InvalidOperationException("账号缺少 SessionPath，无法创建 Telegram 客户端");
+
+        var absoluteSessionPath = Path.GetFullPath(account.SessionPath);
+        if (File.Exists(absoluteSessionPath) && SessionDataConverter.LooksLikeSqliteSession(absoluteSessionPath))
+        {
+            var ok = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
+                phone: account.Phone,
+                apiId: account.ApiId,
+                apiHash: account.ApiHash,
+                sqliteSessionPath: absoluteSessionPath,
+                logger: _logger
+            );
+
+            if (!ok)
+            {
+                throw new InvalidOperationException(
+                    $"该账号的 Session 文件为 SQLite 格式：{account.SessionPath}，无法自动转换为可用 session。" +
+                    "建议：重新导入包含 session_string 的 json，或到【账号-手机号登录】重新登录生成新的 sessions/*.session。");
+            }
+        }
+
+        await _clientPool.RemoveClientAsync(accountId);
+        var client = await _clientPool.GetOrCreateClientAsync(
+            accountId: accountId,
+            apiId: apiId,
+            apiHash: apiHash,
+            sessionPath: account.SessionPath,
+            sessionKey: sessionKey,
+            phoneNumber: account.Phone,
+            userId: account.UserId > 0 ? account.UserId : null);
+
+        try
+        {
+            await client.ConnectAsync();
+            if (client.User == null && (client.UserId != 0 || account.UserId != 0))
+                await client.LoginUserIfNeeded(reloginOnFailedResume: false);
+        }
+        catch (Exception ex)
+        {
+            if (LooksLikeSessionApiMismatchOrCorrupted(ex))
+            {
+                throw new InvalidOperationException(
+                    "该账号的 Session 文件无法解析（通常是 ApiId/ApiHash 与生成 session 时不一致，或 session 文件已损坏）。" +
+                    "请到【账号-手机号登录】重新登录生成新的 sessions/*.session 后再试。",
+                    ex);
+            }
+
+            throw new InvalidOperationException($"Telegram 会话加载失败：{ex.Message}", ex);
+        }
+
+        if (client.User == null)
+            throw new InvalidOperationException("账号未登录或 session 已失效，请重新登录生成新的 session");
+
+        return client;
+    }
+
+    private int ResolveApiId(Account account)
+    {
+        if (int.TryParse(_configuration["Telegram:ApiId"], out var globalApiId) && globalApiId > 0)
+            return globalApiId;
+        if (account.ApiId > 0)
+            return account.ApiId;
+        throw new InvalidOperationException("未配置全局 ApiId，且账号缺少 ApiId");
+    }
+
+    private string ResolveApiHash(Account account)
+    {
+        var global = _configuration["Telegram:ApiHash"];
+        if (!string.IsNullOrWhiteSpace(global))
+            return global.Trim();
+        if (!string.IsNullOrWhiteSpace(account.ApiHash))
+            return account.ApiHash.Trim();
+        throw new InvalidOperationException("未配置全局 ApiHash，且账号缺少 ApiHash");
+    }
+
+    private static string ResolveSessionKey(Account account, string apiHash)
+    {
+        return !string.IsNullOrWhiteSpace(account.ApiHash) ? account.ApiHash.Trim() : apiHash.Trim();
+    }
+
+    private static bool LooksLikeSessionApiMismatchOrCorrupted(Exception ex)
+    {
+        var msg = ex.Message ?? string.Empty;
+        return msg.Contains("Can't read session block", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Use the correct api_hash", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("Use the correct api_hash/id/key", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildProfileDetails(TelegramAccountProfile profile)
+    {
+        var flags = new List<string>();
+        if (profile.IsPremium) flags.Add("Premium");
+        if (profile.IsVerified) flags.Add("Verified");
+        if (profile.IsRestricted) flags.Add("Restricted");
+        if (profile.IsScam) flags.Add("Scam");
+        if (profile.IsFake) flags.Add("Fake");
+        if (profile.IsDeleted) flags.Add("Deleted");
+
+        var flagText = flags.Count == 0 ? "无" : string.Join(", ", flags);
+        return $"昵称：{profile.DisplayName}；用户名：{profile.Username ?? "-"}；UserId：{profile.UserId}；标记：{flagText}";
+    }
+
+    private static (string summary, string details) MapTelegramException(Exception ex)
+    {
+        var msg = ex.Message ?? string.Empty;
+
+        if (msg.Contains("FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
+            return ("接口被冻结（账号/ApiId 受限）", msg);
+
+        if (msg.Contains("AUTH_KEY_UNREGISTERED", StringComparison.OrdinalIgnoreCase))
+            return ("Session 失效（AUTH_KEY_UNREGISTERED）", msg);
+
+        if (msg.Contains("SESSION_PASSWORD_NEEDED", StringComparison.OrdinalIgnoreCase))
+            return ("需要两步验证密码（SESSION_PASSWORD_NEEDED）", msg);
+
+        if (msg.Contains("PHONE_NUMBER_BANNED", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("USER_DEACTIVATED_BAN", StringComparison.OrdinalIgnoreCase))
+            return ("账号被封禁/停用", msg);
+
+        if (msg.Contains("Can't read session block", StringComparison.OrdinalIgnoreCase))
+            return ("Session 无法读取（ApiHash/Key 不匹配或损坏）", msg);
+
+        return ("连接失败", msg);
+    }
+}

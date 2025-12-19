@@ -20,6 +20,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IChannelService, ChannelService>();
         services.AddScoped<IGroupService, GroupService>();
         services.AddScoped<ISessionImporter, SessionImporter>();
+        services.AddScoped<AccountTelegramToolsService>();
 
         // 注册账号导入协调服务
         services.AddScoped<AccountImportService>();

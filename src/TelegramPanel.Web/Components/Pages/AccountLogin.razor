@@ -45,8 +45,12 @@
                         <MudTextField @bind-Value="verificationCode" Label="验证码" Variant="Variant.Outlined" Required="true"
                                       Placeholder="12345" />
                         <MudText Typo="Typo.caption" Class="mt-2" Color="Color.Info">
-                            请在Telegram客户端查收验证码
+                            说明：验证码通常优先发送到已登录设备的 Telegram「系统通知（777000）」；没有可用设备时才可能发送短信/电话。
                         </MudText>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Class="mt-3"
+                                   Disabled="@logging" OnClick="@(async (MouseEventArgs _) => await ResendCodeAsync())">
+                            重新发送验证码（尝试切换通道）
+                        </MudButton>
                     </MudStep>
 
                     <MudStep Title="密码验证" Optional="true">
@@ -173,7 +177,7 @@
                 }
 
                 // 生成临时账号ID（用于跟踪登录过程）
-                accountId = DateTime.UtcNow.GetHashCode();
+                accountId = Random.Shared.Next(1, int.MaxValue);
 
                 var result = await AccountService.StartLoginAsync(accountId, phoneNumber);
 
@@ -241,6 +245,31 @@
         catch (Exception ex)
         {
             Snackbar.Add($"操作失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            logging = false;
+        }
+    }
+
+    private async Task ResendCodeAsync()
+    {
+        if (logging) return;
+        if (accountId == 0)
+        {
+            Snackbar.Add("请先在上一步发送验证码", Severity.Warning);
+            return;
+        }
+
+        logging = true;
+        try
+        {
+            var result = await AccountService.ResendCodeAsync(accountId);
+            Snackbar.Add(result.Message ?? "已请求重新发送验证码", result.Success ? Severity.Success : Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"重新发送失败：{ex.Message}", Severity.Error);
         }
         finally
         {

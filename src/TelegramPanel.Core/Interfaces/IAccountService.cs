@@ -18,6 +18,11 @@ public interface IAccountService
     Task<LoginResult> SubmitCodeAsync(int accountId, string code);
 
     /// <summary>
+    /// 重新发送验证码（可能切换到短信/电话等其它通道，取决于 Telegram 策略）
+    /// </summary>
+    Task<LoginResult> ResendCodeAsync(int accountId);
+
+    /// <summary>
     /// 提交两步验证密码
     /// </summary>
     Task<LoginResult> SubmitPasswordAsync(int accountId, string password);

@@ -36,20 +36,21 @@ public class AccountService : IAccountService
         var apiHash = _configuration["Telegram:ApiHash"]!.Trim();
         var sessionsPath = _configuration["Telegram:SessionsPath"] ?? "sessions";
         Directory.CreateDirectory(sessionsPath);
-        var sessionPath = Path.Combine(sessionsPath, $"{phone}.session");
+        var normalizedPhone = NormalizePhoneForLogin(phone);
+        var sessionPath = Path.Combine(sessionsPath, $"{normalizedPhone}.session");
 
         // 若已有旧的 SQLite 格式 session（Telethon/Pyrogram/Telegram Desktop 常见），会导致 WTelegramClient 直接读取失败，
         // 这里先自动备份，确保“手机号登录”能顺利重新生成 WTelegram 的 session。
         TryBackupSqliteSessionIfExists(sessionPath);
 
-        _logger.LogInformation("Starting login for phone {Phone}", phone);
+        _logger.LogInformation("Starting login for phone {Phone}", normalizedPhone);
 
-        var client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, sessionPath, sessionKey: apiHash, phoneNumber: phone, userId: null);
+        var client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, sessionPath, sessionKey: apiHash, phoneNumber: normalizedPhone, userId: null);
 
         string result;
         try
         {
-            result = await client.Login(phone);
+            result = await client.Login(normalizedPhone);
         }
         catch (Exception ex) when (LooksLikeSessionApiMismatchOrCorrupted(ex))
         {
@@ -57,17 +58,39 @@ public class AccountService : IAccountService
             TryBackupCorruptedSessionIfExists(sessionPath);
             await _clientPool.RemoveClientAsync(accountId);
 
-            client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, sessionPath, sessionKey: apiHash, phoneNumber: phone, userId: null);
-            result = await client.Login(phone);
+            client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, sessionPath, sessionKey: apiHash, phoneNumber: normalizedPhone, userId: null);
+            result = await client.Login(normalizedPhone);
         }
+
+        _logger.LogInformation("Login flow next step for {Phone}: {Step}", normalizedPhone, result);
 
         return result switch
         {
             "verification_code" => new LoginResult(false, "code", "请输入验证码"),
             "password" => new LoginResult(false, "password", "请输入两步验证密码"),
             "name" => new LoginResult(false, "signup", "需要注册新账号"),
+            "email" => new LoginResult(false, "email", "该账号需要邮箱验证（请按提示填写邮箱并完成验证）"),
+            "email_verification_code" => new LoginResult(false, "email_code", "请输入邮箱验证码"),
             _ when client.User != null => new LoginResult(true, null, "登录成功", MapToAccountInfo(accountId, client)),
             _ => new LoginResult(false, null, $"未知状态: {result}")
+        };
+    }
+
+    public async Task<LoginResult> ResendCodeAsync(int accountId)
+    {
+        var client = _clientPool.GetClient(accountId)
+            ?? throw new InvalidOperationException($"Client not found for account {accountId}");
+
+        // WTelegram 约定：verification_code 提交空字符串会触发“通过另一种方式重发验证码”（短信/电话等）
+        var result = await client.Login(string.Empty);
+        _logger.LogInformation("Resend code requested for temp account {AccountId}, next step: {Step}", accountId, result);
+
+        return result switch
+        {
+            "verification_code" => new LoginResult(false, "code", "已请求重新发送验证码"),
+            "password" => new LoginResult(false, "password", "需要两步验证密码"),
+            _ when client.User != null => new LoginResult(true, null, "登录成功", MapToAccountInfo(accountId, client)),
+            _ => new LoginResult(false, null, $"重新发送失败：{result}")
         };
     }
 
@@ -146,6 +169,7 @@ public class AccountService : IAccountService
         var client = _clientPool.GetClient(accountId)
             ?? throw new InvalidOperationException($"Client not found for account {accountId}");
 
+        code = (code ?? string.Empty).Trim();
         var result = await client.Login(code);
 
         return result switch
@@ -220,5 +244,27 @@ public class AccountService : IAccountService
             Status = Models.AccountStatus.Active,
             LastActiveAt = DateTime.UtcNow
         };
+    }
+
+    private static string NormalizePhoneForLogin(string phone)
+    {
+        phone = (phone ?? string.Empty).Trim();
+        if (phone.StartsWith("+", StringComparison.Ordinal))
+            phone = phone[1..];
+        if (phone.StartsWith("00", StringComparison.Ordinal))
+            phone = phone[2..];
+
+        Span<char> buf = stackalloc char[phone.Length];
+        var n = 0;
+        foreach (var ch in phone)
+        {
+            if (ch is >= '0' and <= '9')
+                buf[n++] = ch;
+        }
+
+        if (n == 0)
+            throw new ArgumentException("手机号格式不正确，请包含国家代码（例如：+8613800138000）", nameof(phone));
+
+        return new string(buf[..n]);
     }
 }

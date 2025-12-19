@@ -34,11 +34,11 @@
 
 面向小白：**`git clone` → `docker compose up` → 浏览器打开 → 登录改密码 → 配置 ApiId/ApiHash**。
 
-### 0) 环境要求
+### 环境要求
 
 - Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
 
-### 1) 启动
+### 启动
 
 ```bash
 git clone https://github.com/moeacgx/Telegram-Panel
@@ -48,18 +48,18 @@ docker compose up -d --build
 
 启动后访问：`http://localhost:5000`
 
-### 2) 默认后台账号（首次登录）
+### 默认后台账号（首次登录）
 
 - 用户名：`admin`
 - 密码：`admin123`
 
 登录后到「修改密码」页面改掉即可。
 
-### 3) 必做配置：Telegram API 凭据
+### 必做配置：Telegram API 凭据
 
 到 https://my.telegram.org/apps 获取 `api_id` / `api_hash`，然后在面板「系统设置」里保存。
 
-### 4) 数据持久化（别乱删）
+### 数据持久化（别乱删）
 
 容器内所有持久化数据统一挂载到宿主机 `./docker-data`：
 
@@ -68,7 +68,7 @@ docker compose up -d --build
 - 系统设置本地覆盖：`./docker-data/appsettings.local.json`
 - 后台登录凭据文件：`./docker-data/admin_auth.json`
 
-### 5) 更新升级（git pull + 重新构建）
+### 更新升级（git pull + 重新构建）
 
 ```bash
 git pull

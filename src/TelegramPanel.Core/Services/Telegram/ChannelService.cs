@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
@@ -14,15 +15,18 @@ public class ChannelService : IChannelService
 {
     private readonly ITelegramClientPool _clientPool;
     private readonly AccountManagementService _accountManagement;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<ChannelService> _logger;
 
     public ChannelService(
         ITelegramClientPool clientPool,
         AccountManagementService accountManagement,
+        IConfiguration configuration,
         ILogger<ChannelService> logger)
     {
         _clientPool = clientPool;
         _accountManagement = accountManagement;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -81,11 +85,23 @@ public class ChannelService : IChannelService
 
         _logger.LogInformation("Creating channel '{Title}' for account {AccountId}", title, accountId);
 
-        var updates = await client.Channels_CreateChannel(
-            title: title,
-            about: about,
-            broadcast: true  // true=频道, false=超级群组
-        );
+        UpdatesBase updates;
+        try
+        {
+            updates = await client.Channels_CreateChannel(
+                title: title,
+                about: about,
+                broadcast: true  // true=频道, false=超级群组
+            );
+        }
+        catch (RpcException ex) when (ex.Code == 420 && string.Equals(ex.Message, "FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Telegram 返回 FROZEN_METHOD_INVALID：当前 ApiId/ApiHash 或账号被 Telegram 限制调用创建频道接口。" +
+                "建议：在【系统设置】更换全局 ApiId/ApiHash（推荐使用你自己在 my.telegram.org 申请的），" +
+                "并重新导入/重新登录生成 session 后再试。",
+                ex);
+        }
 
         var channel = updates.Chats.Values.OfType<Channel>().FirstOrDefault()
             ?? throw new InvalidOperationException("Channel creation failed");
@@ -249,8 +265,9 @@ public class ChannelService : IChannelService
         var account = await _accountManagement.GetAccountAsync(accountId)
             ?? throw new InvalidOperationException($"账号不存在：{accountId}");
 
-        if (account.ApiId <= 0 || string.IsNullOrWhiteSpace(account.ApiHash))
-            throw new InvalidOperationException("账号缺少 ApiId/ApiHash，无法创建 Telegram 客户端");
+        var apiId = ResolveApiId(account);
+        var apiHash = ResolveApiHash(account);
+        var sessionKey = ResolveSessionKey(account, apiHash);
 
         if (string.IsNullOrWhiteSpace(account.SessionPath))
             throw new InvalidOperationException("账号缺少 SessionPath，无法创建 Telegram 客户端");
@@ -276,7 +293,7 @@ public class ChannelService : IChannelService
         }
 
         await _clientPool.RemoveClientAsync(accountId);
-        var client = await _clientPool.GetOrCreateClientAsync(accountId, account.ApiId, account.ApiHash, account.SessionPath, account.Phone, account.UserId);
+        var client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, account.SessionPath, sessionKey, account.Phone, account.UserId);
 
         try
         {
@@ -301,6 +318,32 @@ public class ChannelService : IChannelService
             throw new InvalidOperationException("账号未登录或 session 已失效，请重新登录生成新的 session");
 
         return client;
+    }
+
+    private int ResolveApiId(TelegramPanel.Data.Entities.Account account)
+    {
+        if (int.TryParse(_configuration["Telegram:ApiId"], out var globalApiId) && globalApiId > 0)
+            return globalApiId;
+        if (account.ApiId > 0)
+            return account.ApiId;
+        throw new InvalidOperationException("未配置全局 ApiId，且账号缺少 ApiId");
+    }
+
+    private string ResolveApiHash(TelegramPanel.Data.Entities.Account account)
+    {
+        var global = _configuration["Telegram:ApiHash"];
+        if (!string.IsNullOrWhiteSpace(global))
+            return global.Trim();
+        if (!string.IsNullOrWhiteSpace(account.ApiHash))
+            return account.ApiHash.Trim();
+        throw new InvalidOperationException("未配置全局 ApiHash，且账号缺少 ApiHash");
+    }
+
+    private static string ResolveSessionKey(TelegramPanel.Data.Entities.Account account, string apiHash)
+    {
+        // session 文件加密 key（session_key）必须与生成该 session 的 key 一致
+        // 这里优先使用账号自带 ApiHash（导入时保存的），否则退回 apiHash（全局）
+        return !string.IsNullOrWhiteSpace(account.ApiHash) ? account.ApiHash.Trim() : apiHash.Trim();
     }
 
     private static bool LooksLikeSessionApiMismatchOrCorrupted(Exception ex)

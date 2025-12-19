@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
@@ -13,15 +14,18 @@ public class GroupService : IGroupService
 {
     private readonly ITelegramClientPool _clientPool;
     private readonly AccountManagementService _accountManagement;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<GroupService> _logger;
 
     public GroupService(
         ITelegramClientPool clientPool,
         AccountManagementService accountManagement,
+        IConfiguration configuration,
         ILogger<GroupService> logger)
     {
         _clientPool = clientPool;
         _accountManagement = accountManagement;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -116,8 +120,9 @@ public class GroupService : IGroupService
         var account = await _accountManagement.GetAccountAsync(accountId)
             ?? throw new InvalidOperationException($"账号不存在：{accountId}");
 
-        if (account.ApiId <= 0 || string.IsNullOrWhiteSpace(account.ApiHash))
-            throw new InvalidOperationException("账号缺少 ApiId/ApiHash，无法创建 Telegram 客户端");
+        var apiId = ResolveApiId(account);
+        var apiHash = ResolveApiHash(account);
+        var sessionKey = ResolveSessionKey(account, apiHash);
 
         if (string.IsNullOrWhiteSpace(account.SessionPath))
             throw new InvalidOperationException("账号缺少 SessionPath，无法创建 Telegram 客户端");
@@ -143,7 +148,7 @@ public class GroupService : IGroupService
         }
 
         await _clientPool.RemoveClientAsync(accountId);
-        var client = await _clientPool.GetOrCreateClientAsync(accountId, account.ApiId, account.ApiHash, account.SessionPath, account.Phone, account.UserId);
+        var client = await _clientPool.GetOrCreateClientAsync(accountId, apiId, apiHash, account.SessionPath, sessionKey, account.Phone, account.UserId);
 
         try
         {
@@ -168,6 +173,30 @@ public class GroupService : IGroupService
             throw new InvalidOperationException("账号未登录或 session 已失效，请重新登录生成新的 session");
 
         return client;
+    }
+
+    private int ResolveApiId(TelegramPanel.Data.Entities.Account account)
+    {
+        if (int.TryParse(_configuration["Telegram:ApiId"], out var globalApiId) && globalApiId > 0)
+            return globalApiId;
+        if (account.ApiId > 0)
+            return account.ApiId;
+        throw new InvalidOperationException("未配置全局 ApiId，且账号缺少 ApiId");
+    }
+
+    private string ResolveApiHash(TelegramPanel.Data.Entities.Account account)
+    {
+        var global = _configuration["Telegram:ApiHash"];
+        if (!string.IsNullOrWhiteSpace(global))
+            return global.Trim();
+        if (!string.IsNullOrWhiteSpace(account.ApiHash))
+            return account.ApiHash.Trim();
+        throw new InvalidOperationException("未配置全局 ApiHash，且账号缺少 ApiHash");
+    }
+
+    private static string ResolveSessionKey(TelegramPanel.Data.Entities.Account account, string apiHash)
+    {
+        return !string.IsNullOrWhiteSpace(account.ApiHash) ? account.ApiHash.Trim() : apiHash.Trim();
     }
 
     private static bool LooksLikeSessionApiMismatchOrCorrupted(Exception ex)

@@ -23,7 +23,14 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 
     public int ActiveClientCount => _clients.Count;
 
-    public async Task<Client> GetOrCreateClientAsync(int accountId, int apiId, string apiHash, string sessionPath, string? phoneNumber = null, long? userId = null)
+    public async Task<Client> GetOrCreateClientAsync(
+        int accountId,
+        int apiId,
+        string apiHash,
+        string sessionPath,
+        string? sessionKey = null,
+        string? phoneNumber = null,
+        long? userId = null)
     {
         if (_clients.TryGetValue(accountId, out var existingClient))
         {
@@ -57,6 +64,7 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                     "api_id" => apiId.ToString(),
                     "api_hash" => apiHash,
                     "session_pathname" => sessionPath,
+                    "session_key" => string.IsNullOrWhiteSpace(sessionKey) ? null! : sessionKey,
                     "phone_number" => string.IsNullOrWhiteSpace(phoneNumber) ? null! : phoneNumber,
                     "user_id" => userId.HasValue && userId.Value > 0 ? userId.Value.ToString() : null!,
                     _ => null!  // 使用 null! 抑制警告，这是 WTelegramClient 的预期行为

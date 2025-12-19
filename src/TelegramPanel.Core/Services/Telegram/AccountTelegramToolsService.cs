@@ -511,6 +511,109 @@ public class AccountTelegramToolsService
         }
     }
 
+    /// <summary>
+    /// 更新当前账号的昵称/简介（Bio）。
+    /// 注意：用户名与头像分开使用 UpdateUsernameAsync / UpdateProfilePhotoAsync。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> UpdateUserProfileAsync(
+        int accountId,
+        string? nickname,
+        string? bio,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            nickname = string.IsNullOrWhiteSpace(nickname) ? null : nickname.Trim();
+            bio = bio == null ? null : bio.Trim();
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // account.updateProfile 的字段是可选的：传 null 表示不修改该字段
+            string? firstName = null;
+            string? lastName = null;
+            if (nickname != null)
+            {
+                firstName = nickname;
+                lastName = string.Empty;
+            }
+
+            await client.Account_UpdateProfile(firstName, lastName, bio);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
+    /// <summary>
+    /// 更新当前账号用户名（t.me/xxx）。传空字符串表示清空用户名。
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? Username)> UpdateUsernameAsync(
+        int accountId,
+        string? username,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            username = (username ?? string.Empty).Trim().TrimStart('@');
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var result = await client.Account_UpdateUsername(username);
+
+            // result 可能是 User 或 bool，统一从输入回填即可
+            var normalized = string.IsNullOrWhiteSpace(username) ? null : username;
+            return (true, null, normalized);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 更新当前账号头像（静态图片）。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> UpdateProfilePhotoAsync(
+        int accountId,
+        Stream fileStream,
+        string fileName,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (fileStream == null)
+                return (false, "头像文件为空");
+
+            fileName = (fileName ?? "avatar.jpg").Trim();
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = "avatar.jpg";
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // UploadFileAsync 会自动关闭/释放 stream
+            var inputFile = await client.UploadFileAsync(fileStream, fileName);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await client.Photos_UploadProfilePhoto(inputFile, video: null, video_start_ts: null, video_emoji_markup: null, bot: null, fallback: false);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
     public async Task<bool> KickAuthorizationAsync(int accountId, long authorizationHash)
     {
         var client = await GetOrCreateConnectedClientAsync(accountId);

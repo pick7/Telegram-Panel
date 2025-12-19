@@ -49,6 +49,14 @@
                            Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword" Class="ml-2">
                     修改二级密码（已选）
                 </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Edit"
+                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeNickname" Class="ml-2">
+                    批量改昵称（已选）
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Edit"
+                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeBio" Class="ml-2">
+                    批量改Bio（已选）
+                </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
                            Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Class="ml-2">
                     批量刷新状态
@@ -117,6 +125,8 @@
                 <MudTd DataLabel="操作">
                     <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
                                    OnClick="@(() => ShowDetails(context))" Title="查看详情" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Info"
+                                   Disabled="@loading" OnClick="@(() => OpenEditUserProfile(context))" Title="编辑用户资料" />
                     <MudIconButton Icon="@Icons.Material.Filled.Sync" Size="Size.Small" Color="Color.Primary"
                                    Disabled="@loading" OnClick="@(() => RefreshTelegramStatus(context))" Title="刷新 Telegram 状态" />
                     <MudIconButton Icon="@Icons.Material.Filled.MarkEmailUnread" Size="Size.Small" Color="Color.Info"
@@ -264,6 +274,22 @@
         await Task.CompletedTask;
     }
 
+    private async Task OpenEditUserProfile(Account account)
+    {
+        if (loading)
+            return;
+
+        var parameters = new DialogParameters
+        {
+            ["AccountId"] = account.Id
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.EditUserProfileDialog>("编辑用户资料", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadAccounts();
+    }
+
     private async Task OpenBatchChangeTwoFactorPassword()
     {
         if (loading)
@@ -283,6 +309,52 @@
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
         DialogService.Show<TelegramPanel.Web.Components.Dialogs.ChangeTwoFactorPasswordDialog>("批量修改二级密码", parameters, options);
         await Task.CompletedTask;
+    }
+
+    private async Task OpenBatchChangeNickname()
+    {
+        if (loading)
+            return;
+
+        var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("请先选择账号", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["AccountIds"] = ids
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeNicknameDialog>("批量修改昵称", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadAccounts();
+    }
+
+    private async Task OpenBatchChangeBio()
+    {
+        if (loading)
+            return;
+
+        var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("请先选择账号", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["AccountIds"] = ids
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeBioDialog>("批量修改 Bio", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadAccounts();
     }
 
     private static string BuildTelegramStatusTitle(TelegramAccountStatusResult s)

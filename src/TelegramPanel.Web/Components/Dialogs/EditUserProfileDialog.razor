@@ -1,0 +1,219 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject AccountManagementService AccountManagement
+@inject TelegramPanel.Core.Services.Telegram.AccountTelegramToolsService AccountTelegramTools
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using TelegramPanel.Data.Entities
+@using Microsoft.AspNetCore.Components.Forms
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (account == null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">未找到账号</MudAlert>
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                    可修改：昵称、Bio、用户名、头像。用户名暂时仅支持单账号设置。
+                </MudAlert>
+
+                <MudText Typo="Typo.subtitle2">账号：@account.Phone</MudText>
+
+                <MudSwitch @bind-Value="editNickname" Label="修改昵称" Color="Color.Primary" />
+                <MudTextField @bind-Value="nickname" Label="昵称" Variant="Variant.Outlined" Disabled="@(!editNickname)"
+                              HelperText="昵称将写入 Telegram 的 first_name（last_name 置空）" />
+
+                <MudSwitch @bind-Value="editBio" Label="修改 Bio（简介）" Color="Color.Primary" />
+                <MudTextField @bind-Value="bio" Label="Bio（简介）" Variant="Variant.Outlined" Disabled="@(!editBio)" Lines="4"
+                              HelperText="留空也会生效（可用于清空 Bio）" />
+
+                <MudSwitch @bind-Value="editUsername" Label="修改用户名（t.me/xxx）" Color="Color.Primary" />
+                <MudTextField @bind-Value="username" Label="用户名（t.me/xxx）" Variant="Variant.Outlined" Disabled="@(!editUsername)"
+                              HelperText="只能包含字母/数字/下划线，且必须唯一；留空可清空用户名" />
+
+                <MudSwitch @bind-Value="editAvatar" Label="上传头像" Color="Color.Primary" />
+                @if (editAvatar)
+                {
+                    <MudFileUpload T="IReadOnlyList<IBrowserFile>" FilesChanged="OnAvatarChanged" Accept="image/*" MaximumFileCount="1">
+                        <ActivatorContent>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Image">
+                                选择头像图片
+                            </MudButton>
+                        </ActivatorContent>
+                    </MudFileUpload>
+
+                    @if (avatarFile != null)
+                    {
+                        <MudText Typo="Typo.body2">已选择：@avatarFile.Name（@avatarFile.Size bytes）</MudText>
+                    }
+                }
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" Disabled="@saving" OnClick="Cancel">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanSave || saving)" OnClick="Save">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int AccountId { get; set; }
+
+    private bool loading = true;
+    private bool saving;
+    private Account? account;
+
+    private bool editNickname;
+    private string nickname = "";
+
+    private bool editBio;
+    private string bio = "";
+
+    private bool editUsername;
+    private string username = "";
+
+    private bool editAvatar;
+    private IBrowserFile? avatarFile;
+
+    private bool CanSave => account != null && (editNickname || editBio || editUsername || editAvatar);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAccount();
+    }
+
+    private async Task LoadAccount()
+    {
+        loading = true;
+        try
+        {
+            var all = await AccountManagement.GetAllAccountsAsync();
+            account = all.FirstOrDefault(a => a.Id == AccountId);
+            if (account == null)
+                return;
+
+            nickname = account.Nickname ?? "";
+            username = account.Username ?? "";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载账号失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void OnAvatarChanged(IReadOnlyList<IBrowserFile> files)
+    {
+        avatarFile = files?.FirstOrDefault();
+    }
+
+    private async Task Save()
+    {
+        if (account == null)
+            return;
+
+        if (!CanSave)
+            return;
+
+        if (editNickname && string.IsNullOrWhiteSpace(nickname))
+        {
+            Snackbar.Add("请填写昵称", Severity.Warning);
+            return;
+        }
+
+        if (editAvatar && avatarFile == null)
+        {
+            Snackbar.Add("请先选择头像图片", Severity.Warning);
+            return;
+        }
+
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认保存",
+            "将修改该账号 Telegram 资料（昵称/Bio/用户名/头像）。是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        saving = true;
+        try
+        {
+            if (editNickname || editBio)
+            {
+                var newNickname = editNickname ? nickname : null;
+                var newBio = editBio ? bio : null;
+                var (ok, err) = await AccountTelegramTools.UpdateUserProfileAsync(account.Id, newNickname, newBio);
+                if (!ok)
+                {
+                    Snackbar.Add($"保存失败：{err}", Severity.Error);
+                    return;
+                }
+
+                if (editNickname)
+                    account.Nickname = string.IsNullOrWhiteSpace(nickname) ? account.Nickname : nickname.Trim();
+            }
+
+            if (editUsername)
+            {
+                var (ok, err, normalized) = await AccountTelegramTools.UpdateUsernameAsync(account.Id, username);
+                if (!ok)
+                {
+                    Snackbar.Add($"用户名保存失败：{err}", Severity.Error);
+                    return;
+                }
+
+                account.Username = normalized;
+            }
+
+            if (editAvatar && avatarFile != null)
+            {
+                const long maxBytes = 10 * 1024 * 1024;
+                await using var stream = avatarFile.OpenReadStream(maxBytes);
+                var (ok, err) = await AccountTelegramTools.UpdateProfilePhotoAsync(account.Id, stream, avatarFile.Name);
+                if (!ok)
+                {
+                    Snackbar.Add($"头像上传失败：{err}", Severity.Error);
+                    return;
+                }
+            }
+
+            await AccountManagement.UpdateAccountAsync(account);
+            Snackbar.Add("保存成功", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

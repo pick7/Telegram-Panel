@@ -56,3 +56,6 @@ x86/
 
 # Local scratch
 todolist
+
+# Docker persistent data
+docker-data/

@@ -59,8 +59,8 @@
                         </MudTd>
                         <MudTd DataLabel="操作">
                                 <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
-                                    <MudMenuItem Icon="@Icons.Material.Filled.List"
-                                             OnClick="@(() => Navigation.NavigateTo($"/bots/{context.Id}/channels"))">
+                                <MudMenuItem Icon="@Icons.Material.Filled.List"
+                                             OnClick="@(() => Navigation.NavigateTo($"/bots/channels?botId={context.Id}"))">
                                     频道列表
                                 </MudMenuItem>
                                 <MudDivider />

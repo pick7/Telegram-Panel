@@ -1,8 +1,12 @@
 @page "/bots/channels"
 @inject BotManagementService BotManagement
+@inject TelegramPanel.Core.Services.Telegram.BotTelegramService BotTelegram
 @inject ISnackbar Snackbar
+@inject IDialogService DialogService
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
 @using TelegramPanel.Data.Entities
+@using TelegramPanel.Web.Components.Dialogs
 
 <PageTitle>Bot 频道 - Telegram Panel</PageTitle>
 
@@ -10,44 +14,374 @@
 
 <MudCard>
     <MudCardContent>
-        <MudSelect @bind-Value="selectedBotId" Label="选择机器人" Variant="Variant.Outlined" Dense="true" Style="min-width: 320px;">
-            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
-            @foreach (var b in bots)
-            {
-                <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
-            }
-        </MudSelect>
+        <MudTable Items="@filtered" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
+                  MultiSelection="true" @bind-SelectedItems="selected">
+            <ToolBarContent>
+                <MudSelect Value="@selectedBotId" ValueChanged="OnSelectedBotChanged" Label="选择机器人"
+                           Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 260px;">
+                    <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
+                    @foreach (var b in bots)
+                    {
+                        <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
+                    }
+                </MudSelect>
 
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(selectedBotId <= 0)" Class="mt-3"
-                   OnClick="@(async (MouseEventArgs _) => await Go())">
-            打开频道列表
-        </MudButton>
+                <MudText Typo="Typo.h6">
+                    频道 (@channels.Count)
+                </MudText>
+
+                <MudSpacer />
+
+                <MudSelect @bind-Value="filterCategoryId" Label="分类" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 160px;"
+                           Disabled="@(selectedBotId <= 0)">
+                    <MudSelectItem Value="0">全部分类</MudSelectItem>
+                    <MudSelectItem Value="-1">未分类</MudSelectItem>
+                    @foreach (var c in categories)
+                    {
+                        <MudSelectItem Value="@c.Id">@c.Name</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
+                              Immediate="true" Disabled="@(selectedBotId <= 0)" />
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync" Class="ml-2"
+                           Disabled="@(loading || selectedBotId <= 0)" OnClick="Sync">
+                    同步
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.Link" Class="ml-2"
+                           Disabled="@(loading || selectedBotId <= 0 || selected.Count == 0)" OnClick="ExportInvites">
+                    导出邀请（已选）
+                </MudButton>
+
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                           Disabled="@(loading || selectedBotId <= 0)" OnClick="LoadBotData" Class="ml-2">
+                    刷新
+                </MudButton>
+            </ToolBarContent>
+
+            <HeaderContent>
+                <MudTh>频道名称</MudTh>
+                <MudTh>用户名</MudTh>
+                <MudTh>分类</MudTh>
+                <MudTh>最后同步</MudTh>
+                <MudTh>操作</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="频道名称">
+                    <MudText Typo="Typo.body2"><strong>@context.Title</strong></MudText>
+                </MudTd>
+                <MudTd DataLabel="用户名">
+                    @if (!string.IsNullOrWhiteSpace(context.Username))
+                    {
+                        <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Filled.AlternateEmail">@context.Username</MudChip>
+                    }
+                    else
+                    {
+                        <span>-</span>
+                    }
+                </MudTd>
+                <MudTd DataLabel="分类">
+                    <MudSelect T="int?" Value="@context.CategoryId" ValueChanged="@(async v => await SetCategoryAsync(context, v))"
+                               Dense="true" Variant="Variant.Outlined" Style="min-width: 160px;">
+                        <MudSelectItem Value="@(default(int?))">未分类</MudSelectItem>
+                        @foreach (var c in categories)
+                        {
+                            <MudSelectItem Value="@(c.Id)">@c.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudTd>
+                <MudTd DataLabel="最后同步">@context.SyncedAt.ToString("yyyy-MM-dd HH:mm")</MudTd>
+                <MudTd DataLabel="操作">
+                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
+                        <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
+                        <MudDivider />
+                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(async () => await ShowDetailsAsync(context))">查看详情</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await EditChannelAsync(context))">编辑频道</MudMenuItem>
+                    </MudMenu>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                @if (selectedBotId <= 0)
+                {
+                    <MudText>请先选择机器人</MudText>
+                }
+                else
+                {
+                    <MudText>暂无频道</MudText>
+                }
+            </NoRecordsContent>
+        </MudTable>
     </MudCardContent>
 </MudCard>
 
+@if (selectedBotId > 0)
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudText Typo="Typo.h6" Class="mb-2">新增分类</MudText>
+            <MudGrid>
+                <MudItem xs="12" md="4">
+                    <MudTextField @bind-Value="newCategoryName" Label="分类名称" Variant="Variant.Outlined" Required="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField @bind-Value="newCategoryDesc" Label="描述（可选）" Variant="Variant.Outlined" />
+                </MudItem>
+                <MudItem xs="12" md="2" Class="d-flex align-end">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@loading" OnClick="CreateCategoryAsync">
+                        创建
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+}
+
 @code {
+    [SupplyParameterFromQuery(Name = "botId")]
+    public int? BotIdQuery { get; set; }
+
     private List<Bot> bots = new();
+    private Bot? selectedBot;
     private int selectedBotId = 0;
+
+    private bool loading = true;
+    private List<BotChannelCategory> categories = new();
+    private List<BotChannel> channels = new();
+
+    private HashSet<BotChannel> selected = new();
+
+    private int filterCategoryId = 0;
+    private string search = "";
+
+    private string newCategoryName = "";
+    private string newCategoryDesc = "";
+
+    private IEnumerable<BotChannel> filtered => selectedBotId <= 0
+        ? Enumerable.Empty<BotChannel>()
+        : channels.Where(c =>
+        {
+            if (filterCategoryId == -1 && c.CategoryId != null)
+                return false;
+            if (filterCategoryId > 0 && c.CategoryId != filterCategoryId)
+                return false;
+
+            if (string.IsNullOrWhiteSpace(search))
+                return true;
+
+            return c.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
+                   || (c.Username?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false);
+        });
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             bots = (await BotManagement.GetAllBotsAsync()).ToList();
+
+            if (BotIdQuery is > 0 && bots.Any(x => x.Id == BotIdQuery.Value))
+            {
+                selectedBotId = BotIdQuery.Value;
+                await LoadBotData();
+            }
+            else if (bots.Count == 1)
+            {
+                selectedBotId = bots[0].Id;
+                await LoadBotData();
+            }
         }
         catch (Exception ex)
         {
             Snackbar.Add($"加载机器人失败：{ex.Message}", Severity.Error);
         }
+        finally
+        {
+            loading = false;
+        }
     }
 
-    private Task Go()
+    private async Task OnSelectedBotChanged(int botId)
+    {
+        if (selectedBotId == botId)
+            return;
+
+        selectedBotId = botId;
+        filterCategoryId = 0;
+        search = "";
+        selected.Clear();
+
+        if (selectedBotId <= 0)
+        {
+            selectedBot = null;
+            categories.Clear();
+            channels.Clear();
+            Navigation.NavigateTo("/bots/channels", replace: true);
+            return;
+        }
+
+        Navigation.NavigateTo($"/bots/channels?botId={selectedBotId}", replace: true);
+        await LoadBotData();
+    }
+
+    private async Task LoadBotData()
     {
         if (selectedBotId <= 0)
-            return Task.CompletedTask;
+            return;
 
-        Navigation.NavigateTo($"/bots/{selectedBotId}/channels");
-        return Task.CompletedTask;
+        loading = true;
+        try
+        {
+            selectedBot = await BotManagement.GetBotAsync(selectedBotId);
+            if (selectedBot == null)
+            {
+                Snackbar.Add("机器人不存在", Severity.Error);
+                selectedBotId = 0;
+                return;
+            }
+
+            categories = (await BotManagement.GetCategoriesAsync(selectedBotId)).ToList();
+            channels = (await BotManagement.GetChannelsAsync(selectedBotId)).ToList();
+
+            // 清理已选
+            var ids = channels.Select(x => x.Id).ToHashSet();
+            selected = selected.Where(x => ids.Contains(x.Id)).ToHashSet();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task Sync()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var count = await BotTelegram.SyncBotChannelsAsync(selectedBotId, CancellationToken.None);
+            Snackbar.Add($"同步完成：影响 {count} 个频道", Severity.Success);
+            await LoadBotData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"同步失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CreateCategoryAsync()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (string.IsNullOrWhiteSpace(newCategoryName))
+        {
+            Snackbar.Add("请输入分类名称", Severity.Warning);
+            return;
+        }
+
+        loading = true;
+        try
+        {
+            await BotManagement.CreateCategoryAsync(selectedBotId, newCategoryName, newCategoryDesc);
+            newCategoryName = "";
+            newCategoryDesc = "";
+            await LoadBotData();
+            Snackbar.Add("分类已创建", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"创建失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task SetCategoryAsync(BotChannel channel, int? categoryId)
+    {
+        try
+        {
+            await BotManagement.SetChannelCategoryAsync(channel.Id, categoryId);
+            channel.CategoryId = categoryId;
+            Snackbar.Add("已保存分类", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task CopyLinkAsync(BotChannel channel)
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var link = await BotTelegram.ExportInviteLinkAsync(selectedBotId, channel.TelegramId, CancellationToken.None);
+            await JS.InvokeVoidAsync("telegramPanel.copyText", link);
+            Snackbar.Add("已复制链接", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"复制失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task ExportInvites()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认导出",
+            $"将为 {selected.Count} 个频道生成邀请链接并导出（需要机器人具备管理权限）。是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        var ids = string.Join(",", selected.Select(x => x.TelegramId));
+        var url = $"/downloads/bots/{selectedBotId}/invites.txt?ids={Uri.EscapeDataString(ids)}";
+        Navigation.NavigateTo(url, forceLoad: true);
+        await Task.CompletedTask;
+    }
+
+    private async Task ShowDetailsAsync(BotChannel channel)
+    {
+        // 详情弹窗在下一步实现，这里先占位避免空点击
+        Snackbar.Add("Bot 频道详情开发中…", Severity.Info);
+        await Task.CompletedTask;
+    }
+
+    private async Task EditChannelAsync(BotChannel channel)
+    {
+        // 编辑弹窗在下一步实现，这里先占位避免空点击
+        Snackbar.Add("Bot 频道编辑开发中…", Severity.Info);
+        await Task.CompletedTask;
     }
 }
-

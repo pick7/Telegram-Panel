@@ -1,0 +1,53 @@
+@page "/bots/channels"
+@inject BotManagementService BotManagement
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@using TelegramPanel.Data.Entities
+
+<PageTitle>Bot 频道 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Bot 频道</MudText>
+
+<MudCard>
+    <MudCardContent>
+        <MudSelect @bind-Value="selectedBotId" Label="选择机器人" Variant="Variant.Outlined" Dense="true" Style="min-width: 320px;">
+            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
+            @foreach (var b in bots)
+            {
+                <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(selectedBotId <= 0)" Class="mt-3"
+                   OnClick="@(async (MouseEventArgs _) => await Go())">
+            打开频道列表
+        </MudButton>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    private List<Bot> bots = new();
+    private int selectedBotId = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            bots = (await BotManagement.GetAllBotsAsync()).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载机器人失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private Task Go()
+    {
+        if (selectedBotId <= 0)
+            return Task.CompletedTask;
+
+        Navigation.NavigateTo($"/bots/{selectedBotId}/channels");
+        return Task.CompletedTask;
+    }
+}
+

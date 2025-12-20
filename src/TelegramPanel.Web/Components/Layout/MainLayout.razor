@@ -1,5 +1,4 @@
 @inherits LayoutComponentBase
-@inject IJSRuntime JS
 
 <MudThemeProvider @bind-IsDarkMode="_isDarkMode" Theme="_theme" />
 <MudPopoverProvider />
@@ -30,7 +29,6 @@
 @code {
     private bool _drawerOpen = true;
     private bool _isDarkMode = true;
-    private const string DarkModeStorageKey = "telegram-panel:isDarkMode";
 
     private MudTheme _theme = new()
     {
@@ -55,40 +53,8 @@
         _drawerOpen = !_drawerOpen;
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (!firstRender)
-            return;
-
-        try
-        {
-            var stored = await JS.InvokeAsync<string?>("localStorage.getItem", DarkModeStorageKey);
-            if (bool.TryParse(stored, out var isDark))
-            {
-                _isDarkMode = isDark;
-                StateHasChanged();
-            }
-            else
-            {
-                await JS.InvokeVoidAsync("localStorage.setItem", DarkModeStorageKey, _isDarkMode.ToString());
-            }
-        }
-        catch
-        {
-            // localStorage may be blocked; ignore and keep default
-        }
-    }
-
-    private async Task ToggleDarkMode()
+    private void ToggleDarkMode()
     {
         _isDarkMode = !_isDarkMode;
-        try
-        {
-            await JS.InvokeVoidAsync("localStorage.setItem", DarkModeStorageKey, _isDarkMode.ToString());
-        }
-        catch
-        {
-            // ignore
-        }
     }
 }

@@ -117,6 +117,13 @@
 
                     @if (!context.BuiltIn)
                     {
+                        @if (context.InstalledVersions.Count > 1)
+                        {
+                            <MudButton Variant="Variant.Text" Color="Color.Default" Disabled="@loading" OnClick="@(() => PruneOldVersions(context))">
+                                清理旧版本
+                            </MudButton>
+                        }
+
                         <MudButton Variant="Variant.Text" Color="Color.Error" Disabled="@loading" OnClick="@(() => Remove(context.Id))">
                             删除
                         </MudButton>
@@ -235,15 +242,73 @@
         if (ok != true)
             return;
 
-        var r = await ModuleInstaller.RemoveModuleAsync(id);
-        if (!r.Success)
+        try
         {
-            Snackbar.Add($"删除失败：{r.Message}", Severity.Error);
+            var r = await ModuleInstaller.RemoveModuleAsync(id);
+            if (!r.Success)
+            {
+                Snackbar.Add(r.Message, Severity.Error);
+                return;
+            }
+
+            Snackbar.Add("已删除（重启后生效）", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除异常：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task PruneOldVersions(ModuleOverview m)
+    {
+        if (m.BuiltIn)
+            return;
+
+        var active = (m.ActiveVersion ?? "").Trim();
+        var lastGood = (m.LastGoodVersion ?? "").Trim();
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(active)) keep.Add(active);
+        if (!string.IsNullOrWhiteSpace(lastGood)) keep.Add(lastGood);
+
+        var toRemove = m.InstalledVersions
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.Ordinal)
+            .Where(v => !keep.Contains(v))
+            .ToList();
+
+        if (toRemove.Count == 0)
+        {
+            Snackbar.Add("没有可清理的旧版本", Severity.Info);
             return;
         }
 
-        Snackbar.Add("已删除（重启后生效）", Severity.Success);
-        await Reload();
+        bool? ok = await DialogService.ShowMessageBox(
+            "清理旧版本",
+            $"将删除模块「{m.Id}」的旧版本：{string.Join(", ", toRemove)}。\n" +
+            $"保留版本：{string.Join(", ", keep)}。\n" +
+            "删除会移动到回收站目录（可手动找回），是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (ok != true)
+            return;
+
+        try
+        {
+            var r = await ModuleInstaller.PruneOldVersionsAsync(m.Id);
+            if (!r.Success)
+            {
+                Snackbar.Add(r.Message, Severity.Error);
+                return;
+            }
+
+            Snackbar.Add("已清理旧版本（重启后生效）", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"清理异常：{ex.Message}", Severity.Error);
+        }
     }
 
     private async Task ShowDetails(ModuleOverview m)

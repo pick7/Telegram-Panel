@@ -63,3 +63,6 @@ todolist
 
 # Docker persistent data
 docker-data/
+
+# Local build artifacts
+artifacts/

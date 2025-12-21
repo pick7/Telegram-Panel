@@ -194,7 +194,7 @@
         }
 
         // fallback：兼容历史任务
-        return taskType == BatchTaskTypes.UserJoinSubscribe ? "user" : "bot";
+        return "other";
     }
 
     private string GetCategoryName(string taskType) => GetCategoryDisplayName(GetCategory(taskType));

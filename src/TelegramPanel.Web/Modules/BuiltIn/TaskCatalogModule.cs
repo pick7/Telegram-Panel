@@ -56,17 +56,6 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
 
         yield return new ModuleTaskDefinition
         {
-            Category = "user",
-            TaskType = BatchTaskTypes.UserJoinSubscribe,
-            DisplayName = "批量订阅/加群",
-            Description = "用户账号批量加入群组/订阅频道（Bot 无法主动加入）。",
-            Icon = Icons.Material.Filled.GroupAdd,
-            // 暂时由任务中心内置创建器创建（后续可改为模块自带 editor page）
-            Order = 30
-        };
-
-        yield return new ModuleTaskDefinition
-        {
             Category = "system",
             TaskType = BatchTaskTypes.ExternalApiKick,
             DisplayName = "外部 API：踢人/封禁",

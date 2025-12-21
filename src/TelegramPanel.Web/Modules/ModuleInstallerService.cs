@@ -101,6 +101,12 @@ public sealed class ModuleInstallerService
             // 2) 读取 manifest
             var manifestPath = Path.Combine(staging, "manifest.json");
             if (!File.Exists(manifestPath))
+            {
+                // 兼容用户把“文件夹整体压缩”的情况：<root>/<folder>/manifest.json
+                TryPromoteSingleRootFolder(staging);
+            }
+
+            if (!File.Exists(manifestPath))
                 return InstallResult.Fail("缺少 manifest.json");
 
             var manifestJson = await File.ReadAllTextAsync(manifestPath);
@@ -294,25 +300,132 @@ public sealed class ModuleInstallerService
         if (item.BuiltIn)
             return OperationResult.Fail("内置模块不允许删除");
 
+        // 先禁用，避免重启后继续加载（即使后续物理删除失败）
         item.Enabled = false;
         await _stateStore.SaveAsync(state);
 
-        var moduleDir = Path.Combine(_layout.InstalledDir, id);
-        if (Directory.Exists(moduleDir))
+        try
         {
-            var trash = Path.Combine(_layout.TrashDir, $"{id}-{DateTime.UtcNow:yyyyMMddHHmmss}");
-            Directory.Move(moduleDir, trash);
+            Directory.CreateDirectory(_layout.TrashDir);
+
+            var suffix = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+
+            var moduleDir = Path.Combine(_layout.InstalledDir, id);
+            if (Directory.Exists(moduleDir))
+            {
+                var trash = Path.Combine(_layout.TrashDir, $"{id}-{suffix}");
+                Directory.Move(moduleDir, trash);
+            }
+
+            var packageDir = Path.Combine(_layout.PackagesDir, id);
+            if (Directory.Exists(packageDir))
+            {
+                var trash = Path.Combine(_layout.TrashDir, $"{id}-packages-{suffix}");
+                Directory.Move(packageDir, trash);
+            }
+
+            state.Modules.RemoveAll(m => string.Equals(m.Id, id, StringComparison.Ordinal));
+            await _stateStore.SaveAsync(state);
+            return OperationResult.Ok();
+        }
+        catch (Exception ex)
+        {
+            return OperationResult.Fail($"删除失败：{ex.Message}（建议先停用并重启后再删除）");
+        }
+    }
+
+    public async Task<OperationResult> RemoveModuleVersionAsync(string id, string version)
+    {
+        id = (id ?? "").Trim();
+        version = (version ?? "").Trim();
+        if (id.Length == 0 || version.Length == 0)
+            return OperationResult.Fail("参数无效");
+
+        var state = await _stateStore.LoadAsync();
+        var item = state.Modules.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.Ordinal));
+        if (item == null)
+            return OperationResult.Fail("模块不存在");
+
+        if (item.BuiltIn)
+            return OperationResult.Fail("内置模块不支持删除版本");
+
+        if (string.Equals((item.ActiveVersion ?? "").Trim(), version, StringComparison.Ordinal))
+            return OperationResult.Fail("不能删除当前启用版本，请先切换 ActiveVersion");
+
+        try
+        {
+            Directory.CreateDirectory(_layout.TrashDir);
+            var suffix = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+
+            var versionDir = Path.Combine(_layout.InstalledDir, id, version);
+            if (Directory.Exists(versionDir))
+            {
+                var trash = Path.Combine(_layout.TrashDir, $"{id}-{version}-{suffix}");
+                Directory.Move(versionDir, trash);
+            }
+
+            var packageFile = Path.Combine(_layout.PackagesDir, id, $"{version}.tpm");
+            if (File.Exists(packageFile))
+            {
+                var trash = Path.Combine(_layout.TrashDir, $"{id}-{version}-package-{suffix}.tpm");
+                File.Move(packageFile, trash);
+            }
+
+            item.InstalledVersions ??= new List<string>();
+            item.InstalledVersions.RemoveAll(v => string.Equals(v, version, StringComparison.Ordinal));
+            if (string.Equals((item.LastGoodVersion ?? "").Trim(), version, StringComparison.Ordinal))
+                item.LastGoodVersion = null;
+
+            // 如果删到一个版本都不剩，则等价于删除模块
+            if (item.InstalledVersions.Count == 0)
+                state.Modules.RemoveAll(m => string.Equals(m.Id, id, StringComparison.Ordinal));
+
+            await _stateStore.SaveAsync(state);
+            return OperationResult.Ok();
+        }
+        catch (Exception ex)
+        {
+            return OperationResult.Fail($"删除版本失败：{ex.Message}（建议先停用并重启后再删除）");
+        }
+    }
+
+    public async Task<OperationResult> PruneOldVersionsAsync(string id)
+    {
+        id = (id ?? "").Trim();
+        if (id.Length == 0)
+            return OperationResult.Fail("id 不能为空");
+
+        var state = await _stateStore.LoadAsync();
+        var item = state.Modules.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.Ordinal));
+        if (item == null)
+            return OperationResult.Fail("模块不存在");
+
+        if (item.BuiltIn)
+            return OperationResult.Fail("内置模块不支持清理版本");
+
+        item.InstalledVersions ??= new List<string>();
+        var active = (item.ActiveVersion ?? "").Trim();
+        var lastGood = (item.LastGoodVersion ?? "").Trim();
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(active)) keep.Add(active);
+        if (!string.IsNullOrWhiteSpace(lastGood)) keep.Add(lastGood);
+
+        var toRemove = item.InstalledVersions
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.Ordinal)
+            .Where(v => !keep.Contains(v))
+            .ToList();
+
+        if (toRemove.Count == 0)
+            return OperationResult.Ok();
+
+        foreach (var v in toRemove)
+        {
+            var r = await RemoveModuleVersionAsync(id, v);
+            if (!r.Success)
+                return r;
         }
 
-        var packageDir = Path.Combine(_layout.PackagesDir, id);
-        if (Directory.Exists(packageDir))
-        {
-            var trash = Path.Combine(_layout.TrashDir, $"{id}-packages-{DateTime.UtcNow:yyyyMMddHHmmss}");
-            Directory.Move(packageDir, trash);
-        }
-
-        state.Modules.RemoveAll(m => string.Equals(m.Id, id, StringComparison.Ordinal));
-        await _stateStore.SaveAsync(state);
         return OperationResult.Ok();
     }
 
@@ -363,6 +476,61 @@ public sealed class ModuleInstallerService
         }
 
         return null;
+    }
+
+    private static void TryPromoteSingleRootFolder(string stagingDir)
+    {
+        if (string.IsNullOrWhiteSpace(stagingDir))
+            return;
+
+        try
+        {
+            var manifest = Path.Combine(stagingDir, "manifest.json");
+            if (File.Exists(manifest))
+                return;
+
+            var files = Directory.GetFiles(stagingDir)
+                .Where(f => !string.Equals(Path.GetFileName(f), ".DS_Store", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var dirs = Directory.GetDirectories(stagingDir)
+                .Where(d => !string.Equals(Path.GetFileName(d), "__MACOSX", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (files.Count != 0 || dirs.Count != 1)
+                return;
+
+            var root = dirs[0];
+            var innerManifest = Path.Combine(root, "manifest.json");
+            if (!File.Exists(innerManifest))
+                return;
+
+            foreach (var entry in Directory.EnumerateFileSystemEntries(root))
+            {
+                var name = Path.GetFileName(entry);
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                var target = Path.Combine(stagingDir, name);
+                if (Directory.Exists(entry))
+                {
+                    if (Directory.Exists(target))
+                        Directory.Delete(target, recursive: true);
+                    Directory.Move(entry, target);
+                }
+                else if (File.Exists(entry))
+                {
+                    if (File.Exists(target))
+                        File.Delete(target);
+                    File.Move(entry, target);
+                }
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+        catch
+        {
+            // ignore：保持原行为（最终仍会报缺少 manifest.json）
+        }
     }
 
     private string? CheckHostCompatibility(ModuleManifest manifest)

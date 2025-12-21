@@ -70,7 +70,18 @@ modules/
 - `manifest.json`
 - `lib/<entry assembly>.dll`（入口程序集）
 
+> 小提示：如果你是“右键压缩整个文件夹”，压缩包里通常会多一层根目录（`<folder>/manifest.json`）。宿主会尝试自动识别并提升这一层；但更推荐直接把 `manifest.json` 和 `lib/` 放在压缩包根目录。
+
 安装流程会先解压到 `staging/` 并做基础校验，然后移动到 `installed/<id>/<version>/`，并将原包存档到 `packages/<id>/<version>.tpm` 便于留档与回滚。
+
+## 示例：批量订阅/加群模块（可导入）
+
+仓库内提供了一个可导入的示例模块源码：`src/TelegramPanel.Modules.UserJoinSubscribe/`（任务类型：`user_join_subscribe`）。
+
+在没有本机 `dotnet` 的情况下，可用 Docker 一键打包：
+
+- `powershell tools/package-module.ps1`
+- 产物输出：`artifacts/modules/sample.user-join-subscribe-*.tpm`
 
 ## manifest.json（示例）
 

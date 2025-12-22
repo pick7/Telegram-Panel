@@ -48,6 +48,7 @@ docker run --rm `
     -w "/src" `
     mcr.microsoft.com/dotnet/sdk:8.0 `
     dotnet publish "$projectContainer" -c Release -o "$publishContainer" /p:UseAppHost=false
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（退出码：$LASTEXITCODE）" }
 
 $stagingLib = Join-Path $stagingHost "lib"
 New-Item -ItemType Directory -Force -Path $stagingLib | Out-Null

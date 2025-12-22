@@ -261,7 +261,10 @@
         try
         {
             var count = await BotTelegram.SyncBotChannelsAsync(selectedBotId, CancellationToken.None);
-            Snackbar.Add($"同步完成：影响 {count} 个频道", Severity.Success);
+            if (count > 0)
+                Snackbar.Add($"同步完成：影响 {count} 个频道", Severity.Success);
+            else
+                Snackbar.Add("已启用秒级自动同步：手动同步无需再拉取 updates", Severity.Info);
             await LoadBotData();
         }
         catch (Exception ex)

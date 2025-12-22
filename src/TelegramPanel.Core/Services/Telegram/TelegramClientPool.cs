@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using WTelegram;
@@ -15,11 +16,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 {
     private readonly ConcurrentDictionary<int, Client> _clients = new();
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _locks = new();
+    private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramClientPool> _logger;
     private bool _disposed;
 
-    public TelegramClientPool(ILogger<TelegramClientPool> logger)
+    public TelegramClientPool(IConfiguration configuration, ILogger<TelegramClientPool> logger)
     {
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -61,6 +64,12 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             phoneNumber = NormalizePhone(phoneNumber);
             string Config(string what)
             {
+                var proxyServer = (_configuration["Telegram:Proxy:Server"] ?? "").Trim();
+                var proxyPort = (_configuration["Telegram:Proxy:Port"] ?? "").Trim();
+                var proxyUsername = (_configuration["Telegram:Proxy:Username"] ?? "").Trim();
+                var proxyPassword = (_configuration["Telegram:Proxy:Password"] ?? "").Trim();
+                var proxySecret = (_configuration["Telegram:Proxy:Secret"] ?? "").Trim();
+
                 return what switch
                 {
                     "api_id" => apiId.ToString(),
@@ -69,6 +78,17 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                     "session_key" => string.IsNullOrWhiteSpace(sessionKey) ? null! : sessionKey,
                     "phone_number" => string.IsNullOrWhiteSpace(phoneNumber) ? null! : phoneNumber,
                     "user_id" => userId.HasValue && userId.Value > 0 ? userId.Value.ToString() : null!,
+
+                    // 代理（可选）：用于 Telegram MTProto 连接（WTelegramClient）。
+                    // 常见场景：宿主机能直连 Telegram，但 Docker/服务器环境需要代理。
+                    // - SOCKS5/HTTP：配置 server/port；如需认证再填 username/password
+                    // - MTProto：额外配置 secret
+                    "proxy_server" => string.IsNullOrWhiteSpace(proxyServer) ? null! : proxyServer,
+                    "proxy_port" => string.IsNullOrWhiteSpace(proxyPort) ? null! : proxyPort,
+                    "proxy_username" => string.IsNullOrWhiteSpace(proxyUsername) ? null! : proxyUsername,
+                    "proxy_password" => string.IsNullOrWhiteSpace(proxyPassword) ? null! : proxyPassword,
+                    "proxy_secret" => string.IsNullOrWhiteSpace(proxySecret) ? null! : proxySecret,
+
                     _ => null!  // 使用 null! 抑制警告，这是 WTelegramClient 的预期行为
                 };
             }

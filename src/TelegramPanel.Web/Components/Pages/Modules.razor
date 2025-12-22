@@ -53,10 +53,10 @@
         {
             <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true" Class="mb-3">
                 <MudText Typo="Typo.subtitle2">检测到模块贡献冲突（已自动忽略部分定义）：</MudText>
-                <MudList T="string" Dense="true">
+                <MudList T="System.String" Dense="true">
                     @foreach (var d in Contributions.Diagnostics)
                     {
-                        <MudListItem T="string">@d</MudListItem>
+                        <MudListItem T="System.String">@d</MudListItem>
                     }
                 </MudList>
             </MudAlert>

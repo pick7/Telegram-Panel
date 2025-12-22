@@ -23,6 +23,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AccountTelegramToolsService>();
         services.AddScoped<BotTelegramService>();
 
+        // Bot API updates（getUpdates）统一轮询与分发：避免 409 Conflict
+        services.AddSingleton<BotUpdateHub>();
+
         // 注册账号导入协调服务
         services.AddScoped<AccountImportService>();
 

@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -97,6 +98,76 @@ public class TelegramBotApiClient
         var streamContent = new StreamContent(fileStream);
         streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         content.Add(streamContent, fileParameterName, fileName);
+
+        using var resp = await _http.PostAsync(url, content, cancellationToken);
+        var json = await resp.Content.ReadAsStringAsync(cancellationToken);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var ok = root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
+        if (!ok)
+        {
+            var code = root.TryGetProperty("error_code", out var codeEl) ? codeEl.GetInt32() : 0;
+            var desc = root.TryGetProperty("description", out var descEl) ? descEl.GetString() : "未知错误";
+            throw new InvalidOperationException($"Bot API 调用失败：{method} ({code}) {desc}");
+        }
+
+        if (!root.TryGetProperty("result", out var result))
+            throw new InvalidOperationException($"Bot API 返回缺少 result：{method}");
+
+        return result.Clone();
+    }
+
+    /// <summary>
+    /// 调用 Bot API 并上传多个文件（使用 multipart/form-data）。
+    /// 典型用途：sendMediaGroup（attach://file1...）。
+    /// </summary>
+    public async Task<JsonElement> CallWithFilesAsync(
+        string token,
+        string method,
+        IReadOnlyDictionary<string, string?> parameters,
+        IReadOnlyDictionary<string, (Stream Stream, string FileName, string? ContentType)> files,
+        CancellationToken cancellationToken)
+    {
+        token = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Bot Token 为空");
+
+        method = (method ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(method))
+            throw new InvalidOperationException("method 为空");
+
+        if (files == null || files.Count == 0)
+            throw new InvalidOperationException("files 为空");
+
+        var url = $"https://api.telegram.org/bot{Uri.EscapeDataString(token)}/{Uri.EscapeDataString(method)}";
+
+        using var content = new MultipartFormDataContent();
+
+        foreach (var (key, value) in parameters)
+        {
+            if (!string.IsNullOrWhiteSpace(key) && value != null)
+                content.Add(new StringContent(value), key);
+        }
+
+        foreach (var (name, file) in files)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var stream = file.Stream ?? throw new InvalidOperationException($"files[{name}] stream 为空");
+            if (stream.CanSeek)
+                stream.Position = 0;
+
+            var fileName = (file.FileName ?? "file").Trim();
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = "file";
+
+            var streamContent = new StreamContent(stream);
+            streamContent.Headers.ContentType = new MediaTypeHeaderValue(string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType);
+            content.Add(streamContent, name, fileName);
+        }
 
         using var resp = await _http.PostAsync(url, content, cancellationToken);
         var json = await resp.Content.ReadAsStringAsync(cancellationToken);

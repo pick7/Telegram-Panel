@@ -30,9 +30,19 @@ public class BotTelegramService
     }
 
     /// <summary>
-    /// 拉取 Bot API updates 并把 bot 新加入的频道写入数据库（同时确认 offset）。
+    /// 兼容入口：旧版曾在这里直接 getUpdates 拉取 my_chat_member。
+    /// 现在 getUpdates 已由 <see cref="BotUpdateHub"/> 统一轮询与分发，避免 409 Conflict 与 offset 争抢。
     /// </summary>
-    public async Task<int> SyncBotChannelsAsync(int botId, CancellationToken cancellationToken)
+    public Task<int> SyncBotChannelsAsync(int botId, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("SyncBotChannelsAsync 已迁移为自动同步（BotUpdateHub），不再在此处拉取 updates：botId={BotId}", botId);
+        return Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// 应用一批 my_chat_member updates，把 Bot 新加入/移除/升降权的频道写入数据库。
+    /// </summary>
+    public async Task<int> ApplyMyChatMemberUpdatesAsync(int botId, IReadOnlyList<JsonElement> updates, CancellationToken cancellationToken)
     {
         var bot = await _botManagement.GetBotAsync(botId)
             ?? throw new InvalidOperationException($"机器人不存在：{botId}");
@@ -40,37 +50,16 @@ public class BotTelegramService
         if (!bot.IsActive)
             throw new InvalidOperationException("该机器人已停用");
 
-        var token = bot.Token;
-        var offset = bot.LastUpdateId.HasValue ? bot.LastUpdateId.Value + 1 : (long?)null;
-
-        var allowedUpdates = JsonSerializer.Serialize(new[] { "my_chat_member" });
-        var result = await _api.CallAsync(token, "getUpdates", new Dictionary<string, string?>
-        {
-            ["offset"] = offset?.ToString(),
-            ["timeout"] = "0",
-            ["limit"] = "100",
-            ["allowed_updates"] = allowedUpdates
-        }, cancellationToken);
-
-        if (result.ValueKind != JsonValueKind.Array)
-            return 0;
-
         // Telegram 会针对同一个 chat 连续产生多条 my_chat_member（例如 member -> administrator），
         // 这里按 chat_id 去重并只应用“最后一次状态”，避免“新增两个”的错觉/重复写库。
         var changesByChatId = new Dictionary<long, BotChatMemberChange>();
-        long? maxUpdateId = null;
 
-        foreach (var update in result.EnumerateArray())
+        foreach (var update in updates)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (update.ValueKind != JsonValueKind.Object)
                 continue;
-
-            if (update.TryGetProperty("update_id", out var updateIdEl) && updateIdEl.TryGetInt64(out var updateId))
-            {
-                maxUpdateId = maxUpdateId.HasValue ? Math.Max(maxUpdateId.Value, updateId) : updateId;
-            }
 
             // 只处理 my_chat_member：Bot 被加入/移除/升降权
             if (!update.TryGetProperty("my_chat_member", out var myChatMember))
@@ -123,8 +112,6 @@ public class BotTelegramService
             affected++;
         }
 
-        if (maxUpdateId.HasValue)
-            bot.LastUpdateId = maxUpdateId.Value;
         bot.LastSyncAt = DateTime.UtcNow;
         await _botManagement.UpdateBotAsync(bot);
 

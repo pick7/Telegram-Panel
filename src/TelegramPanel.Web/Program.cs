@@ -12,6 +12,7 @@ using TelegramPanel.Data;
 using TelegramPanel.Web.Modules;
 using TelegramPanel.Web.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.DataProtection;
 
 // 诊断：对某个目录下的 *.json/*.session 做一次“可转换/可校验”检查（不写数据库）
 // 用法：dotnet run --project src/TelegramPanel.Web -- --diag-session-dir "D:/path/to/dir"
@@ -247,6 +248,27 @@ builder.Services.AddRazorComponents()
 
 // MudBlazor
 builder.Services.AddMudServices();
+
+// DataProtection keys 持久化：避免容器重建/重启后出现 antiforgery token 无法解密
+try
+{
+    var configuredKeysPath = (builder.Configuration["DataProtection:KeysPath"] ?? "").Trim();
+    var keysPath = configuredKeysPath;
+    if (string.IsNullOrWhiteSpace(keysPath))
+    {
+        keysPath = Directory.Exists("/data")
+            ? "/data/keys"
+            : Path.Combine(builder.Environment.ContentRootPath, "data-protection-keys");
+    }
+
+    Directory.CreateDirectory(keysPath);
+    builder.Services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"Failed to configure DataProtection keys persistence: {ex.Message}");
+}
 
 // 反向代理支持（宝塔/Nginx/Caddy 等）
 // 让应用正确识别外部访问的 Host/Proto，避免重定向到 http://localhost/...
@@ -543,7 +565,14 @@ if (!app.Environment.IsDevelopment())
 
 app.UseForwardedHeaders();
 
-app.UseHttpsRedirection();
+// 仅在存在 HTTPS 端口/端点时启用重定向；否则会产生 “Failed to determine the https port for redirect.” 噪声
+var httpsPort = app.Configuration["ASPNETCORE_HTTPS_PORT"];
+var urls = app.Configuration["ASPNETCORE_URLS"] ?? "";
+var hasHttpsEndpoint = !string.IsNullOrWhiteSpace(httpsPort)
+                      || urls.Contains("https://", StringComparison.OrdinalIgnoreCase)
+                      || !string.IsNullOrWhiteSpace(app.Configuration["Kestrel:Endpoints:Https:Url"]);
+if (hasHttpsEndpoint)
+    app.UseHttpsRedirection();
 
 // 静态文件（包括 MudBlazor 等 NuGet 包的静态 Web 资源）
 app.UseStaticFiles();

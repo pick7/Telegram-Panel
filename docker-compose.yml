@@ -2,7 +2,7 @@ services:
   telegram-panel:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ${TP_DOCKERFILE:-Dockerfile}
     container_name: telegram-panel
     restart: unless-stopped
     ports:
@@ -27,4 +27,3 @@ services:
 
       # 默认关闭 bot 轮询自动同步（需要时可手动同步）
       Telegram__BotAutoSyncEnabled: "false"
-

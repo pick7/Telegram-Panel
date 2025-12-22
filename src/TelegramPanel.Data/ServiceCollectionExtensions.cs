@@ -13,7 +13,11 @@ public static class ServiceCollectionExtensions
     {
         // 注册数据库上下文
         services.AddDbContext<AppDbContext>(options =>
-            options.UseSqlite(connectionString));
+            options.UseSqlite(connectionString, sqlite =>
+            {
+                // 避免 Include 多个集合导航时的“笛卡尔爆炸”与性能警告
+                sqlite.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+            }));
 
         // 注册所有Repository
         services.AddScoped<IAccountRepository, AccountRepository>();

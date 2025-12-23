@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
 using System.IO.Compression;
 using WTelegram;
@@ -63,7 +64,10 @@ public class AccountImportService
                     try
                     {
                         // 入库策略：按手机号 upsert（方便重复导入/替换 session）
-                        var phone = result.Phone!;
+                        var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+                        if (string.IsNullOrWhiteSpace(phone))
+                            throw new InvalidOperationException("导入结果缺少有效手机号");
+
                         var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
                         if (existing != null)
                         {
@@ -156,7 +160,10 @@ public class AccountImportService
         {
             try
             {
-                var phone = result.Phone!;
+                var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+                if (string.IsNullOrWhiteSpace(phone))
+                    throw new InvalidOperationException("导入结果缺少有效手机号");
+
                 var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
                 if (existing != null)
                 {
@@ -341,7 +348,9 @@ public class AccountImportService
             if (!TryGetString(root, out var phone, "phone", "phone_number", "phoneNumber") || string.IsNullOrWhiteSpace(phone))
                 return new ImportResult(false, null, null, null, null, $"json 缺少 phone: {jsonPath}");
 
-            phone = phone.Trim();
+            phone = PhoneNumberFormatter.NormalizeToDigits(phone);
+            if (string.IsNullOrWhiteSpace(phone))
+                return new ImportResult(false, null, null, null, null, $"json phone 无效: {jsonPath}");
 
             _ = TryGetLong(root, out var userId, "user_id", "uid", "userId");
             _ = TryGetString(root, out var username, "username");

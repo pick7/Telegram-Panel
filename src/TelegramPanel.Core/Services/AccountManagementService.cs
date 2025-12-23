@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
 
@@ -36,36 +37,52 @@ public class AccountManagementService
 
     public async Task<Account?> GetAccountAsync(int id)
     {
-        return await _accountRepository.GetByIdAsync(id);
+        var account = await _accountRepository.GetByIdAsync(id);
+        FormatPhoneForDisplay(account);
+        return account;
     }
 
     public async Task<Account?> GetAccountByPhoneAsync(string phone)
     {
-        return await _accountRepository.GetByPhoneAsync(phone);
+        var digits = PhoneNumberFormatter.NormalizeToDigits(phone);
+        var account = await _accountRepository.GetByPhoneAsync(digits);
+        FormatPhoneForDisplay(account);
+        return account;
     }
 
     public async Task<IEnumerable<Account>> GetAllAccountsAsync()
     {
-        return await _accountRepository.GetAllAsync();
+        var list = (await _accountRepository.GetAllAsync()).ToList();
+        foreach (var a in list)
+            FormatPhoneForDisplay(a);
+        return list;
     }
 
     public async Task<IEnumerable<Account>> GetActiveAccountsAsync()
     {
-        return await _accountRepository.GetActiveAccountsAsync();
+        var list = (await _accountRepository.GetActiveAccountsAsync()).ToList();
+        foreach (var a in list)
+            FormatPhoneForDisplay(a);
+        return list;
     }
 
     public async Task<IEnumerable<Account>> GetAccountsByCategoryAsync(int categoryId)
     {
-        return await _accountRepository.GetByCategoryAsync(categoryId);
+        var list = (await _accountRepository.GetByCategoryAsync(categoryId)).ToList();
+        foreach (var a in list)
+            FormatPhoneForDisplay(a);
+        return list;
     }
 
     public async Task<Account> CreateAccountAsync(Account account)
     {
+        account.Phone = PhoneNumberFormatter.NormalizeToDigits(account.Phone);
         return await _accountRepository.AddAsync(account);
     }
 
     public async Task UpdateAccountAsync(Account account)
     {
+        account.Phone = PhoneNumberFormatter.NormalizeToDigits(account.Phone);
         await _accountRepository.UpdateAsync(account);
     }
 
@@ -210,6 +227,14 @@ public class AccountManagementService
                 digits[count++] = ch;
         }
         return count == 0 ? string.Empty : new string(digits, 0, count);
+    }
+
+    private static void FormatPhoneForDisplay(Account? account)
+    {
+        if (account == null)
+            return;
+
+        account.Phone = PhoneNumberFormatter.FormatWithCountryCode(account.Phone);
     }
 
     private static string? TryFindRepoRoot()

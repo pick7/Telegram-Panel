@@ -342,8 +342,15 @@
     {
         try
         {
+            var phoneDigits = TelegramPanel.Core.Utils.PhoneNumberFormatter.NormalizeToDigits(accountInfo.Phone);
+            if (string.IsNullOrWhiteSpace(phoneDigits))
+            {
+                Snackbar.Add("手机号无效，无法保存账号", Severity.Error);
+                return;
+            }
+
             // 检查账号是否已存在
-            var existingAccount = await AccountManagement.GetAccountByPhoneAsync(accountInfo.Phone!);
+            var existingAccount = await AccountManagement.GetAccountByPhoneAsync(phoneDigits);
 
             if (existingAccount != null)
             {
@@ -364,11 +371,11 @@
                 // 创建新账号
                 var account = new Account
                 {
-                    Phone = accountInfo.Phone!,
+                    Phone = phoneDigits,
                     UserId = accountInfo.TelegramUserId,
                     Nickname = BuildNickname(accountInfo),
                     Username = accountInfo.Username,
-                    SessionPath = System.IO.Path.Combine(sessionsPath, $"{accountInfo.Phone}.session"),
+                    SessionPath = System.IO.Path.Combine(sessionsPath, $"{phoneDigits}.session"),
                     ApiId = telegramApiId,
                     ApiHash = telegramApiHash,
                     IsActive = true,

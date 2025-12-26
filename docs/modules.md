@@ -43,6 +43,8 @@
 ```
 modules/
   state.json
+  active/    # 预留：当前启用版本（部分实现会用到）
+  data/      # 模块自有持久化数据（推荐放这里）
   packages/
     <moduleId>/
       <version>.tpm
@@ -76,6 +78,24 @@ modules/
 }
 ```
 
+## 模块数据持久化（推荐）
+
+模块运行时可通过 `ModuleHostContext.ModulesRootPath` 获取模块系统根目录。推荐把模块自有数据放到：
+
+`Path.Combine(context.ModulesRootPath, "data", Manifest.Id)`
+
+示例（把路径封装为 Paths 并注入到 DI）：
+
+```csharp
+public void ConfigureServices(IServiceCollection services, ModuleHostContext context)
+{
+    var dataRoot = Path.Combine(context.ModulesRootPath, "data", Manifest.Id);
+    services.AddSingleton(new MyModulePaths(dataRoot));
+}
+```
+
+这样可以保证 Docker/本机部署下都能持久化，并且不会污染宿主目录结构。
+
 ## 模块包格式（.tpm / .zip）
 
 模块包本质是 Zip 文件（扩展名可为 `.tpm` 或 `.zip`），解压后的根目录必须包含：
@@ -96,6 +116,8 @@ powershell tools/package-module.ps1 -Project "src/YourModule/YourModule.csproj" 
 ```
 
 产物默认输出到：`artifacts/modules/<moduleId>-<version>.tpm`
+
+> 说明：该脚本依赖 Docker（会拉取/使用 `mcr.microsoft.com/dotnet/sdk:8.0` 镜像）。首次执行会比较慢属正常现象。
 
 ## manifest.json（示例）
 
@@ -154,6 +176,35 @@ public sealed class ExampleKickApiModule : ITelegramPanelModule
     }
 }
 ```
+
+## UI 模块项目模板（Razor 组件）
+
+如果你的模块需要提供页面（`IModuleUiProvider.GetPages`），推荐把模块做成 `Microsoft.NET.Sdk.Razor` 项目（类似 Razor Class Library），例如：
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/TelegramPanel.Modules.Abstractions/TelegramPanel.Modules.Abstractions.csproj" />
+    <PackageReference Include="MudBlazor" Version="7.*" />
+  </ItemGroup>
+</Project>
+```
+
+建议在模块根目录放一个 `_Imports.razor`，把常用命名空间一次性导入（例如 `MudBlazor`、`Microsoft.AspNetCore.Components` 等），避免每个页面重复写。
+
+> 注意：模块项目引用 `MudBlazor` 主要用于编译期；运行时会跟随宿主加载。若模块需要自带静态资源（CSS/JS），宿主不会自动暴露模块的 `wwwroot`，你需要在 `MapEndpoints` 中自行提供静态文件访问（或把样式/脚本内联到页面里）。
+
+## 开发/调试建议
+
+模块开发最简单的闭环是：**打包 → 在面板中上传/安装 → 重启服务 → 验证**。
+
+- 安装/启用/停用外部模块通常需要重启（因为 `ConfigureServices` 在宿主构建 DI 之前执行）。
+- 开发阶段可以把版本号（`manifest.json` 的 `version`）按 `1.0.0 -> 1.0.1 -> ...` 递增，避免缓存/回滚机制干扰排查。
 
 ## 任务扩展（Task）
 
@@ -328,6 +379,42 @@ public IEnumerable<ModuleApiTypeDefinition> GetApis(ModuleHostContext context)
 - `ComponentType`：组件类型 `AssemblyQualifiedName`
 
 宿主提供统一入口路由：`/ext/{moduleId}/{pageKey}`，会动态加载并渲染模块组件。
+
+### 3) 模块页面参数约定（非常重要）
+
+宿主会把 `ModuleId` 与 `PageKey` 作为组件参数注入，因此模块页面组件必须声明以下两个参数，否则运行时会 500（组件不接受宿主注入的参数）：
+
+```razor
+@code {
+  [Parameter] public string ModuleId { get; set; } = "";
+  [Parameter] public string PageKey { get; set; } = "";
+}
+```
+
+> 如果你的页面完全不需要这两个值，也必须保留参数声明。
+
+## 依赖与加载（外部模块）
+
+外部模块会从 `installed/<id>/<version>/lib/` 通过独立的 `AssemblyLoadContext` 加载入口程序集。
+
+实践建议：
+
+- 把入口程序集及其依赖（包含第三方 NuGet）都放进 `lib/`，最简单方式是对模块项目执行 `dotnet publish`（打包脚本已内置）。
+- 避免依赖宿主的同名 DLL（版本不一致时容易出错）。
+- 如果模块需要引用宿主工程里的类型，推荐通过 `ProjectReference` 引用 `TelegramPanel.Modules.Abstractions`/`TelegramPanel.Core`/`TelegramPanel.Data` 等项目（按需即可），并随模块一起发布到 `lib/`。
+
+## 认证/授权（端点安全）
+
+- **模块页面**：作为面板的一部分渲染，通常受宿主的后台登录控制（管理员登录开启时会要求授权）。
+- **模块 API 端点**（`MapEndpoints`）：请显式选择：
+  - `AllowAnonymous()`：公开接口（务必自行做好鉴权/限流/防泄露）
+  - 或 `RequireAuthorization()`：跟随宿主后台登录鉴权
+
+如果是“外置链接/匿名链接”类能力，建议：
+
+- 使用随机 token 作为访问凭证
+- 做好限流（按 token + IP）
+- 返回 `no-store` 防缓存
 
 ## 运行时行为（启用/回滚）
 

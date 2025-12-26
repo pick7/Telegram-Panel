@@ -306,23 +306,14 @@ public sealed class ModuleInstallerService
 
         try
         {
-            Directory.CreateDirectory(_layout.TrashDir);
-
-            var suffix = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
-
+            // 直接删除，不保留到 trash
             var moduleDir = Path.Combine(_layout.InstalledDir, id);
             if (Directory.Exists(moduleDir))
-            {
-                var trash = Path.Combine(_layout.TrashDir, $"{id}-{suffix}");
-                Directory.Move(moduleDir, trash);
-            }
+                Directory.Delete(moduleDir, recursive: true);
 
             var packageDir = Path.Combine(_layout.PackagesDir, id);
             if (Directory.Exists(packageDir))
-            {
-                var trash = Path.Combine(_layout.TrashDir, $"{id}-packages-{suffix}");
-                Directory.Move(packageDir, trash);
-            }
+                Directory.Delete(packageDir, recursive: true);
 
             state.Modules.RemoveAll(m => string.Equals(m.Id, id, StringComparison.Ordinal));
             await _stateStore.SaveAsync(state);
@@ -354,22 +345,14 @@ public sealed class ModuleInstallerService
 
         try
         {
-            Directory.CreateDirectory(_layout.TrashDir);
-            var suffix = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
-
+            // 直接删除，不保留到 trash
             var versionDir = Path.Combine(_layout.InstalledDir, id, version);
             if (Directory.Exists(versionDir))
-            {
-                var trash = Path.Combine(_layout.TrashDir, $"{id}-{version}-{suffix}");
-                Directory.Move(versionDir, trash);
-            }
+                Directory.Delete(versionDir, recursive: true);
 
             var packageFile = Path.Combine(_layout.PackagesDir, id, $"{version}.tpm");
             if (File.Exists(packageFile))
-            {
-                var trash = Path.Combine(_layout.TrashDir, $"{id}-{version}-package-{suffix}.tpm");
-                File.Move(packageFile, trash);
-            }
+                File.Delete(packageFile);
 
             item.InstalledVersions ??= new List<string>();
             item.InstalledVersions.RemoveAll(v => string.Equals(v, version, StringComparison.Ordinal));

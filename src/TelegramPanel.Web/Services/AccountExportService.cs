@@ -36,7 +36,7 @@ public class AccountExportService
             await using (var writer = new StreamWriter(readmeStream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
             {
                 await writer.WriteLineAsync("Telegram Panel 账号导出包");
-                await writer.WriteLineAsync("结构：每个账号一个子文件夹，包含一个 .json + 一个 .session。");
+                await writer.WriteLineAsync("结构：每个账号一个子文件夹，包含 .json + .session；如保存了二级密码，则额外包含 2fa.txt。");
                 await writer.WriteLineAsync("导入：面板 -> 账号 -> 导入账号 -> 压缩包导入（Zip）。");
                 await writer.WriteLineAsync($"导出时间(UTC)：{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
             }
@@ -85,6 +85,15 @@ public class AccountExportService
                         }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
 
                         await writer.WriteAsync(json);
+                    }
+
+                    var twoFactorPassword = (account.TwoFactorPassword ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(twoFactorPassword))
+                    {
+                        var twoFaEntry = zip.CreateEntry($"{safeFolder}/2fa.txt", CompressionLevel.Fastest);
+                        await using var twoFaStream = twoFaEntry.Open();
+                        await using var twoFaWriter = new StreamWriter(twoFaStream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                        await twoFaWriter.WriteAsync(twoFactorPassword);
                     }
                 }
                 catch (Exception ex)

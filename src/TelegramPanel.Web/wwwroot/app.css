@@ -1,0 +1,53 @@
+/* 移动端自适应增强：避免按钮文字被挤成“竖排” */
+
+.tp-flex-wrap {
+  flex-wrap: wrap !important;
+}
+
+.tp-nowrap {
+  white-space: nowrap !important;
+}
+
+.tp-only-xs {
+  display: none;
+}
+
+.tp-actions-inline {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.tp-actions-menu {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  /* MudStack 在小屏下允许换行，优先换行而不是压缩到极窄导致逐字换行 */
+  .mud-stack-root.tp-flex-wrap {
+    row-gap: 8px;
+  }
+
+  /* 输入框在小屏更容易占满一行 */
+  .tp-input-full-xs {
+    flex: 1 1 100% !important;
+    min-width: 100% !important;
+  }
+
+  .tp-hide-xs {
+    display: none !important;
+  }
+
+  .tp-only-xs {
+    display: inherit !important;
+  }
+
+  /* 小屏把行内操作收纳成菜单，避免一堆图标挤在一行 */
+  .tp-actions-inline {
+    display: none !important;
+  }
+
+  .tp-actions-menu {
+    display: inline-flex !important;
+  }
+}

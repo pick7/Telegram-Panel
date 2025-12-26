@@ -20,8 +20,8 @@
         <MudTable ServerData="LoadAccountsServerData" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
                   MultiSelection="true" @bind-SelectedItems="selectedAccounts" @ref="_table">
             <ToolBarContent>
-                <MudStack Spacing="1">
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Style="flex-wrap: wrap;">
+                <MudStack Spacing="1" Style="width: 100%;">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="tp-flex-wrap">
                         <MudText Typo="Typo.h6">已导入账号 (@totalCount)</MudText>
                         @if (selectedAccounts.Count > 0)
                         {
@@ -34,8 +34,10 @@
                         </MudButton>
                     </MudStack>
 
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Style="flex-wrap: wrap;">
-                        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 160px;">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="tp-flex-wrap" Style="gap: 6px;">
+                        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
+                                   Class="tp-input-full-xs"
+                                   Style="min-width: 180px; flex: 0 1 220px;">
                             <MudSelectItem Value="0">全部分类</MudSelectItem>
                             @foreach (var c in categories)
                             {
@@ -43,15 +45,18 @@
                             }
                         </MudSelect>
                         <MudTextField @bind-Value="searchString" Placeholder="搜索账号..." Adornment="Adornment.Start"
-                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
+                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
+                                      Style="min-width: 220px; flex: 1 1 260px;"
                                       Immediate="true" @bind-Value:after="OnSearchChanged" />
 
                         <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
+                                   Class="tp-hide-xs tp-nowrap"
                                    Disabled="@(loading || accounts.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
                             @SelectionToggleText
                         </MudButton>
 
                         <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+                                   Class="tp-hide-xs tp-nowrap"
                                    Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Size="Size.Small">
                             批量刷新状态
                         </MudButton>
@@ -59,11 +64,15 @@
                         <MudMenu Dense="true" Disabled="@loading">
                             <ActivatorContent>
                                 <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+                                           Class="tp-nowrap"
                                            Disabled="@loading" Size="Size.Small">
                                     批量操作
                                 </MudButton>
                             </ActivatorContent>
                             <ChildContent>
+                                <MudMenuItem Disabled="@(accounts.Count == 0)" Icon="@SelectionToggleIcon" OnClick="CycleSelectionToggle">@SelectionToggleText</MudMenuItem>
+                                <MudMenuItem Icon="@Icons.Material.Filled.Sync" Disabled="@loading" OnClick="BatchRefreshTelegramStatus">批量刷新状态</MudMenuItem>
+                                <MudDivider />
                                 <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchJoinSubscribe">批量加群/订阅（已选）</MudMenuItem>
                                 <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchLeaveUnsubscribe">批量退群/退订（已选）</MudMenuItem>
                                 <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword">修改二级密码（已选）</MudMenuItem>
@@ -131,30 +140,53 @@
                 </MudTd>
                 <MudTd DataLabel="最后数据同步"><PanelTime Value="context.LastSyncAt" /></MudTd>
                 <MudTd DataLabel="操作">
-                    <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
-                                   OnClick="@(() => ShowDetails(context))" Title="查看详情" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Info"
-                                   Disabled="@loading" OnClick="@(() => OpenEditUserProfile(context))" Title="编辑用户资料" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Sync" Size="Size.Small" Color="Color.Primary"
-                                   Disabled="@loading" OnClick="@(() => RefreshTelegramStatus(context))" Title="刷新 Telegram 状态" />
-                    <MudIconButton Icon="@Icons.Material.Filled.GroupAdd" Size="Size.Small" Color="Color.Success"
-                                   Disabled="@loading" OnClick="@(() => OpenJoinSubscribe(context))" Title="加群/订阅" />
-                    <MudIconButton Icon="@Icons.Material.Filled.ExitToApp" Size="Size.Small" Color="Color.Warning"
-                                   Disabled="@loading" OnClick="@(() => OpenLeaveUnsubscribe(context))" Title="退群/退订" />
-                    <MudIconButton Icon="@Icons.Material.Filled.MarkEmailUnread" Size="Size.Small" Color="Color.Info"
-                                   Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))" Title="系统通知（验证码）" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Devices" Size="Size.Small" Color="Color.Info"
-                                   Disabled="@loading" OnClick="@(() => OpenDevices(context))" Title="在线设备" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Password" Size="Size.Small" Color="Color.Warning"
-                                   Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorPassword(context))" Title="修改二级密码" />
-                    <MudIconButton Icon="@Icons.Material.Filled.AlternateEmail" Size="Size.Small" Color="Color.Warning"
-                                   Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorRecoveryEmail(context))" Title="绑定/换绑找回邮箱" />
-                    <MudIconButton Icon="@(context.IsActive ? Icons.Material.Filled.Stop : Icons.Material.Filled.PlayArrow)"
-                                   Size="Size.Small" Color="@(context.IsActive ? Color.Warning : Color.Success)"
-                                   OnClick="@(() => ToggleActive(context))"
-                                   Title="@(context.IsActive ? "停用" : "启用")" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                   OnClick="@(() => DeleteAccount(context))" Title="删除账号" />
+                    <div class="tp-actions-inline">
+                        <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
+                                       OnClick="@(() => ShowDetails(context))" Title="查看详情" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Info"
+                                       Disabled="@loading" OnClick="@(() => OpenEditUserProfile(context))" Title="编辑用户资料" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Sync" Size="Size.Small" Color="Color.Primary"
+                                       Disabled="@loading" OnClick="@(() => RefreshTelegramStatus(context))" Title="刷新 Telegram 状态" />
+                        <MudIconButton Icon="@Icons.Material.Filled.GroupAdd" Size="Size.Small" Color="Color.Success"
+                                       Disabled="@loading" OnClick="@(() => OpenJoinSubscribe(context))" Title="加群/订阅" />
+                        <MudIconButton Icon="@Icons.Material.Filled.ExitToApp" Size="Size.Small" Color="Color.Warning"
+                                       Disabled="@loading" OnClick="@(() => OpenLeaveUnsubscribe(context))" Title="退群/退订" />
+                        <MudIconButton Icon="@Icons.Material.Filled.MarkEmailUnread" Size="Size.Small" Color="Color.Info"
+                                       Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))" Title="系统通知（验证码）" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Devices" Size="Size.Small" Color="Color.Info"
+                                       Disabled="@loading" OnClick="@(() => OpenDevices(context))" Title="在线设备" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Password" Size="Size.Small" Color="Color.Warning"
+                                       Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorPassword(context))" Title="修改二级密码" />
+                        <MudIconButton Icon="@Icons.Material.Filled.AlternateEmail" Size="Size.Small" Color="Color.Warning"
+                                       Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorRecoveryEmail(context))" Title="绑定/换绑找回邮箱" />
+                        <MudIconButton Icon="@(context.IsActive ? Icons.Material.Filled.Stop : Icons.Material.Filled.PlayArrow)"
+                                       Size="Size.Small" Color="@(context.IsActive ? Color.Warning : Color.Success)"
+                                       OnClick="@(() => ToggleActive(context))"
+                                       Title="@(context.IsActive ? "停用" : "启用")" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                       OnClick="@(() => DeleteAccount(context))" Title="删除账号" />
+                    </div>
+
+                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Class="tp-actions-menu">
+                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(() => ShowDetails(context))">查看详情</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" Disabled="@loading" OnClick="@(() => OpenEditUserProfile(context))">编辑用户资料</MudMenuItem>
+                        <MudDivider />
+                        <MudMenuItem Icon="@Icons.Material.Filled.Sync" Disabled="@loading" OnClick="@(() => RefreshTelegramStatus(context))">刷新 Telegram 状态</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.GroupAdd" Disabled="@loading" OnClick="@(() => OpenJoinSubscribe(context))">加群/订阅</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.ExitToApp" Disabled="@loading" OnClick="@(() => OpenLeaveUnsubscribe(context))">退群/退订</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.MarkEmailUnread" Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))">系统通知（验证码）</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Devices" Disabled="@loading" OnClick="@(() => OpenDevices(context))">在线设备</MudMenuItem>
+                        <MudDivider />
+                        <MudMenuItem Icon="@Icons.Material.Filled.Password" Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorPassword(context))">修改二级密码</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.AlternateEmail" Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorRecoveryEmail(context))">绑定/换绑找回邮箱</MudMenuItem>
+                        <MudDivider />
+                        <MudMenuItem Icon="@(context.IsActive ? Icons.Material.Filled.Stop : Icons.Material.Filled.PlayArrow)"
+                                     Disabled="@loading"
+                                     OnClick="@(() => ToggleActive(context))">
+                            @(context.IsActive ? "停用" : "启用")
+                        </MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Delete" Disabled="@loading" OnClick="@(() => DeleteAccount(context))">删除账号</MudMenuItem>
+                    </MudMenu>
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>

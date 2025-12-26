@@ -18,9 +18,10 @@
                   MultiSelection="true" @bind-SelectedItems="selected" @ref="_table">
             <ToolBarContent>
                 <MudStack Spacing="1" Style="width: 100%;">
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Style="flex-wrap: wrap;">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="tp-flex-wrap">
                         <MudSelect T="int" Value="@selectedBotId" ValueChanged="@(async (int id) => await OnSelectedBotChanged(id))" Label="选择机器人"
-                                   Variant="Variant.Outlined" Dense="true" Style="min-width: 260px;">
+                                   Variant="Variant.Outlined" Dense="true" Class="tp-input-full-xs"
+                                   Style="min-width: 260px; flex: 1 1 260px;">
                             <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
                             @foreach (var b in bots)
                             {
@@ -37,10 +38,13 @@
                             <MudChip T="string" Size="Size.Small" Color="Color.Info">已选 @selected.Count</MudChip>
                         }
 
-                        <MudSpacer />
+                        <div class="tp-hide-xs">
+                            <MudSpacer />
+                        </div>
 
                         <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
-                                   Style="min-width: 160px;" Disabled="@(selectedBotId <= 0)">
+                                   Class="tp-input-full-xs"
+                                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
                             <MudSelectItem Value="0">全部分类</MudSelectItem>
                             <MudSelectItem Value="-1">未分类</MudSelectItem>
                             @foreach (var c in categories)
@@ -54,7 +58,8 @@
                                        Disabled="@(selectedBotId <= 0)" />
 
                         <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
-                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
+                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
+                                      Style="min-width: 220px; flex: 1 1 260px;"
                                       Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
 
                         <MudIconButton Icon="@(_actionsExpanded ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"

@@ -1,15 +1,40 @@
+# Git & IDE
 .git
 .serena
-.tmp
+.vs
+.vscode
+.idea
+
+# Build outputs
 **/bin
 **/obj
+artifacts
+
+# Docker runtime data
 docker-data
+
+# Temporary & logs
+.tmp
 logs
 sessions
 todolist
+
+# Database & cache
 *.db
 *.log
 *.user
 *.suo
 *.cache
+
+# Documentation & screenshots (not needed for build)
+docs
+screenshot
+README.md
+
+# Module source (development only)
+模块源码
+
+# Misc
+*.md
+!Directory.Build.props
 

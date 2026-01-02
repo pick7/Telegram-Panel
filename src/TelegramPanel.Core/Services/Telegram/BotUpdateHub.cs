@@ -189,6 +189,11 @@ public sealed class BotUpdateHub : IAsyncDisposable
             if (lastUpdateId.HasValue)
             {
                 nextOffset = lastUpdateId.Value + 1;
+
+                // 恢复时：从上次的 offset 开始收集 my_chat_member（用于发现新加入的频道）。
+                // 这些 updates 稍后会被主循环重新拉取（幂等），但手动同步时可以立即使用缓存。
+                pendingMyChatMember = await QuickCollectMyChatMemberAsync(
+                    token, nextOffset, botApi, logger, cancellationToken);
             }
             else
             {
@@ -199,6 +204,72 @@ public sealed class BotUpdateHub : IAsyncDisposable
             }
 
             return new BotPoller(botId, token, nextOffset, pendingMyChatMember, scopeFactory, botApi, logger);
+        }
+
+        /// <summary>
+        /// 快速收集从指定 offset 开始的 my_chat_member updates（不推进主循环 offset）。
+        /// 用于 Panel 恢复/手动同步时发现新加入的频道。
+        /// </summary>
+        private static async Task<List<JsonElement>?> QuickCollectMyChatMemberAsync(
+            string token,
+            long startOffset,
+            TelegramBotApiClient botApi,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            var pending = new List<JsonElement>();
+            long offset = startOffset;
+
+            // 最多尝试 20 次（2000 条），避免无限循环
+            for (var i = 0; i < 20; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var updates = await botApi.CallAsync(token, "getUpdates", new Dictionary<string, string?>
+                    {
+                        ["offset"] = offset.ToString(),
+                        ["timeout"] = "0",  // 快速返回，不长轮询
+                        ["limit"] = "100",
+                        ["allowed_updates"] = AllowedMyChatMemberOnlyJson
+                    }, cancellationToken);
+
+                    if (updates.ValueKind != JsonValueKind.Array)
+                        break;
+
+                    long? maxUpdateId = null;
+                    foreach (var u in updates.EnumerateArray())
+                    {
+                        if (!TryGetUpdateId(u, out var id))
+                            continue;
+
+                        maxUpdateId = maxUpdateId.HasValue ? Math.Max(maxUpdateId.Value, id) : id;
+
+                        if (u.ValueKind == JsonValueKind.Object && u.TryGetProperty("my_chat_member", out _))
+                        {
+                            pending.Add(u.Clone());
+                            if (pending.Count > PendingMyChatMemberMax)
+                                pending.RemoveAt(0);
+                        }
+                    }
+
+                    if (!maxUpdateId.HasValue)
+                        break;
+
+                    offset = maxUpdateId.Value + 1;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "QuickCollectMyChatMember failed at offset {Offset}", offset);
+                    break;
+                }
+            }
+
+            if (pending.Count > 0)
+                logger.LogInformation("QuickCollectMyChatMember collected {Count} my_chat_member updates", pending.Count);
+
+            return pending.Count > 0 ? pending : null;
         }
 
         public BotUpdateSubscription Subscribe()

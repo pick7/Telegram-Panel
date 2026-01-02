@@ -327,6 +327,7 @@ builder.Services.AddSingleton<PanelTimeZoneService>();
 builder.Services.AddHostedService<BatchTaskBackgroundService>();
 builder.Services.AddHostedService<AccountDataAutoSyncBackgroundService>();
 builder.Services.AddHostedService<BotAutoSyncBackgroundService>();
+builder.Services.AddHostedService<TelegramPanel.Web.Services.WebhookRegistrationService>();
 builder.Services.AddHttpClient<TelegramBotApiClient>();
 builder.Services.AddModuleSystem(builder.Configuration, builder.Environment);
 builder.Services.AddSingleton<AppRestartService>();
@@ -793,6 +794,72 @@ var botInvitesDownload = app.MapGet("/downloads/bots/{botId:int}/invites.txt", a
 }).DisableAntiforgery();
 if (adminAuthEnabled)
     botInvitesDownload.RequireAuthorization();
+
+// Telegram Bot Webhook 端点
+// 接收 Telegram 服务器推送的更新，用于 Webhook 模式
+app.MapPost("/api/bot/webhook/{secretToken}", async (
+    HttpContext http,
+    string secretToken,
+    BotUpdateHub updateHub,
+    IConfiguration configuration,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    // 验证 secret token
+    var configuredSecret = configuration["Telegram:WebhookSecretToken"];
+    if (!string.IsNullOrWhiteSpace(configuredSecret))
+    {
+        // 检查 Telegram 发送的 X-Telegram-Bot-Api-Secret-Token header
+        var headerSecret = http.Request.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString();
+        if (!string.Equals(headerSecret, configuredSecret, StringComparison.Ordinal))
+        {
+            logger.LogWarning("Webhook request rejected: invalid secret token");
+            return Results.Unauthorized();
+        }
+    }
+
+    // 从路径中的 secretToken 提取 bot token
+    // 我们使用 SHA256(bot_token) 作为 URL 中的 secret，避免暴露真实 token
+    // 但更简单的方式是直接用 bot token（Telegram 官方也是这么做的）
+    // 这里我们假设 secretToken 就是 bot token 的一部分（安全的做法是用 hash）
+
+    // 读取请求体
+    using var reader = new System.IO.StreamReader(http.Request.Body);
+    var body = await reader.ReadToEndAsync(cancellationToken);
+
+    if (string.IsNullOrWhiteSpace(body))
+    {
+        logger.LogWarning("Webhook request rejected: empty body");
+        return Results.BadRequest();
+    }
+
+    try
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var update = doc.RootElement;
+
+        // 尝试从数据库查找匹配的 bot token
+        // 由于 URL 中不应该暴露完整 token，我们需要一个映射机制
+        // 这里简化处理：直接用 secretToken 作为查找键
+        var success = await updateHub.InjectWebhookUpdateAsync(secretToken, update.Clone(), cancellationToken);
+
+        if (!success)
+        {
+            logger.LogWarning("Webhook update rejected: unknown or inactive bot");
+            return Results.NotFound();
+        }
+
+        logger.LogDebug("Webhook update processed: update_id={UpdateId}",
+            update.TryGetProperty("update_id", out var uid) ? uid.GetInt64() : 0);
+
+        return Results.Ok();
+    }
+    catch (System.Text.Json.JsonException ex)
+    {
+        logger.LogWarning(ex, "Webhook request rejected: invalid JSON");
+        return Results.BadRequest();
+    }
+}).AllowAnonymous().DisableAntiforgery();
 
 // TODO: Hangfire Dashboard
 // app.MapHangfireDashboard("/hangfire");

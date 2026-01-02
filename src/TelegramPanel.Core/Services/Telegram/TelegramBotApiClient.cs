@@ -189,6 +189,83 @@ public class TelegramBotApiClient
         return result.Clone();
     }
 
+    /// <summary>
+    /// 设置 Webhook URL。
+    /// </summary>
+    /// <param name="token">Bot Token</param>
+    /// <param name="url">Webhook URL（必须是 HTTPS）</param>
+    /// <param name="secretToken">可选的 secret token，用于验证请求来源</param>
+    /// <param name="allowedUpdates">允许的更新类型 JSON 数组，如 ["message","my_chat_member"]</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    public async Task SetWebhookAsync(
+        string token,
+        string url,
+        string? secretToken = null,
+        string? allowedUpdates = null,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new Dictionary<string, string?>
+        {
+            ["url"] = url,
+            ["drop_pending_updates"] = "false",
+            ["max_connections"] = "40"
+        };
+
+        if (!string.IsNullOrWhiteSpace(secretToken))
+            parameters["secret_token"] = secretToken;
+
+        if (!string.IsNullOrWhiteSpace(allowedUpdates))
+            parameters["allowed_updates"] = allowedUpdates;
+
+        await CallAsync(token, "setWebhook", parameters, cancellationToken);
+        _logger.LogInformation("Webhook set for bot: url={Url}", url);
+    }
+
+    /// <summary>
+    /// 删除 Webhook 并切换回 getUpdates 模式。
+    /// </summary>
+    public async Task DeleteWebhookAsync(string token, bool dropPendingUpdates = false, CancellationToken cancellationToken = default)
+    {
+        await CallAsync(token, "deleteWebhook", new Dictionary<string, string?>
+        {
+            ["drop_pending_updates"] = dropPendingUpdates ? "true" : "false"
+        }, cancellationToken);
+        _logger.LogInformation("Webhook deleted for bot");
+    }
+
+    /// <summary>
+    /// 获取当前 Webhook 信息。
+    /// </summary>
+    public async Task<WebhookInfo> GetWebhookInfoAsync(string token, CancellationToken cancellationToken = default)
+    {
+        var result = await CallAsync(token, "getWebhookInfo", new Dictionary<string, string?>(), cancellationToken);
+
+        var url = result.TryGetProperty("url", out var urlEl) ? urlEl.GetString() : null;
+        var hasCustomCert = result.TryGetProperty("has_custom_certificate", out var certEl) && certEl.GetBoolean();
+        var pendingCount = result.TryGetProperty("pending_update_count", out var pendingEl) ? pendingEl.GetInt32() : 0;
+        var lastErrorDate = result.TryGetProperty("last_error_date", out var errDateEl) ? errDateEl.GetInt64() : 0;
+        var lastErrorMessage = result.TryGetProperty("last_error_message", out var errMsgEl) ? errMsgEl.GetString() : null;
+
+        return new WebhookInfo(
+            Url: url,
+            HasCustomCertificate: hasCustomCert,
+            PendingUpdateCount: pendingCount,
+            LastErrorDate: lastErrorDate > 0 ? DateTimeOffset.FromUnixTimeSeconds(lastErrorDate).UtcDateTime : null,
+            LastErrorMessage: lastErrorMessage
+        );
+    }
+
+    public sealed record WebhookInfo(
+        string? Url,
+        bool HasCustomCertificate,
+        int PendingUpdateCount,
+        DateTime? LastErrorDate,
+        string? LastErrorMessage
+    )
+    {
+        public bool IsActive => !string.IsNullOrWhiteSpace(Url);
+    }
+
     private static string BuildUrl(string token, string method, IReadOnlyDictionary<string, string?> query)
     {
         var sb = new StringBuilder();

@@ -90,6 +90,46 @@ https://faka.boxmoe.eu.org/
 - 系统设置本地覆盖：`./docker-data/appsettings.local.json`
 - 后台登录凭据文件：`./docker-data/admin_auth.json`
 
+### Bot Webhook 模式（可选）
+
+> **💡 提示**：如果你不使用「Bot 频道管理」功能，可以跳过此节。
+
+默认情况下，Bot 使用**长轮询（Long Polling）**模式接收更新。**生产环境建议使用 Webhook 模式**，优势如下：
+
+- ✅ 更低的资源消耗（无需持续轮询）
+- ✅ 更快的响应速度（Telegram 主动推送）
+- ✅ 更适合高流量/多 Bot 场景
+
+```yaml
+# docker-compose.yml 中添加/修改以下配置
+environment:
+  # 启用 Webhook 模式（生产环境推荐）
+  Telegram__WebhookEnabled: "true"
+  # Webhook 公网基础 URL（必须是 HTTPS）
+  Telegram__WebhookBaseUrl: "https://your-domain.com"
+  # Webhook 验证密钥（建议使用随机字符串，用于验证 Telegram 请求来源）
+  Telegram__WebhookSecretToken: "your-random-secret-token"
+  # 启用自动同步（Bot 加入新频道后自动添加到列表）
+  Telegram__BotAutoSyncEnabled: "true"
+```
+
+**配置说明：**
+
+| 配置项 | 说明 |
+|--------|------|
+| `WebhookEnabled` | 设为 `true` 启用 Webhook 模式；默认 `false` 使用轮询 |
+| `WebhookBaseUrl` | 你的公网 HTTPS 地址（Telegram 要求必须 HTTPS） |
+| `WebhookSecretToken` | 验证密钥，Telegram 会在请求头中携带此值供校验 |
+| `BotAutoSyncEnabled` | 设为 `true` 启用自动同步；Bot 加入新频道后自动添加 |
+
+**注意事项：**
+
+- Webhook 模式**必须使用 HTTPS**，Telegram 不支持 HTTP
+- 启用 Webhook 后，系统会**自动在启动时**为所有活跃 Bot 注册 Webhook
+- 如果你使用反向代理，确保 `/api/bot/webhook/*` 路径可以被外部访问
+- 同一个 Bot Token 同时只能使用一种模式（Webhook 或 Long Polling），切换模式会自动覆盖
+- 如果不需要 Bot 频道管理功能，可以保持默认配置（`WebhookEnabled: "false"`）
+
 ### 更新升级
 
 #### 🔄 正常更新流程

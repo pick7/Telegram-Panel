@@ -18,6 +18,15 @@ public class BotRepository : Repository<Bot>, IBotRepository
         return await _dbSet.FirstOrDefaultAsync(x => x.Name == name);
     }
 
+    public async Task<Bot?> GetByTokenAsync(string token)
+    {
+        token = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(token))
+            return null;
+
+        return await _dbSet.FirstOrDefaultAsync(x => x.Token == token);
+    }
+
     public async Task<IEnumerable<Bot>> GetAllWithStatsAsync()
     {
         // 只用于列表显示统计信息，避免一次性加载全部频道详情

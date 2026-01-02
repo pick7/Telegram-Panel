@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Data.Repositories;
@@ -11,31 +12,122 @@ namespace TelegramPanel.Core.Services.Telegram;
 /// Bot API 更新分发 Hub：
 /// - 同一个 Bot Token 只允许一个 getUpdates 长轮询，否则会 409 Conflict
 /// - 这里为每个 botId 维护一个单一轮询器，并把同一份 updates 广播给多个消费者（模块/后台服务）
+/// - 支持 Webhook 模式：外部调用 InjectWebhookUpdateAsync 注入更新
 /// </summary>
 public sealed class BotUpdateHub : IAsyncDisposable
 {
     // 固定允许的更新类型：覆盖当前项目使用场景（转发/监听/入群事件）
-    private const string AllowedUpdatesJson = "[\"message\",\"edited_message\",\"channel_post\",\"edited_channel_post\",\"my_chat_member\"]";
+    public const string AllowedUpdatesJson = "[\"message\",\"edited_message\",\"channel_post\",\"edited_channel_post\",\"my_chat_member\"]";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TelegramBotApiClient _botApi;
     private readonly ILogger<BotUpdateHub> _logger;
+    private readonly bool _webhookEnabled;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, BotPoller> _pollersByToken = new(StringComparer.Ordinal);
 
+    // Webhook 模式下的接收器（token -> receiver），不启动轮询
+    private readonly Dictionary<string, BotWebhookReceiver> _webhookReceivers = new(StringComparer.Ordinal);
+
     public BotUpdateHub(
         IServiceScopeFactory scopeFactory,
         TelegramBotApiClient botApi,
+        IConfiguration configuration,
         ILogger<BotUpdateHub> logger)
     {
         _scopeFactory = scopeFactory;
         _botApi = botApi;
         _logger = logger;
+
+        // 检查是否启用 Webhook 模式
+        _webhookEnabled = string.Equals(
+            configuration["Telegram:WebhookEnabled"]?.Trim(),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Webhook 模式：注入 Telegram 推送的 update。
+    /// 返回 true 表示成功处理，false 表示 token 无效或 bot 未启用。
+    /// </summary>
+    public async Task<bool> InjectWebhookUpdateAsync(string token, JsonElement update, CancellationToken cancellationToken)
+    {
+        token = (token ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_webhookReceivers.TryGetValue(token, out var receiver))
+            {
+                // 验证 token 有效性并创建 receiver
+                using var scope = _scopeFactory.CreateScope();
+                var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+                var bot = await botRepo.GetByTokenAsync(token);
+                if (bot == null || !bot.IsActive)
+                    return false;
+
+                receiver = new BotWebhookReceiver(bot.Id, token, _scopeFactory, _logger);
+                _webhookReceivers[token] = receiver;
+            }
+
+            receiver.Inject(update);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Webhook 模式下订阅更新（不启动轮询）。
+    /// </summary>
+    public async Task<BotUpdateSubscription> SubscribeWebhookAsync(int botId, CancellationToken cancellationToken)
+    {
+        if (botId <= 0)
+            throw new ArgumentException("botId 无效", nameof(botId));
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+            var bot = await botRepo.GetByIdAsync(botId);
+            if (bot == null)
+                throw new InvalidOperationException($"Bot 不存在：{botId}");
+            if (!bot.IsActive)
+                throw new InvalidOperationException("Bot 未启用");
+
+            var token = (bot.Token ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(token))
+                throw new InvalidOperationException("Bot Token 为空");
+
+            if (!_webhookReceivers.TryGetValue(token, out var receiver))
+            {
+                receiver = new BotWebhookReceiver(botId, token, _scopeFactory, _logger);
+                _webhookReceivers[token] = receiver;
+            }
+
+            return receiver.Subscribe();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<BotUpdateSubscription> SubscribeAsync(int botId, CancellationToken cancellationToken)
     {
+        // Webhook 模式下自动使用 Webhook 订阅（不启动轮询）
+        if (_webhookEnabled)
+        {
+            _logger.LogDebug("Webhook mode enabled, using webhook subscription for bot {BotId}", botId);
+            return await SubscribeWebhookAsync(botId, cancellationToken);
+        }
+
         if (botId <= 0)
             throw new ArgumentException("botId 无效", nameof(botId));
 
@@ -73,12 +165,16 @@ public sealed class BotUpdateHub : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         List<BotPoller> pollers;
+        List<BotWebhookReceiver> receivers;
 
         await _gate.WaitAsync();
         try
         {
             pollers = _pollersByToken.Values.ToList();
             _pollersByToken.Clear();
+
+            receivers = _webhookReceivers.Values.ToList();
+            _webhookReceivers.Clear();
         }
         finally
         {
@@ -89,6 +185,12 @@ public sealed class BotUpdateHub : IAsyncDisposable
         {
             try { await p.DisposeAsync(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Dispose bot poller failed: {BotId}", p.BotId); }
+        }
+
+        foreach (var r in receivers)
+        {
+            try { r.Dispose(); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Dispose webhook receiver failed: {BotId}", r.BotId); }
         }
     }
 
@@ -608,6 +710,162 @@ public sealed class BotUpdateHub : IAsyncDisposable
             }
 
             _cts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Webhook 模式的更新接收器（不启动轮询，仅接收注入的 update 并广播）。
+    /// </summary>
+    private sealed class BotWebhookReceiver
+    {
+        private static readonly BoundedChannelOptions SubscriberChannelOptions = new(512)
+        {
+            SingleWriter = true,
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.DropOldest
+        };
+
+        private const int PendingMyChatMemberMax = 2000;
+
+        private readonly int _botId;
+        private readonly string _token;
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ILogger _logger;
+
+        private readonly object _subscribersLock = new();
+        private readonly Dictionary<Guid, Channel<JsonElement>> _subscribers = new();
+
+        private readonly object _pendingLock = new();
+        private readonly Queue<JsonElement> _pendingMyChatMember = new();
+
+        public int BotId => _botId;
+
+        public BotWebhookReceiver(int botId, string token, IServiceScopeFactory scopeFactory, ILogger logger)
+        {
+            _botId = botId;
+            _token = token;
+            _scopeFactory = scopeFactory;
+            _logger = logger;
+        }
+
+        public void Inject(JsonElement update)
+        {
+            if (update.ValueKind != JsonValueKind.Object)
+                return;
+
+            // 缓存 my_chat_member（用于手动同步）
+            if (update.TryGetProperty("my_chat_member", out _))
+            {
+                lock (_pendingLock)
+                {
+                    _pendingMyChatMember.Enqueue(update.Clone());
+                    while (_pendingMyChatMember.Count > PendingMyChatMemberMax)
+                        _pendingMyChatMember.Dequeue();
+                }
+            }
+
+            // 保存 update_id 到数据库
+            if (update.TryGetProperty("update_id", out var updateIdEl) && updateIdEl.TryGetInt64(out var updateId))
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var scope = _scopeFactory.CreateScope();
+                        var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+                        var bot = await botRepo.GetByIdAsync(_botId);
+                        if (bot != null && (!bot.LastUpdateId.HasValue || updateId > bot.LastUpdateId.Value))
+                        {
+                            bot.LastUpdateId = updateId;
+                            await botRepo.UpdateAsync(bot);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to save webhook update_id: {UpdateId}", updateId);
+                    }
+                });
+            }
+
+            // 广播给订阅者
+            List<Channel<JsonElement>> targets;
+            lock (_subscribersLock)
+            {
+                if (_subscribers.Count == 0)
+                    return;
+                targets = _subscribers.Values.ToList();
+            }
+
+            foreach (var ch in targets)
+            {
+                try
+                {
+                    ch.Writer.TryWrite(update.Clone());
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Webhook broadcast failed: botId={BotId}", _botId);
+                }
+            }
+        }
+
+        public BotUpdateSubscription Subscribe()
+        {
+            var id = Guid.NewGuid();
+            var ch = Channel.CreateBounded<JsonElement>(SubscriberChannelOptions);
+
+            lock (_subscribersLock)
+            {
+                _subscribers[id] = ch;
+            }
+
+            // 把缓存的 my_chat_member 写入新订阅者
+            List<JsonElement>? pending = null;
+            lock (_pendingLock)
+            {
+                if (_pendingMyChatMember.Count > 0)
+                {
+                    pending = _pendingMyChatMember.ToList();
+                    _pendingMyChatMember.Clear();
+                }
+            }
+
+            if (pending != null)
+            {
+                foreach (var u in pending)
+                    ch.Writer.TryWrite(u);
+            }
+
+            return new BotUpdateSubscription(_botId, ch.Reader, async () =>
+            {
+                Channel<JsonElement>? removed = null;
+                lock (_subscribersLock)
+                {
+                    if (_subscribers.Remove(id, out var existing))
+                        removed = existing;
+                }
+
+                if (removed != null)
+                {
+                    try { removed.Writer.TryComplete(); }
+                    catch { /* ignore */ }
+                }
+
+                await ValueTask.CompletedTask;
+            });
+        }
+
+        public void Dispose()
+        {
+            lock (_subscribersLock)
+            {
+                foreach (var ch in _subscribers.Values)
+                {
+                    try { ch.Writer.TryComplete(); }
+                    catch { /* ignore */ }
+                }
+                _subscribers.Clear();
+            }
         }
     }
 }

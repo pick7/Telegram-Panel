@@ -25,5 +25,13 @@ services:
       # 默认关闭，避免频繁调用 Telegram API；可在系统设置里开启并保存到 /data/appsettings.local.json
       Sync__AutoSyncEnabled: "false"
 
-      # 默认关闭 bot 轮询自动同步（需要时可手动同步）
-      Telegram__BotAutoSyncEnabled: "false"
+      # 默认关闭 bot 轮询自动同步（需要时可手动同步），使用Webhook建议开启
+      Telegram__BotAutoSyncEnabled: "true"
+
+      # ========== Webhook 模式配置 ==========
+      # 启用 Webhook 模式（启用后将使用 Webhook 替代轮询接收更新）
+      Telegram__WebhookEnabled: "false"
+      # Webhook 公网基础 URL（必须是 HTTPS，例如: https://your-domain.com）
+      Telegram__WebhookBaseUrl: ""
+      # Webhook 验证密钥（用于验证 Telegram 请求，建议使用随机字符串）
+      Telegram__WebhookSecretToken: ""

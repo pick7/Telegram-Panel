@@ -100,17 +100,35 @@ https://faka.boxmoe.eu.org/
 - ✅ 更快的响应速度（Telegram 主动推送）
 - ✅ 更适合高流量/多 Bot 场景
 
+不建议直接改 `docker-compose.yml`（否则后续 `git pull` 更新时容易冲突/被覆盖）。推荐用以下两种方式之一做“本地覆盖”：
+
+#### 方式 A：使用 `.env`（推荐）
+
+项目已支持通过 `.env` 注入 Webhook 配置；`.env` 不应提交到仓库（已加入 `.gitignore`）。
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，按需填写：
+
+```env
+TP_TELEGRAM_WEBHOOK_ENABLED=true
+TP_TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.com
+TP_TELEGRAM_WEBHOOK_SECRET_TOKEN=your-random-secret-token
+```
+
+#### 方式 B：使用 `docker-compose.override.yml`
+
+在项目根目录创建 `docker-compose.override.yml`（不提交到仓库，已加入 `.gitignore`）：
+
 ```yaml
-# docker-compose.yml 中添加/修改以下配置
-environment:
-  # 启用 Webhook 模式（生产环境推荐）
-  Telegram__WebhookEnabled: "true"
-  # Webhook 公网基础 URL（必须是 HTTPS）
-  Telegram__WebhookBaseUrl: "https://your-domain.com"
-  # Webhook 验证密钥（建议使用随机字符串，用于验证 Telegram 请求来源）
-  Telegram__WebhookSecretToken: "your-random-secret-token"
-  # 启用自动同步（Bot 加入新频道后自动添加到列表）
-  Telegram__BotAutoSyncEnabled: "true"
+services:
+  telegram-panel:
+    environment:
+      Telegram__WebhookEnabled: "true"
+      Telegram__WebhookBaseUrl: "https://your-domain.com"
+      Telegram__WebhookSecretToken: "your-random-secret-token"
 ```
 
 **配置说明：**

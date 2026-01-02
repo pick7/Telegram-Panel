@@ -30,8 +30,8 @@ services:
 
       # ========== Webhook 模式配置 ==========
       # 启用 Webhook 模式（启用后将使用 Webhook 替代轮询接收更新）
-      Telegram__WebhookEnabled: "false"
+      Telegram__WebhookEnabled: "${TP_TELEGRAM_WEBHOOK_ENABLED:-false}"
       # Webhook 公网基础 URL（必须是 HTTPS，例如: https://your-domain.com）
-      Telegram__WebhookBaseUrl: ""
+      Telegram__WebhookBaseUrl: "${TP_TELEGRAM_WEBHOOK_BASE_URL:-}"
       # Webhook 验证密钥（用于验证 Telegram 请求，建议使用随机字符串）
-      Telegram__WebhookSecretToken: ""
+      Telegram__WebhookSecretToken: "${TP_TELEGRAM_WEBHOOK_SECRET_TOKEN:-}"

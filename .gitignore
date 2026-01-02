@@ -61,6 +61,10 @@ x86/
 # Local scratch
 todolist
 
+# Docker Compose local overrides / env (do not commit)
+.env
+docker-compose.override.yml
+
 # Docker persistent data
 docker-data/
 

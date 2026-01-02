@@ -19,6 +19,8 @@
                 <MudTextField @bind-Value="newCategoryName" Label="分类名称" Variant="Variant.Outlined" />
                 <MudColorPicker @bind-Value="newCategoryColor" Label="分类颜色" Class="mt-3" />
                 <MudTextField @bind-Value="newCategoryDesc" Label="描述" Variant="Variant.Outlined" Lines="3" Class="mt-3" />
+                <MudSwitch @bind-Value="newCategoryExcludeFromOperations" Color="Color.Primary" Class="mt-3"
+                           Label="排除操作（不出现在创建/批量任务中）" />
             </MudCardContent>
             <MudCardActions>
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
@@ -40,6 +42,7 @@
                         <MudTh>分类名称</MudTh>
                         <MudTh>颜色</MudTh>
                         <MudTh>描述</MudTh>
+                        <MudTh>排除操作</MudTh>
                         <MudTh>账号数量</MudTh>
                         <MudTh>操作</MudTh>
                     </HeaderContent>
@@ -51,6 +54,16 @@
                             <div style="@($"width: 30px; height: 30px; background-color: {context.Color ?? "#9E9E9E"}; border-radius: 4px;")"></div>
                         </MudTd>
                         <MudTd DataLabel="描述">@(context.Description ?? "-")</MudTd>
+                        <MudTd DataLabel="排除操作">
+                            @if (context.ExcludeFromOperations)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning">是</MudChip>
+                            }
+                            else
+                            {
+                                <span>-</span>
+                            }
+                        </MudTd>
                         <MudTd DataLabel="账号数量">@context.Accounts.Count</MudTd>
                         <MudTd DataLabel="操作">
                             <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
@@ -115,6 +128,7 @@
     private string newCategoryName = "";
     private MudColor newCategoryColor = "#1976d2";
     private string newCategoryDesc = "";
+    private bool newCategoryExcludeFromOperations;
     private List<AccountCategory> categories = new();
     private bool loading = true;
 
@@ -215,6 +229,7 @@
                 Name = newCategoryName,
                 Color = newCategoryColor.Value,
                 Description = newCategoryDesc,
+                ExcludeFromOperations = newCategoryExcludeFromOperations,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -226,6 +241,7 @@
             newCategoryName = "";
             newCategoryColor = "#1976d2";
             newCategoryDesc = "";
+            newCategoryExcludeFromOperations = false;
         }
         catch (Exception ex)
         {
@@ -290,6 +306,7 @@
             category.Name = model.Name.Trim();
             category.Color = model.Color;
             category.Description = model.Description;
+            category.ExcludeFromOperations = model.ExcludeFromOperations;
 
             await CategoryManagement.UpdateCategoryAsync(category);
             await LoadCategories();

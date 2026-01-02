@@ -65,7 +65,9 @@
     <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
                Size="Size.Small" Disabled="@(loading || selectedBotId <= 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
         <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchInviteMembers">批量邀请成员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetAdminsByAccount">批量设置管理员（账号执行）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（机器人/ID）</MudMenuItem>
         <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
     </MudMenu>
@@ -442,6 +444,58 @@
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
         var dialog = DialogService.Show<BotSetAdminsDialog>("批量设置管理员", parameters, options);
+        var result = await dialog.Result;
+        if (!result.Canceled)
+        {
+            // 管理员设置后不影响本地数据，但用户可能期望刷新一下
+            await LoadBotData();
+        }
+    }
+
+    private async Task OpenBatchInviteMembers()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["BotId"] = selectedBotId,
+            ["Channels"] = selected.ToList()
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<BotChannelBatchInviteDialog>("批量邀请成员", parameters, options);
+        var result = await dialog.Result;
+        if (!result.Canceled)
+        {
+            // 邀请不影响本地数据，但用户可能期望刷新一下
+            await LoadBotData();
+        }
+    }
+
+    private async Task OpenBatchSetAdminsByAccount()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["BotId"] = selectedBotId,
+            ["Channels"] = selected.ToList()
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<BotChannelBatchAdminsDialog>("批量设置管理员（账号执行）", parameters, options);
         var result = await dialog.Result;
         if (!result.Canceled)
         {

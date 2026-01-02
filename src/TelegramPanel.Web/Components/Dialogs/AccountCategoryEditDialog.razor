@@ -9,6 +9,8 @@
             <MudTextField T="string" @bind-Value="name" Label="分类名称" Variant="Variant.Outlined" Required="true" />
             <MudColorPicker @bind-Value="color" Label="分类颜色" Class="mt-2" />
             <MudTextField T="string" @bind-Value="description" Label="描述" Variant="Variant.Outlined" Lines="3" Class="mt-2" />
+            <MudSwitch @bind-Value="excludeFromOperations" Color="Color.Primary" Class="mt-2"
+                       Label="排除操作（不出现在创建/批量任务中）" />
         </MudStack>
     </DialogContent>
     <DialogActions>
@@ -28,12 +30,14 @@
     private string name = "";
     private MudColor color = "#9E9E9E";
     private string? description;
+    private bool excludeFromOperations;
 
     protected override void OnParametersSet()
     {
         name = (Category?.Name ?? "").Trim();
         description = (Category?.Description ?? "").Trim();
         color = string.IsNullOrWhiteSpace(Category?.Color) ? "#9E9E9E" : Category!.Color!;
+        excludeFromOperations = Category?.ExcludeFromOperations ?? false;
     }
 
     private void Cancel()
@@ -46,9 +50,9 @@
         var model = new AccountCategoryEditModel(
             Name: name.Trim(),
             Color: string.IsNullOrWhiteSpace(color.Value) ? null : color.Value,
-            Description: string.IsNullOrWhiteSpace(description) ? null : description!.Trim());
+            Description: string.IsNullOrWhiteSpace(description) ? null : description!.Trim(),
+            ExcludeFromOperations: excludeFromOperations);
 
         MudDialog.Close(DialogResult.Ok(model));
     }
 }
-

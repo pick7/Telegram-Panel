@@ -10,7 +10,7 @@
     <DialogContent>
         <MudStack Spacing="2">
             <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
-                <span>将使用“执行账号”邀请用户加入所选频道。支持输入多个用户名，换行分隔。</span>
+                <span>将使用“执行账号”邀请用户加入所选频道（默认：每个频道的创建账号）。支持输入多个用户名，换行分隔。</span>
                 <MudText Typo="Typo.body2" Class="mt-1">
                     支持：<b>@@username</b>、<b>username</b>
                 </MudText>
@@ -38,6 +38,7 @@
             </MudGrid>
 
             <MudSelect @bind-Value="selectedAccountId" Label="执行账号" Variant="Variant.Outlined" Dense="true">
+                <MudSelectItem Value="0">每个频道创建账号（默认）</MudSelectItem>
                 @foreach (var a in accounts)
                 {
                     <MudSelectItem Value="@a.Id">@FormatAccountLabel(a)</MudSelectItem>
@@ -123,14 +124,25 @@
             .ToList();
 
         var all = (await AccountManagement.GetAllAccountsAsync()).ToList();
-        accounts.AddRange(all.Where(a => a.IsActive));
-
-        if (DefaultAccountId > 0 && accounts.Any(a => a.Id == DefaultAccountId))
-            selectedAccountId = DefaultAccountId;
-        else
-            selectedAccountId = accounts.FirstOrDefault()?.Id ?? 0;
+        accounts.AddRange(all.Where(a => a.IsActive && a.Category?.ExcludeFromOperations != true));
+        selectedAccountId = 0;
 
         await ReloadPresetsAsync();
+    }
+
+    private int? ResolveExecuteAccountId(Channel channel)
+    {
+        if (channel == null)
+            return null;
+
+        if (selectedAccountId > 0)
+            return selectedAccountId;
+
+        var creatorId = channel.CreatorAccountId;
+        if (creatorId == null || creatorId.Value <= 0)
+            return null;
+
+        return accounts.Any(a => a.Id == creatorId.Value) ? creatorId.Value : null;
     }
 
     private async Task ReloadPresetsAsync()
@@ -218,12 +230,6 @@
         if (running)
             return;
 
-        if (selectedAccountId <= 0)
-        {
-            Snackbar.Add("请选择一个执行账号", Severity.Warning);
-            return;
-        }
-
         var usernames = ParseUsernames(usernamesText);
         if (usernames.Count == 0)
         {
@@ -258,6 +264,16 @@
         {
             foreach (var ch in channels)
             {
+                var executeAccountId = ResolveExecuteAccountId(ch);
+                if (executeAccountId == null)
+                {
+                    done += usernames.Count;
+                    failed += usernames.Count;
+                    failures.Add($"{ch.Title}：无可用执行账号（将使用创建账号执行；但该频道无创建账号/创建账号不可用）");
+                    StateHasChanged();
+                    continue;
+                }
+
                 foreach (var username in usernames)
                 {
                     _cts.Token.ThrowIfCancellationRequested();
@@ -267,7 +283,7 @@
 
                     try
                     {
-                        var result = await ChannelService.InviteUserAsync(selectedAccountId, ch.TelegramId, username);
+                        var result = await ChannelService.InviteUserAsync(executeAccountId.Value, ch.TelegramId, username);
                         if (!result.Success)
                         {
                             failed++;

@@ -101,7 +101,9 @@
         try
         {
             var accountList = await AccountManagement.GetActiveAccountsAsync();
-            accounts = accountList.ToList();
+            accounts = accountList
+                .Where(a => a.Category?.ExcludeFromOperations != true)
+                .ToList();
         }
         catch (Exception ex)
         {

@@ -60,6 +60,7 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
             entity.Property(e => e.Color).HasMaxLength(20);
             entity.Property(e => e.Description).HasMaxLength(500);
+            entity.Property(e => e.ExcludeFromOperations).HasDefaultValue(false);
 
             entity.HasIndex(e => e.Name).IsUnique();
         });

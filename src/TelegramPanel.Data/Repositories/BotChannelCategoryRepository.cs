@@ -9,6 +9,12 @@ public class BotChannelCategoryRepository : Repository<BotChannelCategory>, IBot
     {
     }
 
+    public async Task<IEnumerable<BotChannelCategory>> GetForBotAsync(int botId)
+    {
+        // 分类已全局化：兼容旧模块（忽略 botId）
+        return await GetAllOrderedAsync();
+    }
+
     public async Task<IEnumerable<BotChannelCategory>> GetAllOrderedAsync()
     {
         return await _dbSet

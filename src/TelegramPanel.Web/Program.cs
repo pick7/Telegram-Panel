@@ -341,6 +341,7 @@ builder.Services.AddScoped<AccountExportService>();
 builder.Services.AddScoped<DataSyncService>();
 builder.Services.AddScoped<UiPreferencesService>();
 builder.Services.AddScoped<BotAdminPresetsService>();
+builder.Services.AddScoped<BotChannelAdminDefaultsService>();
 builder.Services.AddScoped<ChannelAdminDefaultsService>();
 builder.Services.AddScoped<ChannelAdminPresetsService>();
 builder.Services.AddScoped<ChannelInvitePresetsService>();

@@ -2,6 +2,7 @@
 @inject TelegramPanel.Core.Services.Telegram.BotTelegramService BotTelegram
 @inject ISnackbar Snackbar
 @inject TelegramPanel.Web.Services.BotAdminPresetsService PresetsService
+@inject TelegramPanel.Web.Services.BotChannelAdminDefaultsService DefaultsService
 @inject IDialogService DialogService
 @using System.Linq
 
@@ -64,6 +65,9 @@
                     <MudCheckBox @bind-Value="rights.ManageChat" Label="管理频道" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.ChangeInfo" Label="修改频道信息" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
                     <MudCheckBox @bind-Value="rights.InviteUsers" Label="邀请用户" />
                 </MudItem>
                 <MudItem xs="12" sm="6">
@@ -85,6 +89,10 @@
                     <MudCheckBox @bind-Value="rights.PromoteMembers" Label="添加管理员" />
                 </MudItem>
             </MudGrid>
+
+            <MudStack Row="true" Spacing="1" Style="flex-wrap: wrap;">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsDefaultRightsAsync" Disabled="@saving">保存为默认权限</MudButton>
+            </MudStack>
 
             <MudText Typo="Typo.caption" Color="Color.Secondary">
                 将对已选频道批量执行 promoteChatMember；失败会给出原因（常见：机器人不是管理员/缺少"添加管理员"权限/目标用户不在频道内）。
@@ -121,13 +129,63 @@
     private RightsModel rights = new();
     private List<TelegramPanel.Web.Services.BotAdminPreset> Presets { get; set; } = new();
 
+    private TelegramPanel.Core.Services.Telegram.BotTelegramService.BotAdminRights SelectedRights => new(
+        ManageChat: rights.ManageChat,
+        ChangeInfo: rights.ChangeInfo,
+        PostMessages: rights.PostMessages,
+        EditMessages: rights.EditMessages,
+        DeleteMessages: rights.DeleteMessages,
+        InviteUsers: rights.InviteUsers,
+        RestrictMembers: rights.RestrictMembers,
+        PinMessages: rights.PinMessages,
+        PromoteMembers: rights.PromoteMembers
+    );
+
     protected override async Task OnInitializedAsync()
     {
-        // 默认给出一个"常用"权限组合，减少操作成本
-        rights.ManageChat = true;
-        rights.InviteUsers = true;
+        // 默认权限：优先读取上次保存的默认值；否则给出一个"常用"权限组合，减少操作成本
+        var defaults = await DefaultsService.GetAsync();
+        if (defaults?.Rights != null)
+        {
+            ApplyRights(defaults.Rights);
+        }
+        else
+        {
+            rights.ManageChat = true;
+            rights.ChangeInfo = true;
+            rights.InviteUsers = true;
+        }
 
         await ReloadPresetsAsync();
+    }
+
+    private void ApplyRights(TelegramPanel.Core.Services.Telegram.BotTelegramService.BotAdminRights selected)
+    {
+        rights = new RightsModel
+        {
+            ManageChat = selected.ManageChat,
+            ChangeInfo = selected.ChangeInfo,
+            PostMessages = selected.PostMessages,
+            EditMessages = selected.EditMessages,
+            DeleteMessages = selected.DeleteMessages,
+            InviteUsers = selected.InviteUsers,
+            RestrictMembers = selected.RestrictMembers,
+            PinMessages = selected.PinMessages,
+            PromoteMembers = selected.PromoteMembers
+        };
+    }
+
+    private async Task SaveAsDefaultRightsAsync()
+    {
+        try
+        {
+            await DefaultsService.SaveAsync(new TelegramPanel.Web.Services.BotChannelAdminDefaults(SelectedRights));
+            Snackbar.Add("已保存为默认权限", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存默认权限失败：{ex.Message}", Severity.Error);
+        }
     }
 
     private async Task ReloadPresetsAsync()
@@ -241,16 +299,7 @@
             var failOps = 0;
             string? firstFailure = null;
 
-            var rightsArg = new TelegramPanel.Core.Services.Telegram.BotTelegramService.BotAdminRights(
-                ManageChat: rights.ManageChat,
-                PostMessages: rights.PostMessages,
-                EditMessages: rights.EditMessages,
-                DeleteMessages: rights.DeleteMessages,
-                InviteUsers: rights.InviteUsers,
-                RestrictMembers: rights.RestrictMembers,
-                PinMessages: rights.PinMessages,
-                PromoteMembers: rights.PromoteMembers
-            );
+            var rightsArg = SelectedRights;
 
             foreach (var uid in userIds)
             {
@@ -325,6 +374,7 @@
     private sealed class RightsModel
     {
         public bool ManageChat { get; set; }
+        public bool ChangeInfo { get; set; }
         public bool PostMessages { get; set; }
         public bool EditMessages { get; set; }
         public bool DeleteMessages { get; set; }

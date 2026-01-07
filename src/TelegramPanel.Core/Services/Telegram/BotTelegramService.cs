@@ -677,8 +677,9 @@ public class BotTelegramService
         }
     }
 
-    public sealed record BotAdminRights(
+public sealed record BotAdminRights(
         bool ManageChat,
+        bool ChangeInfo,
         bool PostMessages,
         bool EditMessages,
         bool DeleteMessages,
@@ -732,6 +733,7 @@ public class BotTelegramService
                     ["chat_id"] = chatId.ToString(),
                     ["user_id"] = userId.ToString(),
                     ["can_manage_chat"] = rights.ManageChat ? "true" : "false",
+                    ["can_change_info"] = rights.ChangeInfo ? "true" : "false",
                     ["can_post_messages"] = rights.PostMessages ? "true" : "false",
                     ["can_edit_messages"] = rights.EditMessages ? "true" : "false",
                     ["can_delete_messages"] = rights.DeleteMessages ? "true" : "false",

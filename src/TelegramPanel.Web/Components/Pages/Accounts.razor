@@ -74,7 +74,7 @@
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchJoinSubscribe">批量加群/订阅（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchLeaveUnsubscribe">批量退群/退订（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword">修改二级密码（已选）</MudMenuItem>
-         <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorRecoveryEmail">批量换绑找回邮箱（Cloud Mail）（已选）</MudMenuItem>
+         <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorRecoveryEmail">批量换绑邮箱（找回+登录）（Cloud Mail）（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="BatchKickAllOtherDevices">批量踢出所有其他设备（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchSetAccountCategory">批量修改分类（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeNickname">批量改昵称（已选）</MudMenuItem>
@@ -397,7 +397,7 @@
             ["AccountIds"] = ids
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
-        DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeTwoFactorRecoveryEmailDialog>("批量换绑找回邮箱", parameters, options);
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeTwoFactorRecoveryEmailDialog>("批量换绑邮箱（找回+登录）", parameters, options);
         await Task.CompletedTask;
     }
 

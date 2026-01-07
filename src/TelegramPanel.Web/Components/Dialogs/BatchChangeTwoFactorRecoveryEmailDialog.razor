@@ -13,7 +13,7 @@
     <DialogContent>
         <MudStack Spacing="2">
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                将使用 Cloud Mail 收取 Telegram 邮件验证码，批量完成“找回邮箱”绑定/换绑并自动确认。
+                将使用 Cloud Mail 收取 Telegram 邮件验证码，批量完成“找回邮箱”绑定/换绑；可选同时变更“登录邮箱”（用于接收登录确认邮件）。
             </MudAlert>
 
             <MudTextField @bind-Value="cloudMailBaseUrl" Label="Cloud Mail URL" Variant="Variant.Outlined" />
@@ -21,7 +21,12 @@
             <MudTextField @bind-Value="domain" Label="邮箱域名" Variant="Variant.Outlined"
                           HelperText="将生成 手机号数字@域名，例如：8413111454444@xx.com" />
 
-            <MudSwitch @bind-Value="createUsers" Label="先在 Cloud Mail 添加邮箱用户（addUser，可选）" Color="Color.Primary" />
+            <MudSwitch @bind-Value="changeLoginEmail" Label="同时修改登录邮箱（用于接收登录确认邮件）" Color="Color.Primary" />
+            @if (changeLoginEmail)
+            {
+                <MudSwitch @bind-Value="trySetLoginEmailWhenMissing" Label="无登录邮箱时也尝试设置（可能失败）" Color="Color.Primary" />
+            }
+
             <MudSwitch @bind-Value="useStoredPasswords" Label="优先使用数据库中保存的原二级密码" Color="Color.Primary" />
 
             @if (!useStoredPasswords)
@@ -96,7 +101,9 @@
     private string cloudMailToken = "";
     private string domain = "";
 
-    private bool createUsers = false;
+    private bool changeLoginEmail = true;
+    private bool trySetLoginEmailWhenMissing;
+
     private bool useStoredPasswords = true;
     private string currentPassword = "";
 
@@ -149,7 +156,7 @@
 
         bool? confirm = await DialogService.ShowMessageBox(
             "确认批量换绑",
-            $"将对 {accounts.Count} 个账号批量换绑找回邮箱，邮箱格式为：{{手机号数字}}@{domain}。是否继续？",
+            $"将对 {accounts.Count} 个账号批量换绑找回邮箱{(changeLoginEmail ? "（并同时修改登录邮箱）" : "")}，邮箱格式为：{{手机号数字}}@{domain}。是否继续？",
             yesText: "继续", cancelText: "取消");
 
         if (confirm != true)
@@ -192,115 +199,219 @@
         if (string.IsNullOrWhiteSpace(email))
             return (false, "手机号无效，无法生成邮箱");
 
+        var messages = new List<string>();
+        var okRecovery = true;
+        var okLogin = true;
+
+        // 1) 找回邮箱（2FA）
         var effectivePassword = useStoredPasswords
             ? (!string.IsNullOrWhiteSpace(account.TwoFactorPassword) ? account.TwoFactorPassword : currentPassword)
             : currentPassword;
 
         effectivePassword = (effectivePassword ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(effectivePassword))
-            return (false, "未提供原二级密码（数据库未保存且未填写统一密码）");
-
-        if (createUsers)
         {
-            try
-            {
-                await CloudMail.AddUsersAsync(cloudMailBaseUrl, cloudMailToken, new[] { email }, cancellationToken: CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                return (false, $"创建邮箱用户失败：{ex.Message}");
-            }
+            okRecovery = false;
+            messages.Add("找回邮箱失败：未提供原二级密码（数据库未保存且未填写统一密码）");
         }
-
-        var startUtc = DateTimeOffset.UtcNow;
-        var (sent, err, _) = await AccountTelegramTools.SetTwoFactorRecoveryEmailAsync(
-            accountId: account.Id,
-            currentPassword: effectivePassword,
-            email: email,
-            cancellationToken: CancellationToken.None);
-
-        if (!sent)
+        else
         {
-            if (autoConfirm && (err ?? "").Contains("EMAIL_UNCONFIRMED", StringComparison.OrdinalIgnoreCase))
+            var startUtc = DateTimeOffset.UtcNow;
+            var (sent, err, _) = await AccountTelegramTools.SetTwoFactorRecoveryEmailAsync(
+                accountId: account.Id,
+                currentPassword: effectivePassword,
+                email: email,
+                cancellationToken: CancellationToken.None);
+
+            if (!sent)
             {
-                var pendingCode = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None, allowOlder: true);
-                if (string.IsNullOrWhiteSpace(pendingCode))
+                okRecovery = false;
+                if (autoConfirm && (err ?? "").Contains("EMAIL_UNCONFIRMED", StringComparison.OrdinalIgnoreCase))
                 {
-                    var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
-                    return (false, $"邮箱未确认但收码超时（{pollTimeoutSeconds}s）：{err}{(string.IsNullOrWhiteSpace(diag) ? "" : "；" + diag)}");
-                }
-
-                var (pendingConfirmed, pendingConfirmErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
-                    accountId: account.Id,
-                    code: pendingCode,
-                    cancellationToken: CancellationToken.None);
-
-                if (!pendingConfirmed)
-                {
-                    if ((pendingConfirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase))
+                    var pendingCode = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None, allowOlder: true);
+                    if (string.IsNullOrWhiteSpace(pendingCode))
                     {
-                        _ = await AccountTelegramTools.ResendTwoFactorRecoveryEmailAsync(account.Id, CancellationToken.None);
-                        var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None, allowOlder: true);
-                        if (!string.IsNullOrWhiteSpace(retryCode))
-                        {
-                            var (retryOk, retryErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
-                                accountId: account.Id,
-                                code: retryCode,
-                                cancellationToken: CancellationToken.None);
-                            if (retryOk)
-                                return (true, "已确认绑定（之前存在待确认邮箱，重发后重试成功）");
+                        var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
+                        messages.Add($"找回邮箱失败：邮箱未确认但收码超时（{pollTimeoutSeconds}s）：{err}{(string.IsNullOrWhiteSpace(diag) ? "" : "；" + diag)}");
+                    }
+                    else
+                    {
+                        var (pendingConfirmed, pendingConfirmErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
+                            accountId: account.Id,
+                            code: pendingCode,
+                            cancellationToken: CancellationToken.None);
 
-                            return (false, $"确认失败：{retryErr}");
+                        if (pendingConfirmed)
+                        {
+                            okRecovery = true;
+                            messages.Add("找回邮箱已确认绑定（之前存在待确认邮箱）");
+                        }
+                        else
+                        {
+                            if ((pendingConfirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _ = await AccountTelegramTools.ResendTwoFactorRecoveryEmailAsync(account.Id, CancellationToken.None);
+                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None, allowOlder: true);
+                                if (!string.IsNullOrWhiteSpace(retryCode))
+                                {
+                                    var (retryOk, retryErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
+                                        accountId: account.Id,
+                                        code: retryCode,
+                                        cancellationToken: CancellationToken.None);
+                                    if (retryOk)
+                                    {
+                                        okRecovery = true;
+                                        messages.Add("找回邮箱已确认绑定（之前存在待确认邮箱，重发后重试成功）");
+                                    }
+                                    else
+                                    {
+                                        messages.Add($"找回邮箱确认失败：{retryErr}");
+                                    }
+                                }
+                            }
+
+                            if (!okRecovery)
+                                messages.Add($"找回邮箱确认失败：{pendingConfirmErr}");
                         }
                     }
-
-                    return (false, $"确认失败：{pendingConfirmErr}");
                 }
-
-                return (true, "已确认绑定（之前存在待确认邮箱）");
-            }
-
-            return (false, err);
-        }
-
-        if (!autoConfirm)
-            return (true, "已发送验证码（未自动确认）");
-
-        var code = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None);
-        if (string.IsNullOrWhiteSpace(code))
-        {
-            var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
-            return (false, $"收码超时（{pollTimeoutSeconds}s）{(string.IsNullOrWhiteSpace(diag) ? "" : "：" + diag)}");
-        }
-
-        var (confirmed, confirmErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
-            accountId: account.Id,
-            code: code,
-            cancellationToken: CancellationToken.None);
-
-        if (!confirmed)
-        {
-            if ((confirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase))
-            {
-                _ = await AccountTelegramTools.ResendTwoFactorRecoveryEmailAsync(account.Id, CancellationToken.None);
-                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None);
-                if (!string.IsNullOrWhiteSpace(retryCode))
+                else
                 {
-                    var (retryOk, retryErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
-                        accountId: account.Id,
-                        code: retryCode,
-                        cancellationToken: CancellationToken.None);
-                    if (retryOk)
-                        return (true, "已确认绑定（重发后重试成功）");
-
-                    return (false, $"确认失败：{retryErr}");
+                    messages.Add($"找回邮箱失败：{err}");
                 }
             }
+            else if (!autoConfirm)
+            {
+                messages.Add("找回邮箱已发送验证码（未自动确认）");
+            }
+            else
+            {
+                var code = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    okRecovery = false;
+                    var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
+                    messages.Add($"找回邮箱收码超时（{pollTimeoutSeconds}s）{(string.IsNullOrWhiteSpace(diag) ? "" : "：" + diag)}");
+                }
+                else
+                {
+                    var (confirmed, confirmErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
+                        accountId: account.Id,
+                        code: code,
+                        cancellationToken: CancellationToken.None);
 
-            return (false, $"确认失败：{confirmErr}");
+                    if (confirmed)
+                    {
+                        messages.Add("找回邮箱已确认绑定");
+                    }
+                    else
+                    {
+                        okRecovery = false;
+                        if ((confirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _ = await AccountTelegramTools.ResendTwoFactorRecoveryEmailAsync(account.Id, CancellationToken.None);
+                            var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None);
+                            if (!string.IsNullOrWhiteSpace(retryCode))
+                            {
+                                var (retryOk, retryErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
+                                    accountId: account.Id,
+                                    code: retryCode,
+                                    cancellationToken: CancellationToken.None);
+                                if (retryOk)
+                                {
+                                    okRecovery = true;
+                                    messages.Add("找回邮箱已确认绑定（重发后重试成功）");
+                                }
+                                else
+                                {
+                                    messages.Add($"找回邮箱确认失败：{retryErr}");
+                                }
+                            }
+                        }
+
+                        if (!okRecovery)
+                            messages.Add($"找回邮箱确认失败：{confirmErr}");
+                    }
+                }
+            }
         }
 
-        return (true, "已确认绑定");
+        // 2) 登录邮箱（用于登录确认邮件）
+        if (changeLoginEmail)
+        {
+            var (statusOk, statusErr, hasLoginEmail, _) = await AccountTelegramTools.GetLoginEmailStatusAsync(account.Id, CancellationToken.None);
+            if (!statusOk)
+            {
+                okLogin = false;
+                messages.Add($"登录邮箱失败：获取状态失败：{statusErr}");
+            }
+            else if (!hasLoginEmail && !trySetLoginEmailWhenMissing)
+            {
+                messages.Add("登录邮箱已跳过：该账号未设置登录邮箱（Telegram 未要求配置时，通常无法在已登录状态下直接新增）");
+            }
+            else
+            {
+                var startUtc = DateTimeOffset.UtcNow;
+                var (sent, err, pattern) = await AccountTelegramTools.SetLoginEmailAsync(account.Id, email, CancellationToken.None);
+                if (!sent)
+                {
+                    okLogin = false;
+                    messages.Add($"登录邮箱失败：{err}");
+                }
+                else if (!autoConfirm)
+                {
+                    messages.Add($"登录邮箱已发送验证码（未自动确认）{(string.IsNullOrWhiteSpace(pattern) ? "" : $"，掩码：{pattern}")}");
+                }
+                else
+                {
+                    var code = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None);
+                    if (string.IsNullOrWhiteSpace(code))
+                    {
+                        okLogin = false;
+                        var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
+                        messages.Add($"登录邮箱收码超时（{pollTimeoutSeconds}s）{(string.IsNullOrWhiteSpace(diag) ? "" : "：" + diag)}");
+                    }
+                    else
+                    {
+                        var (confirmed, confirmErr) = await AccountTelegramTools.ConfirmLoginEmailAsync(account.Id, code, CancellationToken.None);
+                        if (confirmed)
+                        {
+                            messages.Add("登录邮箱已确认");
+                        }
+                        else
+                        {
+                            okLogin = false;
+                            if ((confirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase)
+                                || (confirmErr ?? "").Contains("EMAIL_TOKEN_INVALID", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _ = await AccountTelegramTools.SetLoginEmailAsync(account.Id, email, CancellationToken.None);
+                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None);
+                                if (!string.IsNullOrWhiteSpace(retryCode))
+                                {
+                                    var (retryOk, retryErr) = await AccountTelegramTools.ConfirmLoginEmailAsync(account.Id, retryCode, CancellationToken.None);
+                                    if (retryOk)
+                                    {
+                                        okLogin = true;
+                                        messages.Add("登录邮箱已确认（重发后重试成功）");
+                                    }
+                                    else
+                                    {
+                                        messages.Add($"登录邮箱确认失败：{retryErr}");
+                                    }
+                                }
+                            }
+
+                            if (!okLogin)
+                                messages.Add($"登录邮箱确认失败：{confirmErr}");
+                        }
+                    }
+                }
+            }
+        }
+
+        var okAll = changeLoginEmail ? okLogin : okRecovery;
+        var msgAll = messages.Count == 0 ? null : string.Join("；", messages);
+        return (okAll, msgAll);
     }
 
     private async Task<string?> TryWaitTelegramCodeAsync(string toEmail, DateTimeOffset startUtc, CancellationToken cancellationToken, bool allowOlder = false)

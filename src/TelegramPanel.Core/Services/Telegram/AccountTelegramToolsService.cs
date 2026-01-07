@@ -569,6 +569,103 @@ public class AccountTelegramToolsService
     }
 
     /// <summary>
+    /// 获取登录邮箱状态（仅返回掩码 Pattern，不返回真实邮箱）。
+    /// </summary>
+    public async Task<(bool Success, string? Error, bool HasLoginEmail, string? LoginEmailPattern)>
+        GetLoginEmailStatusAsync(int accountId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var pwd = await client.Account_GetPassword();
+            var hasLoginEmail = pwd.flags.HasFlag(TL.Account_Password.Flags.has_login_email_pattern);
+            var pattern = hasLoginEmail ? (pwd.login_email_pattern ?? "").Trim() : null;
+            if (string.IsNullOrWhiteSpace(pattern))
+                pattern = null;
+
+            return (true, null, hasLoginEmail, pattern);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, false, null);
+        }
+    }
+
+    /// <summary>
+    /// 发送登录邮箱验证码（用于“登录邮箱变更/设置”）。
+    /// 注意：部分账号可能无法在“已登录状态”下新增登录邮箱（需要登录流程触发的 setup）。
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? EmailPattern)> SetLoginEmailAsync(
+        int accountId,
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            email = (email ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(email))
+                return (false, "邮箱不能为空", null);
+
+            try
+            {
+                _ = new MailAddress(email);
+            }
+            catch
+            {
+                return (false, "邮箱格式不正确", null);
+            }
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var sent = await client.Account_SendVerifyEmailCode(new EmailVerifyPurposeLoginChange(), email);
+            var pattern = (sent.email_pattern ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(pattern))
+                pattern = null;
+
+            return (true, null, pattern);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 确认登录邮箱验证码。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> ConfirmLoginEmailAsync(
+        int accountId,
+        string code,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            code = (code ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(code))
+                return (false, "请填写邮箱验证码");
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _ = await client.Account_VerifyEmail(new EmailVerifyPurposeLoginChange(), new EmailVerificationCode { code = code });
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
+    /// <summary>
     /// 更新当前账号的昵称/简介（Bio）。
     /// 注意：用户名与头像分开使用 UpdateUsernameAsync / UpdateProfilePhotoAsync。
     /// </summary>
@@ -1063,6 +1160,9 @@ public class AccountTelegramToolsService
                 $"邮箱未确认（{code}）",
                 "请在面板输入邮箱收到的验证码进行确认；如提示过期请重发并使用最新验证码。" + Environment.NewLine + msg);
         }
+
+        if (msg.Contains("EMAIL_TOKEN_INVALID", StringComparison.OrdinalIgnoreCase))
+            return ("邮箱验证码错误（EMAIL_TOKEN_INVALID）", "验证码不正确或不是最新验证码。请点击“重发验证码”，并使用最新邮件中的验证码。" + Environment.NewLine + msg);
 
         if (msg.Contains("EMAIL_INVALID", StringComparison.OrdinalIgnoreCase))
             return ("邮箱无效（EMAIL_INVALID）", msg);

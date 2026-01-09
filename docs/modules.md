@@ -23,6 +23,12 @@
 
 > 说明：模块启用/停用通常需要重启；宿主启动时只会加载“启用”的模块，因此 UI/任务/API 列表会随启用状态变化。
 
+## Bot 更新订阅（allowed_updates）
+
+如果模块需要消费 Telegram Bot API 的更新（`getUpdates` / Webhook），**不要**在模块里对同一个 Bot Token 自行启动轮询器（会导致 409 Conflict）。请通过宿主的 `BotUpdateHub` 订阅/广播更新。
+
+注意：宿主会为 `getUpdates` / `setWebhook` 固定传入 `allowed_updates` 白名单（见 `src/TelegramPanel.Core/Services/Telegram/BotUpdateHub.cs` 的 `AllowedUpdatesJson`）。当前已包含成员变更与入群请求：`chat_member`、`chat_join_request`；后续如你的模块需要其它更新类型，需要先在宿主侧扩展该白名单并发布宿主版本。
+
 ## 配置入口与“窗口编辑”（推荐）
 
 如果你的模块需要“配置界面”，推荐以 **模块页面**（`IModuleUiProvider.GetPages`）的形式提供，然后在 `ModuleTaskDefinition.CreateRoute` 中指向该页面的路由：

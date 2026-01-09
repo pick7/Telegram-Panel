@@ -17,7 +17,7 @@ namespace TelegramPanel.Core.Services.Telegram;
 public sealed class BotUpdateHub : IAsyncDisposable
 {
     // 固定允许的更新类型：覆盖当前项目使用场景（转发/监听/入群事件）
-    public const string AllowedUpdatesJson = "[\"message\",\"edited_message\",\"channel_post\",\"edited_channel_post\",\"my_chat_member\"]";
+    public const string AllowedUpdatesJson = "[\"message\",\"edited_message\",\"channel_post\",\"edited_channel_post\",\"my_chat_member\",\"chat_member\",\"chat_join_request\"]";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TelegramBotApiClient _botApi;

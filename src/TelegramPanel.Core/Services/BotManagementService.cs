@@ -73,6 +73,55 @@ public class BotManagementService
         await _botRepository.UpdateAsync(bot);
     }
 
+    public async Task UpdateBotProfileAsync(int botId, string name, string? username, string? newToken)
+    {
+        name = (name ?? string.Empty).Trim();
+        username = string.IsNullOrWhiteSpace(username) ? null : username.Trim().TrimStart('@');
+        newToken = string.IsNullOrWhiteSpace(newToken) ? null : newToken.Trim();
+
+        if (botId <= 0)
+            throw new ArgumentException("BotId 无效", nameof(botId));
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("机器人名称不能为空", nameof(name));
+
+        var bot = await _botRepository.GetByIdAsync(botId)
+            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
+
+        if (!string.Equals(bot.Name, name, StringComparison.Ordinal))
+        {
+            var existing = await _botRepository.GetByNameAsync(name);
+            if (existing != null && existing.Id != botId)
+                throw new InvalidOperationException("机器人名称已存在");
+        }
+
+        bot.Name = name;
+        bot.Username = username;
+        if (newToken != null)
+            bot.Token = newToken;
+
+        try
+        {
+            await _botRepository.UpdateAsync(bot);
+        }
+        catch (DbUpdateException ex)
+        {
+            var msg = GetInnermostMessage(ex);
+            if (msg.Contains("UNIQUE constraint failed: Bots.Name", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("机器人名称已存在");
+
+            if (msg.Contains("database is locked", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("database is busy", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("SQLite Error 5", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("数据库正被占用（SQLite database is locked），请稍后重试；若云端部署了多个实例共享同一个 sqlite 文件，请改为单实例或换用 MySQL/PostgreSQL。");
+
+            if (msg.Contains("no such table: Bots", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("no such column", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"数据库结构过旧或未完成迁移，请重启主程序以自动迁移数据库。详情：{msg}");
+
+            throw new InvalidOperationException($"更新机器人失败：{msg}", ex);
+        }
+    }
+
     public async Task SetBotActiveStatusAsync(int botId, bool isActive)
     {
         var bot = await _botRepository.GetByIdAsync(botId);

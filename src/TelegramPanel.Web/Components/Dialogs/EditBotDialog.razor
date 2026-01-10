@@ -1,0 +1,71 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.subtitle1">编辑机器人</MudText>
+
+            <MudTextField T="string" @bind-Value="name" Label="名称" Variant="Variant.Outlined" Required="true" />
+            <MudTextField T="string" @bind-Value="username" Label="用户名（可选）" Variant="Variant.Outlined" Placeholder="bot_username" />
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                不展示当前 Token；如需更换请输入新 Token（留空则不修改）。
+            </MudText>
+            <MudTextField T="string" @bind-Value="newToken" Label="新的 Bot Token（可选）" Variant="Variant.Outlined"
+                          InputType="@(showToken ? InputType.Text : InputType.Password)"
+                          Adornment="Adornment.End"
+                          AdornmentIcon="@(showToken ? Icons.Material.Filled.VisibilityOff : Icons.Material.Filled.Visibility)"
+                          OnAdornmentClick="ToggleTokenVisibility" />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@string.IsNullOrWhiteSpace(name)" OnClick="Confirm">
+            保存
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public Bot Bot { get; set; } = default!;
+
+    private string name = "";
+    private string? username;
+    private string? newToken;
+    private bool showToken;
+
+    protected override void OnParametersSet()
+    {
+        name = (Bot?.Name ?? "").Trim();
+        username = string.IsNullOrWhiteSpace(Bot?.Username) ? null : Bot!.Username!.Trim().TrimStart('@');
+        newToken = "";
+        showToken = false;
+    }
+
+    private void ToggleTokenVisibility()
+    {
+        showToken = !showToken;
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private void Confirm()
+    {
+        var model = new EditBotModel(
+            Name: name.Trim(),
+            Username: string.IsNullOrWhiteSpace(username) ? null : username!.Trim().TrimStart('@'),
+            NewToken: string.IsNullOrWhiteSpace(newToken) ? null : newToken!.Trim());
+
+        MudDialog.Close(DialogResult.Ok(model));
+    }
+
+    public sealed record EditBotModel(string Name, string? Username, string? NewToken);
+}
+

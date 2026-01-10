@@ -1,9 +1,12 @@
 @page "/bots"
 @inject BotManagementService BotManagement
+@inject TelegramBotApiClient BotApi
+@inject IConfiguration Configuration
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
 @using TelegramPanel.Data.Entities
+@using TelegramPanel.Web.Components.Dialogs
 
 <PageTitle>机器人管理 - Telegram Panel</PageTitle>
 
@@ -63,6 +66,10 @@
                         </MudTd>
                         <MudTd DataLabel="操作">
                                 <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
+                                <MudMenuItem Icon="@Icons.Material.Filled.Edit"
+                                             OnClick="@(async () => await EditBotAsync(context))">
+                                    编辑
+                                </MudMenuItem>
                                 <MudMenuItem Icon="@Icons.Material.Filled.List"
                                              OnClick="@(() => Navigation.NavigateTo($"/bots/channels?botId={context.Id}"))">
                                     频道列表
@@ -194,6 +201,93 @@
         finally
         {
             togglingBotIds.Remove(bot.Id);
+        }
+    }
+
+    private async Task EditBotAsync(Bot bot)
+    {
+        if (loading)
+            return;
+
+        var parameters = new DialogParameters
+        {
+            ["Bot"] = bot
+        };
+
+        var options = new DialogOptions
+        {
+            CloseButton = true,
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true
+        };
+
+        var dialog = DialogService.Show<EditBotDialog>("编辑机器人", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is null || result.Canceled)
+            return;
+
+        if (result.Data is not EditBotDialog.EditBotModel model)
+            return;
+
+        loading = true;
+        try
+        {
+            await BotManagement.UpdateBotProfileAsync(
+                botId: bot.Id,
+                name: model.Name,
+                username: model.Username,
+                newToken: model.NewToken);
+
+            if (!string.IsNullOrWhiteSpace(model.NewToken))
+                await TryRegisterWebhookForBotAsync(model.NewToken);
+
+            await LoadBots();
+            Snackbar.Add("已保存", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task TryRegisterWebhookForBotAsync(string token)
+    {
+        var webhookEnabled = string.Equals(
+            Configuration["Telegram:WebhookEnabled"]?.Trim(),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!webhookEnabled)
+            return;
+
+        var baseUrl = (Configuration["Telegram:WebhookBaseUrl"] ?? "").Trim();
+        var secretToken = (Configuration["Telegram:WebhookSecretToken"] ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(secretToken))
+        {
+            Snackbar.Add("已更换 Token，但 WebhookBaseUrl/WebhookSecretToken 未配置，无法自动重新注册 Webhook。", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{Uri.EscapeDataString(token.Trim())}";
+            await BotApi.SetWebhookAsync(
+                token: token.Trim(),
+                url: webhookUrl,
+                secretToken: secretToken,
+                allowedUpdates: BotUpdateHub.AllowedUpdatesJson,
+                cancellationToken: CancellationToken.None);
+
+            Snackbar.Add("Webhook 已重新注册", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Token 已更换，但重新注册 Webhook 失败：{ex.Message}", Severity.Warning);
         }
     }
 }

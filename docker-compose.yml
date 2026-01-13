@@ -35,3 +35,10 @@ services:
       Telegram__WebhookBaseUrl: "${TP_TELEGRAM_WEBHOOK_BASE_URL:-}"
       # Webhook 验证密钥（用于验证 Telegram 请求，建议使用随机字符串）
       Telegram__WebhookSecretToken: "${TP_TELEGRAM_WEBHOOK_SECRET_TOKEN:-}"
+
+    # Docker 自身的 stdout/stderr 日志滚动，避免日志无限增长占满磁盘。
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"

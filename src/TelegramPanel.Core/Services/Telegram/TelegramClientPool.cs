@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
@@ -19,11 +20,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramClientPool> _logger;
     private bool _disposed;
+    private static int _wtelegramLogConfigured;
 
     public TelegramClientPool(IConfiguration configuration, ILogger<TelegramClientPool> logger)
     {
         _configuration = configuration;
         _logger = logger;
+        ConfigureWTelegramLoggingOnce();
     }
 
     public int ActiveClientCount => _clients.Count;
@@ -253,5 +256,50 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         {
             _logger.LogDebug(ex, "Failed to rebind WTelegram session ApiId (ignored)");
         }
+    }
+
+    private void ConfigureWTelegramLoggingOnce()
+    {
+        // WTelegramClient 默认会把大量底层网络/RPC trace 直接写到 Console，严重干扰面板日志查看。
+        // 这里把它重定向到宿主 ILogger，以便用 Serilog 的 MinimumLevel/Override 控制输出量。
+        if (Interlocked.Exchange(ref _wtelegramLogConfigured, 1) == 1)
+            return;
+
+        Helpers.Log = (level, message) =>
+        {
+            message = (message ?? "").TrimEnd();
+            if (message.Length == 0)
+                return;
+
+            // 关键错误（例如 FLOOD_WAIT）即使来自高 verbosity level，也提升为 Warning，避免被 Debug 过滤掉。
+            if (message.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("RpcError", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            // WTelegram 的 level 越大越啰嗦（常见 4/5 是大量 RPC/包级别日志）。
+            if (level <= 1)
+            {
+                _logger.LogError("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            if (level == 2)
+            {
+                _logger.LogWarning("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            if (level == 3)
+            {
+                _logger.LogInformation("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            _logger.LogDebug("WTelegram({Level}): {Message}", level, message);
+        };
     }
 }

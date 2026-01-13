@@ -10,9 +10,8 @@
 </p>
 
 <p align="center">
-  📦 <b><a href="docs/getting-started/installation.md">安装部署</a></b> |
+  📚 <b><a href="https://moeacgx.github.io/Telegram-Panel/">文档站</a></b> |
   🏪 <b><a href="https://faka.boxmoe.eu.org/">API 账号购买</a></b> |
-  🧯 <b><a href="docs/guides/anti-freeze.md">防冻结指南</a></b> |
   🖼️ <b><a href="screenshot/">截图</a></b> |
   💬 <b><a href="https://t.me/zhanzhangck">TG 频道</a></b> |
   👥 <b><a href="https://t.me/vpsbbq">站长交流群</a></b>

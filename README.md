@@ -55,18 +55,36 @@
 
 ### Docker 一键部署（推荐）
 
-🐳 面向小白：`git clone` → `docker compose up` → 浏览器打开 → 登录改密码 → 配置 ApiId/ApiHash。
+```bash
+git clone https://github.com/moeacgx/Telegram-Panel
+cd Telegram-Panel
+cp .env.example .env
+```
 
 ### 环境要求
 
 Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
 
-### 启动
+### 稳定版（默认）
 
 ```bash
-git clone https://github.com/moeacgx/Telegram-Panel
-cd Telegram-Panel
-docker compose up -d --build
+docker compose pull
+docker compose up -d
+```
+
+### 开发版
+
+先把 `.env` 里的 `TP_IMAGE` 改成：
+
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:dev-latest
+```
+
+然后执行：
+
+```bash
+docker compose pull
+docker compose up -d
 ```
 
 启动后访问：`http://localhost:5000`
@@ -78,56 +96,16 @@ docker compose up -d --build
 
 登录后到「修改密码」页面改掉即可。
 
-> 更完整的安装、更新、导入与生产部署建议：见 https://moeacgx.github.io/Telegram-Panel/ 。
-
-## CI 自动构建镜像（GitHub Actions）
-
-已内置工作流：`.github/workflows/docker.yml`
-
-触发规则：
-- 推送到 `main` / `dev`：自动构建并推送镜像
-- 推送 tag（如 `v1.2.3`）：自动构建并推送版本镜像
-- PR 到 `main` / `dev`：只构建验证，不推送
-
-镜像仓库（GHCR）：
-- `ghcr.io/<你的GitHub用户名或组织>/telegram-panel`
-
-标签规则：
-- `main` 分支：`latest`、`main`、`sha-xxxxxxx`
-- `dev` 分支：`dev`、`dev-latest`、`sha-xxxxxxx`
-- `v*` tag：例如 `v1.2.3`
-
-拉取示例：
+## Docker 镜像（只看命令）
 
 ```bash
-# 稳定版
+# 稳定版：拉取 + 运行
 docker pull ghcr.io/moeacgx/telegram-panel:latest
+docker run -d --name telegram-panel --restart unless-stopped -p 5000:5000 -v ./docker-data:/data ghcr.io/moeacgx/telegram-panel:latest
 
-# 开发版
+# 开发版：拉取 + 运行
 docker pull ghcr.io/moeacgx/telegram-panel:dev-latest
-
-# 指定版本
-docker pull ghcr.io/moeacgx/telegram-panel:v1.2.3
-```
-
-## 自动发布与 Changelog
-
-已内置工作流：`.github/workflows/release.yml`
-
-触发规则：
-- 推送 `v*` tag（如 `v1.2.3`）后，自动创建 GitHub Release
-- Release 内容自动生成 changelog（基于提交/PR），并读取 `.github/release.yml` 分类规则
-- 同时自动打包并上传 Linux 更新包资产：
-  - `telegram-panel-vX.Y.Z-linux-x64.zip`
-  - `telegram-panel-vX.Y.Z-linux-arm64.zip`
-
-发布示例：
-
-```bash
-git checkout main
-git pull --ff-only origin main
-git tag v1.2.3
-git push origin v1.2.3
+docker run -d --name telegram-panel --restart unless-stopped -p 5000:5000 -v ./docker-data:/data ghcr.io/moeacgx/telegram-panel:dev-latest
 ```
 
 ## Docker 一键更新（面板内）

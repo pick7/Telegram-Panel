@@ -479,6 +479,7 @@ public static class SessionDataConverter
 
             using var client = new Client(Config);
             var clientType = typeof(Client);
+            var currentDcSessionField = clientType.GetField("_dcSession", BindingFlags.Instance | BindingFlags.NonPublic);
             var sessionField = clientType.GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("无法访问 WTelegram.Client._session");
             var sessionObj = sessionField.GetValue(client) ?? throw new InvalidOperationException("WTelegram session 未初始化");
@@ -490,33 +491,55 @@ public static class SessionDataConverter
             if (dcSessions == null || dcSessions.Count == 0)
                 return TelethonStringSessionResult.Fail("session 中未找到任何 DC 会话数据");
 
-            object? dcSessionObj = null;
-            if (mainDc > 0 && dcSessions.Contains(mainDc))
-                dcSessionObj = dcSessions[mainDc];
+            var candidateSessions = new List<(object DcSessionObj, bool IsCurrentDc)>();
+            var currentDcSessionObj = currentDcSessionField?.GetValue(client);
+            if (currentDcSessionObj != null)
+                candidateSessions.Add((currentDcSessionObj, true));
 
-            if (dcSessionObj == null)
+            if (mainDc > 0 && dcSessions.Contains(mainDc) && dcSessions[mainDc] != null)
+                candidateSessions.Add((dcSessions[mainDc]!, false));
+
+            foreach (System.Collections.DictionaryEntry entry in dcSessions)
             {
-                foreach (System.Collections.DictionaryEntry entry in dcSessions)
-                {
-                    if (entry.Value != null)
-                    {
-                        dcSessionObj = entry.Value;
-                        break;
-                    }
-                }
+                if (entry.Value != null)
+                    candidateSessions.Add((entry.Value, false));
             }
 
-            if (dcSessionObj == null)
-                return TelethonStringSessionResult.Fail("无法从 session 中解析出 DCSession");
+            byte[]? authKey = null;
+            DcOption? dataCenterObj = null;
+            long pickedDcUserId = 0;
+            var bestScore = int.MinValue;
 
-            var dcSessionType = dcSessionObj.GetType();
-            var authKey = dcSessionType.GetField("AuthKey")?.GetValue(dcSessionObj) as byte[];
-            if (authKey == null || authKey.Length != 256)
-                return TelethonStringSessionResult.Fail($"AuthKey 无效（长度：{authKey?.Length ?? 0}，期望 256）");
+            foreach (var (dcSessionObj, isCurrentDc) in candidateSessions)
+            {
+                if (!TryExtractDcSessionInfo(dcSessionObj, out var candidateAuthKey, out var candidateDataCenter, out var dcUserId))
+                    continue;
+                if (candidateAuthKey == null || candidateAuthKey.Length != 256)
+                    continue;
+                if (candidateDataCenter == null)
+                    continue;
 
-            var dataCenterObj = dcSessionType.GetField("DataCenter")?.GetValue(dcSessionObj) as DcOption;
-            if (dataCenterObj == null)
-                return TelethonStringSessionResult.Fail("无法从 session 中解析 DataCenter");
+                var score = 0;
+                if (isCurrentDc)
+                    score += 100;
+                if (dcUserId > 0)
+                    score += 50;
+                if (userId.HasValue && userId.Value > 0 && dcUserId == userId.Value)
+                    score += 40;
+                if (mainDc > 0 && candidateDataCenter.id == mainDc)
+                    score += 20;
+
+                if (score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                authKey = candidateAuthKey;
+                dataCenterObj = candidateDataCenter;
+                pickedDcUserId = dcUserId;
+            }
+
+            if (authKey == null || authKey.Length != 256 || dataCenterObj == null)
+                return TelethonStringSessionResult.Fail("无法从 session 中解析有效的已授权 DCSession（AuthKey/DataCenter）");
 
             if (dataCenterObj.id <= 0 || dataCenterObj.id > byte.MaxValue)
                 return TelethonStringSessionResult.Fail($"DataCenter ID 无效：{dataCenterObj.id}");
@@ -541,12 +564,66 @@ public static class SessionDataConverter
             Buffer.BlockCopy(authKey, 0, packed, 1 + ipBytes.Length + 2, 256);
 
             var sessionString = "1" + Base64UrlEncode(packed);
+            logger.LogInformation(
+                "Picked DCSession for Telethon export: mainDc={MainDc}, dcId={DcId}, dcUserId={DcUserId}, targetUserId={TargetUserId}, isIpV6={IsIpV6}",
+                mainDc,
+                dataCenterObj.id,
+                pickedDcUserId,
+                userId,
+                ipBytes.Length == 16);
             return TelethonStringSessionResult.Success(sessionString);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to create telethon string session from WTelegram session file: {SessionPath}", sessionPath);
             return TelethonStringSessionResult.Fail($"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static bool TryExtractDcSessionInfo(
+        object dcSessionObj,
+        out byte[]? authKey,
+        out DcOption? dataCenter,
+        out long dcUserId)
+    {
+        try
+        {
+            var dcSessionType = dcSessionObj.GetType();
+            authKey = dcSessionType.GetField("AuthKey")?.GetValue(dcSessionObj) as byte[];
+            dataCenter = dcSessionType.GetField("DataCenter")?.GetValue(dcSessionObj) as DcOption;
+
+            dcUserId = 0;
+            var userIdObj = dcSessionType.GetField("UserId")?.GetValue(dcSessionObj);
+            switch (userIdObj)
+            {
+                case int i:
+                    dcUserId = i;
+                    break;
+                case long l:
+                    dcUserId = l;
+                    break;
+                case uint ui:
+                    dcUserId = ui;
+                    break;
+                case ulong ul:
+                    dcUserId = (long)Math.Min(ul, long.MaxValue);
+                    break;
+                case short s:
+                    dcUserId = s;
+                    break;
+                case ushort us:
+                    dcUserId = us;
+                    break;
+            }
+
+            return authKey != null && dataCenter != null;
+        }
+        catch
+        {
+            authKey = null;
+            dataCenter = null;
+            dcUserId = 0;
+            return false;
         }
     }
 

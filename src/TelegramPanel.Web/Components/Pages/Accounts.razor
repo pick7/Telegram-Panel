@@ -87,8 +87,8 @@
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeUsername">批量改用户名（已选）</MudMenuItem>
          <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeBio">批量改Bio（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts">删除已选</MudMenuItem>
-        <MudMenuItem OnClick="ExportSelectedAccounts">导出已选</MudMenuItem>
-        <MudMenuItem OnClick="ExportCurrentPageAccounts">导出当前页</MudMenuItem>
+        <MudMenuItem OnClick="ExportSelectedAccountsAsync">导出已选</MudMenuItem>
+        <MudMenuItem OnClick="ExportCurrentPageAccountsAsync">导出当前页</MudMenuItem>
     </MudMenu>
     
     @if (selectedAccounts.Count > 0)
@@ -927,7 +927,7 @@
         }
     }
 
-    private void ExportSelectedAccounts()
+    private async Task ExportSelectedAccountsAsync()
     {
         var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
         if (ids.Count == 0)
@@ -936,11 +936,10 @@
             return;
         }
 
-        var qs = string.Join(",", ids);
-        Navigation.NavigateTo($"/downloads/accounts.zip?ids={qs}", forceLoad: true);
+        await ExportAccountsByIdsAsync(ids, "已选账号");
     }
 
-    private void ExportCurrentPageAccounts()
+    private async Task ExportCurrentPageAccountsAsync()
     {
         var ids = accounts.Select(a => a.Id).Distinct().ToList();
         if (ids.Count == 0)
@@ -949,8 +948,35 @@
             return;
         }
 
+        await ExportAccountsByIdsAsync(ids, "当前页账号");
+    }
+
+    private async Task ExportAccountsByIdsAsync(IReadOnlyList<int> ids, string scopeLabel)
+    {
+        var format = await SelectExportFormatAsync(ids.Count, scopeLabel);
+        if (string.IsNullOrWhiteSpace(format))
+            return;
+
         var qs = string.Join(",", ids);
-        Navigation.NavigateTo($"/downloads/accounts.zip?ids={qs}", forceLoad: true);
+        Navigation.NavigateTo($"/downloads/accounts.zip?ids={qs}&format={format}", forceLoad: true);
+    }
+
+    private async Task<string?> SelectExportFormatAsync(int accountCount, string scopeLabel)
+    {
+        var parameters = new DialogParameters
+        {
+            ["AccountCount"] = accountCount,
+            ["ScopeLabel"] = scopeLabel
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.ExportAccountFormatDialog>("选择导出格式", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is not { Canceled: false } || result.Data is not string formatRaw)
+            return null;
+
+        return string.Equals(formatRaw, "tdata", StringComparison.OrdinalIgnoreCase)
+            ? "tdata"
+            : "telethon";
     }
 
     private async Task OpenSystemInbox(Account account)

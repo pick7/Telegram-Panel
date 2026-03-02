@@ -19,6 +19,12 @@ public static class SessionDataConverter
         public static SessionConvertResult Fail(string? reason) => new(false, string.IsNullOrWhiteSpace(reason) ? "未知原因" : reason.Trim());
     }
 
+    public readonly record struct TelethonStringSessionResult(bool Ok, string? SessionString, string? Reason)
+    {
+        public static TelethonStringSessionResult Success(string sessionString) => new(true, sessionString, null);
+        public static TelethonStringSessionResult Fail(string? reason) => new(false, null, string.IsNullOrWhiteSpace(reason) ? "未知原因" : reason.Trim());
+    }
+
     public static async Task<SessionConvertResult> TryConvertSqliteSessionFromJsonAsync(
         string phone,
         int apiId,
@@ -395,6 +401,12 @@ public static class SessionDataConverter
         }
     }
 
+    private static string Base64UrlEncode(byte[] bytes)
+    {
+        var base64 = Convert.ToBase64String(bytes);
+        return base64.TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
     private readonly record struct TelethonSessionData(int DcId, string IpAddress, ushort Port, byte[] AuthKey);
 
     private static bool TryParseTelethonStringSession(string sessionString, out TelethonSessionData data)
@@ -435,6 +447,104 @@ public static class SessionDataConverter
         {
             data = default;
             return false;
+        }
+    }
+
+    public static TelethonStringSessionResult TryCreateTelethonStringSessionFromWTelegramSessionFile(
+        string sessionPath,
+        int apiId,
+        string apiHash,
+        string? phone,
+        long? userId,
+        ILogger logger)
+    {
+        try
+        {
+            var absoluteSessionPath = Path.GetFullPath(sessionPath);
+            if (!File.Exists(absoluteSessionPath))
+                return TelethonStringSessionResult.Fail($"session 文件不存在：{absoluteSessionPath}");
+
+            string Config(string what) => what switch
+            {
+                "api_id" => apiId.ToString(),
+                "api_hash" => apiHash,
+                "session_key" => apiHash,
+                "session_pathname" => absoluteSessionPath,
+                "phone_number" => NormalizePhone(phone),
+                "user_id" => userId.HasValue && userId.Value > 0 ? userId.Value.ToString() : null!,
+                _ => null!
+            };
+
+            using var client = new Client(Config);
+            var clientType = typeof(Client);
+            var sessionField = clientType.GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("无法访问 WTelegram.Client._session");
+            var sessionObj = sessionField.GetValue(client) ?? throw new InvalidOperationException("WTelegram session 未初始化");
+            var sessionType = sessionObj.GetType();
+
+            var mainDc = (int?)sessionType.GetField("MainDC")?.GetValue(sessionObj) ?? 0;
+            var dcSessionsField = sessionType.GetField("DCSessions");
+            var dcSessions = dcSessionsField?.GetValue(sessionObj) as System.Collections.IDictionary;
+            if (dcSessions == null || dcSessions.Count == 0)
+                return TelethonStringSessionResult.Fail("session 中未找到任何 DC 会话数据");
+
+            object? dcSessionObj = null;
+            if (mainDc > 0 && dcSessions.Contains(mainDc))
+                dcSessionObj = dcSessions[mainDc];
+
+            if (dcSessionObj == null)
+            {
+                foreach (System.Collections.DictionaryEntry entry in dcSessions)
+                {
+                    if (entry.Value != null)
+                    {
+                        dcSessionObj = entry.Value;
+                        break;
+                    }
+                }
+            }
+
+            if (dcSessionObj == null)
+                return TelethonStringSessionResult.Fail("无法从 session 中解析出 DCSession");
+
+            var dcSessionType = dcSessionObj.GetType();
+            var authKey = dcSessionType.GetField("AuthKey")?.GetValue(dcSessionObj) as byte[];
+            if (authKey == null || authKey.Length != 256)
+                return TelethonStringSessionResult.Fail($"AuthKey 无效（长度：{authKey?.Length ?? 0}，期望 256）");
+
+            var dataCenterObj = dcSessionType.GetField("DataCenter")?.GetValue(dcSessionObj) as DcOption;
+            if (dataCenterObj == null)
+                return TelethonStringSessionResult.Fail("无法从 session 中解析 DataCenter");
+
+            if (dataCenterObj.id <= 0 || dataCenterObj.id > byte.MaxValue)
+                return TelethonStringSessionResult.Fail($"DataCenter ID 无效：{dataCenterObj.id}");
+
+            if (string.IsNullOrWhiteSpace(dataCenterObj.ip_address))
+                return TelethonStringSessionResult.Fail("DataCenter IP 为空");
+
+            if (dataCenterObj.port <= 0 || dataCenterObj.port > ushort.MaxValue)
+                return TelethonStringSessionResult.Fail($"DataCenter 端口无效：{dataCenterObj.port}");
+
+            if (!IPAddress.TryParse(dataCenterObj.ip_address.Trim(), out var ip))
+                return TelethonStringSessionResult.Fail($"DataCenter IP 无法解析：{dataCenterObj.ip_address}");
+
+            var ipBytes = ip.GetAddressBytes();
+            if (ipBytes.Length is not (4 or 16))
+                return TelethonStringSessionResult.Fail($"DataCenter IP 字节长度无效：{ipBytes.Length}");
+
+            var packed = new byte[1 + ipBytes.Length + 2 + 256];
+            packed[0] = (byte)dataCenterObj.id;
+            Buffer.BlockCopy(ipBytes, 0, packed, 1, ipBytes.Length);
+            BinaryPrimitives.WriteUInt16BigEndian(packed.AsSpan(1 + ipBytes.Length, 2), (ushort)dataCenterObj.port);
+            Buffer.BlockCopy(authKey, 0, packed, 1 + ipBytes.Length + 2, 256);
+
+            var sessionString = "1" + Base64UrlEncode(packed);
+            return TelethonStringSessionResult.Success(sessionString);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to create telethon string session from WTelegram session file: {SessionPath}", sessionPath);
+            return TelethonStringSessionResult.Fail($"{ex.GetType().Name}: {ex.Message}");
         }
     }
 

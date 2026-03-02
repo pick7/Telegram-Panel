@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace TelegramPanel.Core.Services.Telegram;
 
-internal static class TdataSessionBridge
+public static class TdataSessionBridge
 {
     private static readonly SemaphoreSlim SetupLock = new(1, 1);
     private static readonly string RuntimeDir = ResolveRuntimeDir();
@@ -23,7 +23,7 @@ internal static class TdataSessionBridge
         return Path.Combine(Path.GetTempPath(), "telegram-panel-tdata-runtime");
     }
 
-    private const string NodeScript = """
+private const string NodeScript = """
 import { convertFromTdata, convertToTelethonSession } from '@mtcute/convert';
 
 const inputPath = process.argv[process.argv.length - 1];
@@ -40,10 +40,33 @@ try {
 }
 """;
 
+    private const string NodeScriptTelethonToTdata = """
+import { convertFromTelethonSession, convertToTdata } from '@mtcute/convert';
+
+const telethonSession = process.argv[process.argv.length - 2];
+const outputDir = process.argv[process.argv.length - 1];
+
+try {
+  const session = convertFromTelethonSession(telethonSession);
+  await convertToTdata(session, { path: outputDir });
+  console.log(JSON.stringify({ ok: true }));
+} catch (error) {
+  const message = error?.stack ? String(error.stack) : String(error);
+  console.log(JSON.stringify({ ok: false, error: message }));
+  process.exit(1);
+}
+""";
+
     public readonly record struct ConvertResult(bool Ok, string? SessionString, long? UserId, string? Error)
     {
         public static ConvertResult Success(string sessionString, long? userId) => new(true, sessionString, userId, null);
         public static ConvertResult Fail(string error) => new(false, null, null, string.IsNullOrWhiteSpace(error) ? "未知错误" : error.Trim());
+    }
+
+    public readonly record struct ConvertToTdataResult(bool Ok, string? Error)
+    {
+        public static ConvertToTdataResult Success() => new(true, null);
+        public static ConvertToTdataResult Fail(string error) => new(false, string.IsNullOrWhiteSpace(error) ? "未知错误" : error.Trim());
     }
 
     public static async Task<ConvertResult> TryConvertToTelethonStringSessionAsync(
@@ -113,6 +136,70 @@ try {
         {
             logger.LogWarning(ex, "Tdata conversion failed: {TdataDir}", tdataDirectory);
             return ConvertResult.Fail(ex.Message);
+        }
+    }
+
+    public static async Task<ConvertToTdataResult> TryConvertTelethonStringSessionToTdataAsync(
+        string telethonSessionString,
+        string outputTdataDirectory,
+        ILogger logger,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(telethonSessionString))
+            return ConvertToTdataResult.Fail("telethon session_string 为空");
+        if (string.IsNullOrWhiteSpace(outputTdataDirectory))
+            return ConvertToTdataResult.Fail("tdata 输出目录为空");
+
+        var runtimeReady = await EnsureRuntimeReadyAsync(logger, cancellationToken);
+        if (!runtimeReady.Ok)
+            return ConvertToTdataResult.Fail(runtimeReady.Error ?? "tdata 运行环境初始化失败");
+
+        try
+        {
+            var absoluteOutputDir = Path.GetFullPath(outputTdataDirectory);
+            if (Directory.Exists(absoluteOutputDir))
+                Directory.Delete(absoluteOutputDir, recursive: true);
+            Directory.CreateDirectory(absoluteOutputDir);
+
+            var run = await RunProcessAsync(
+                fileName: "node",
+                arguments: new[] { "--input-type=module", "-e", NodeScriptTelethonToTdata, "--", telethonSessionString.Trim(), absoluteOutputDir },
+                workingDirectory: RuntimeDir,
+                timeoutMs: ConvertTimeoutMs,
+                cancellationToken: cancellationToken);
+
+            var output = PickJsonLine(run.StdOut);
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                var msg = string.IsNullOrWhiteSpace(run.StdErr) ? "node 输出为空" : run.StdErr.Trim();
+                return ConvertToTdataResult.Fail(msg);
+            }
+
+            using var doc = JsonDocument.Parse(output);
+            var root = doc.RootElement;
+            var ok = root.TryGetProperty("ok", out var okProp) && okProp.ValueKind == JsonValueKind.True;
+            if (!ok)
+            {
+                var err = root.TryGetProperty("error", out var errProp) && errProp.ValueKind == JsonValueKind.String
+                    ? (errProp.GetString() ?? string.Empty)
+                    : (string.IsNullOrWhiteSpace(run.StdErr) ? "未知错误" : run.StdErr.Trim());
+                return ConvertToTdataResult.Fail(err);
+            }
+
+            if (!Directory.EnumerateFileSystemEntries(absoluteOutputDir).Any())
+                return ConvertToTdataResult.Fail("tdata 输出目录为空");
+
+            return ConvertToTdataResult.Success();
+        }
+        catch (TimeoutException ex)
+        {
+            logger.LogWarning(ex, "Telethon->tdata conversion timed out");
+            return ConvertToTdataResult.Fail("Telethon->tdata 转换超时");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Telethon->tdata conversion failed");
+            return ConvertToTdataResult.Fail(ex.Message);
         }
     }
 

@@ -101,13 +101,13 @@ docker compose up -d --build
 
 ```bash
 # 稳定版
-docker pull ghcr.io/<owner>/telegram-panel:latest
+docker pull ghcr.io/moeacgx/telegram-panel:latest
 
 # 开发版
-docker pull ghcr.io/<owner>/telegram-panel:dev-latest
+docker pull ghcr.io/moeacgx/telegram-panel:dev-latest
 
 # 指定版本
-docker pull ghcr.io/<owner>/telegram-panel:v1.2.3
+docker pull ghcr.io/moeacgx/telegram-panel:v1.2.3
 ```
 
 ## 自动发布与 Changelog
@@ -117,6 +117,9 @@ docker pull ghcr.io/<owner>/telegram-panel:v1.2.3
 触发规则：
 - 推送 `v*` tag（如 `v1.2.3`）后，自动创建 GitHub Release
 - Release 内容自动生成 changelog（基于提交/PR），并读取 `.github/release.yml` 分类规则
+- 同时自动打包并上传 Linux 更新包资产：
+  - `telegram-panel-vX.Y.Z-linux-x64.zip`
+  - `telegram-panel-vX.Y.Z-linux-arm64.zip`
 
 发布示例：
 
@@ -126,6 +129,18 @@ git pull --ff-only origin main
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+## Docker 一键更新（面板内）
+
+面板已支持在 Docker 部署场景下一键更新（`系统设置 -> 应用更新（Docker）`）：
+
+1. 点击“检查更新”，读取 GitHub 最新 Release。
+2. 点击“一键更新并重启”，自动下载对应架构的 Linux 更新包到 `/data/app-current`。
+3. 程序触发重启后，容器会优先从 `/data/app-current` 启动新版本（无需手动 `docker compose pull`）。
+
+说明：
+- 当前仅支持 Docker 容器内执行一键更新。
+- 更新资产依赖 `release.yml` 工作流产物；若 Release 没有 `linux-x64/linux-arm64` zip 资产，则一键更新会提示不可用。
 
 ## 截图
 

@@ -177,6 +177,7 @@ public class AccountExportService
 
             var tdataResult = await TdataSessionBridge.TryConvertTelethonStringSessionToTdataAsync(
                 telethonSessionString: telethonResult.SessionString,
+                userId: account.UserId > 0 ? account.UserId : null,
                 outputTdataDirectory: tempTdataDir,
                 logger: _logger,
                 cancellationToken: cancellationToken);

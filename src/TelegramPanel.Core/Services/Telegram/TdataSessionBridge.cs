@@ -43,11 +43,21 @@ try {
     private const string NodeScriptTelethonToTdata = """
 import { convertFromTelethonSession, convertToTdata } from '@mtcute/convert';
 
-const telethonSession = process.argv[process.argv.length - 2];
+const telethonSession = process.argv[process.argv.length - 3];
+const userIdRaw = process.argv[process.argv.length - 2];
 const outputDir = process.argv[process.argv.length - 1];
 
 try {
   const session = convertFromTelethonSession(telethonSession);
+  const userId = Number.parseInt(userIdRaw, 10);
+  if (Number.isFinite(userId) && userId > 0) {
+    session.self = {
+      userId,
+      isBot: false,
+      isPremium: false,
+      usernames: [],
+    };
+  }
   await convertToTdata(session, { path: outputDir });
   console.log(JSON.stringify({ ok: true }));
 } catch (error) {
@@ -141,6 +151,7 @@ try {
 
     public static async Task<ConvertToTdataResult> TryConvertTelethonStringSessionToTdataAsync(
         string telethonSessionString,
+        long? userId,
         string outputTdataDirectory,
         ILogger logger,
         CancellationToken cancellationToken = default)
@@ -164,7 +175,7 @@ try {
 
             var run = await RunProcessAsync(
                 fileName: "node",
-                arguments: new[] { "--input-type=module", "-e", NodeScriptTelethonToTdata, "--", normalizedSession, absoluteOutputDir },
+                arguments: new[] { "--input-type=module", "-e", NodeScriptTelethonToTdata, "--", normalizedSession, (userId ?? 0).ToString(), absoluteOutputDir },
                 workingDirectory: RuntimeDir,
                 timeoutMs: ConvertTimeoutMs,
                 cancellationToken: cancellationToken);

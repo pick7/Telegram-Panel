@@ -13,7 +13,6 @@
 @inject PanelTimeZoneService TimeZone
 @inject NavigationManager Navigation
 @inject CloudMailClient CloudMail
-@inject AppSelfUpdateService SelfUpdate
 @using TelegramPanel.Web.Services
 @using TelegramPanel.Core.Utils
 
@@ -203,98 +202,6 @@
 
         <MudCard Class="mb-4">
             <MudCardHeader>
-                <MudText Typo="Typo.h6">应用更新（Docker）</MudText>
-            </MudCardHeader>
-            <MudCardContent>
-                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                    一键更新会下载 GitHub Release 的 Linux 更新包，写入 /data/app-current，并自动重启服务。
-                </MudAlert>
-                <MudText Typo="Typo.body2" Class="mt-3">
-                    <strong>当前版本：</strong>v@VersionService.Version
-                </MudText>
-                <MudText Typo="Typo.body2" Class="mt-2">
-                    <strong>运行环境：</strong>@(SelfUpdate.IsDockerEnvironment ? "Docker" : "非 Docker")
-                </MudText>
-
-                @if (selfUpdateInfo != null)
-                {
-                    <MudDivider Class="my-3" />
-
-                    @if (!selfUpdateInfo.Success)
-                    {
-                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
-                            检查失败：@selfUpdateInfo.Error
-                        </MudAlert>
-                    }
-                    else if (!selfUpdateInfo.Enabled)
-                    {
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">
-                            自动更新已禁用
-                        </MudText>
-                    }
-                    else if (selfUpdateInfo.UpdateAvailable)
-                    {
-                        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                            发现新版本：v@selfUpdateInfo.LatestVersion（当前 v@selfUpdateInfo.CurrentVersion）
-                        </MudAlert>
-                        <MudText Typo="Typo.body2" Class="mt-2">
-                            <strong>更新包：</strong>@(selfUpdateInfo.AssetName ?? "未匹配")
-                        </MudText>
-                        @if (!string.IsNullOrWhiteSpace(selfUpdateInfo.BlockedReason))
-                        {
-                            <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
-                                @selfUpdateInfo.BlockedReason
-                            </MudText>
-                        }
-                    }
-                    else
-                    {
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">
-                            当前已是最新版本
-                        </MudText>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(selfUpdateInfo.Url))
-                    {
-                        <MudLink Href="@selfUpdateInfo.Url"
-                                 Target="_blank"
-                                 rel="noopener noreferrer"
-                                 Class="mt-2 d-inline-block">
-                            查看发布页
-                        </MudLink>
-                    }
-
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block mt-2">
-                        最近检查：@selfUpdateInfo.CheckedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-                    </MudText>
-                }
-            </MudCardContent>
-            <MudCardActions>
-                <MudButton Variant="Variant.Outlined"
-                           Color="Color.Primary"
-                           Disabled="@selfUpdateChecking"
-                           OnClick="@(async (MouseEventArgs _) => await CheckSelfUpdate())">
-                    @if (selfUpdateChecking)
-                    {
-                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
-                    }
-                    检查更新
-                </MudButton>
-                <MudButton Variant="Variant.Filled"
-                           Color="Color.Warning"
-                           Disabled="@(!CanApplySelfUpdate || selfUpdateApplying)"
-                           OnClick="@(async (MouseEventArgs _) => await ApplySelfUpdate())">
-                    @if (selfUpdateApplying)
-                    {
-                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
-                    }
-                    一键更新并重启
-                </MudButton>
-            </MudCardActions>
-        </MudCard>
-
-        <MudCard Class="mb-4">
-            <MudCardHeader>
                 <MudText Typo="Typo.h6">日志设置</MudText>
             </MudCardHeader>
             <MudCardContent>
@@ -365,9 +272,6 @@
     private string cloudMailAdminEmail = "";
     private string cloudMailAdminPassword = "";
     private bool cloudMailGeneratingToken = false;
-    private bool selfUpdateChecking = false;
-    private bool selfUpdateApplying = false;
-    private AppSelfUpdateInfo? selfUpdateInfo;
 
     private sealed record TimeZoneChoice(string Id, string Label);
 
@@ -389,15 +293,6 @@
             return $"{tz.Id}（UTC{sign}{offset}），现在：{now}";
         }
     }
-
-    private bool CanApplySelfUpdate =>
-        selfUpdateInfo is
-        {
-            Success: true,
-            Enabled: true,
-            UpdateAvailable: true,
-            CanApply: true
-        };
 
     private string LocalConfigPath => LocalConfigFile.ResolvePath(Configuration, Environment);
     private bool LocalConfigExists => System.IO.File.Exists(LocalConfigPath);
@@ -752,86 +647,6 @@
         finally
         {
             syncing = false;
-        }
-    }
-
-    private async Task CheckSelfUpdate()
-    {
-        if (selfUpdateChecking)
-            return;
-
-        selfUpdateChecking = true;
-        try
-        {
-            selfUpdateInfo = await SelfUpdate.CheckLatestAsync(forceRefresh: true, CancellationToken.None);
-            if (!selfUpdateInfo.Success)
-            {
-                Snackbar.Add($"检查更新失败：{selfUpdateInfo.Error}", Severity.Warning);
-                return;
-            }
-
-            if (!selfUpdateInfo.Enabled)
-            {
-                Snackbar.Add("自动更新功能当前已禁用", Severity.Info);
-                return;
-            }
-
-            if (selfUpdateInfo.UpdateAvailable)
-                Snackbar.Add($"发现新版本：v{selfUpdateInfo.LatestVersion}", Severity.Info);
-            else
-                Snackbar.Add("当前已是最新版本", Severity.Success);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"检查更新异常：{ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            selfUpdateChecking = false;
-        }
-    }
-
-    private async Task ApplySelfUpdate()
-    {
-        if (selfUpdateApplying)
-            return;
-
-        if (selfUpdateInfo == null || !CanApplySelfUpdate)
-        {
-            Snackbar.Add(selfUpdateInfo?.BlockedReason ?? "请先检查更新并确认可更新", Severity.Warning);
-            return;
-        }
-
-        var target = selfUpdateInfo.LatestTag ?? selfUpdateInfo.LatestVersion ?? "最新版本";
-        bool? ok = await DialogService.ShowMessageBox(
-            "确认一键更新",
-            $"将升级到 {target}，并在部署完成后自动重启服务。是否继续？",
-            yesText: "继续",
-            cancelText: "取消");
-
-        if (ok != true)
-            return;
-
-        selfUpdateApplying = true;
-        try
-        {
-            var result = await SelfUpdate.ApplyLatestAsync(CancellationToken.None);
-            if (result.Success)
-            {
-                Snackbar.Add(result.Message, Severity.Success);
-                return;
-            }
-
-            Snackbar.Add(result.Message, Severity.Error);
-            selfUpdateInfo = await SelfUpdate.CheckLatestAsync(forceRefresh: true, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"执行更新异常：{ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            selfUpdateApplying = false;
         }
     }
 

@@ -8,6 +8,8 @@ public static class BatchTaskTypes
     // Bot 任务（现有）
     public const string Invite = "invite";
     public const string SetAdmin = "set_admin";
+    public const string BotChannelSetAdminsByAccount = "bot_channel_set_admins_by_account";
+    public const string BotSetAdmins = "bot_set_admins";
 
     // User 任务（新增）
     public const string UserJoinSubscribe = "user_join_subscribe";

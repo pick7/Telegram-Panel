@@ -24,6 +24,10 @@
                            Disabled="@loading" OnClick="OpenCreateTaskDialog" Class="ml-2">
                     新建任务
                 </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.DeleteSweep"
+                           Disabled="@(loading || tasks.Count == 0)" OnClick="ClearAllTasks" Class="ml-2">
+                    清理全部任务
+                </MudButton>
                 <MudSelect @bind-Value="filterCategory" Label="任务分类" Variant="Variant.Outlined" Dense="true" Class="ml-2" Style="min-width: 140px;">
                     <MudSelectItem Value='@("all")'>全部</MudSelectItem>
                     @foreach (var c in AvailableCategories)
@@ -194,7 +198,12 @@
         }
 
         // fallback：兼容历史任务
-        return "other";
+        return taskType switch
+        {
+            BatchTaskTypes.BotChannelSetAdminsByAccount => "bot",
+            BatchTaskTypes.BotSetAdmins => "bot",
+            _ => "other"
+        };
     }
 
     private string GetCategoryName(string taskType) => GetCategoryDisplayName(GetCategory(taskType));
@@ -234,7 +243,12 @@
             && !string.IsNullOrWhiteSpace(reg.Definition.DisplayName))
             return reg.Definition.DisplayName;
 
-        return type;
+        return type switch
+        {
+            BatchTaskTypes.BotChannelSetAdminsByAccount => "Bot频道批量设置管理员（账号执行）",
+            BatchTaskTypes.BotSetAdmins => "Bot频道批量设置管理员（机器人执行）",
+            _ => type
+        };
     }
 
     private string GetStatusName(string status) => status switch
@@ -282,7 +296,10 @@
         if (!string.IsNullOrEmpty(task.Config))
             details += $"\n配置信息:\n{task.Config}";
 
-        DialogService.ShowMessageBox("任务详情", details);
+        var html = System.Net.WebUtility.HtmlEncode(details)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\n", "<br/>", StringComparison.Ordinal);
+        DialogService.ShowMessageBox("任务详情", (MarkupString)html);
     }
 
     private async Task CancelTask(int id)
@@ -326,6 +343,48 @@
             {
                 Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
             }
+        }
+    }
+
+    private async Task ClearAllTasks()
+    {
+        var hasActive = tasks.Any(t => t.Status is "pending" or "running");
+        var message = hasActive
+            ? "将清理全部任务记录（包含进行中/待执行任务）。进行中的任务会先标记为失败再删除，是否继续？"
+            : "确定要清理全部任务记录吗？此操作不可恢复。";
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认清理",
+            message,
+            yesText: "清理全部",
+            cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        try
+        {
+            var allTasks = (await TaskManagement.GetAllTasksAsync()).ToList();
+            if (allTasks.Count == 0)
+            {
+                tasks.Clear();
+                Snackbar.Add("没有可清理的任务记录", Severity.Info);
+                return;
+            }
+
+            foreach (var activeTask in allTasks.Where(t => t.Status is "pending" or "running"))
+                await TaskManagement.CompleteTaskAsync(activeTask.Id, success: false);
+
+            foreach (var task in allTasks)
+                await TaskManagement.DeleteTaskAsync(task.Id);
+
+            tasks.Clear();
+            Snackbar.Add($"已清理 {allTasks.Count} 条任务记录", Severity.Success);
+            await LoadTasks();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"清理失败：{ex.Message}", Severity.Error);
         }
     }
 

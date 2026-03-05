@@ -838,11 +838,12 @@ public class AccountTelegramToolsService
         int accountId,
         string botLinkOrUsername,
         string? startParameter = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool assumeBotUsername = false)
     {
         try
         {
-            var (username, startFromLink) = NormalizeTelegramBotUsername(botLinkOrUsername);
+            var (username, startFromLink) = NormalizeTelegramBotUsername(botLinkOrUsername, assumeBotUsername);
             var normalizedManualStart = NormalizeBotStartParameter(startParameter);
             var finalStart = string.IsNullOrWhiteSpace(normalizedManualStart) ? startFromLink : normalizedManualStart;
 
@@ -890,11 +891,12 @@ public class AccountTelegramToolsService
     public async Task<(bool Success, string? Error, string? BotUsername)> StopExternalBotAsync(
         int accountId,
         string botLinkOrUsername,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool assumeBotUsername = false)
     {
         try
         {
-            var (username, _) = NormalizeTelegramBotUsername(botLinkOrUsername);
+            var (username, _) = NormalizeTelegramBotUsername(botLinkOrUsername, assumeBotUsername);
 
             var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
@@ -957,7 +959,7 @@ public class AccountTelegramToolsService
         return s;
     }
 
-    private static (string Username, string StartFromLink) NormalizeTelegramBotUsername(string input)
+    private static (string Username, string StartFromLink) NormalizeTelegramBotUsername(string input, bool assumeBotUsername = false)
     {
         var s = (input ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(s))
@@ -999,6 +1001,18 @@ public class AccountTelegramToolsService
         }
 
         s = s.Trim().TrimStart('@');
+
+        // 支持：@username?start=abc（无 http/tg 协议）
+        var question = s.IndexOf('?');
+        if (question >= 0)
+        {
+            var query = ParseQueryString(s[(question + 1)..]);
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+
+            s = s[..question];
+        }
+
         var slash = s.IndexOf('/');
         if (slash >= 0)
             s = s[..slash];
@@ -1012,7 +1026,13 @@ public class AccountTelegramToolsService
         if (!System.Text.RegularExpressions.Regex.IsMatch(s, "^[A-Za-z0-9_]{5,64}$"))
             throw new ArgumentException("Bot 用户名格式无效", nameof(input));
 
-        if (!s.EndsWith("bot", StringComparison.OrdinalIgnoreCase))
+        // 常规情况：要求以 bot 结尾
+        // 例外：
+        // 1) 显式给了 start 参数（常见于 t.me/xxx?start=abc 或 @xxx?start=abc）
+        // 2) 调用方明确“按 Bot 处理”
+        if (!s.EndsWith("bot", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(startFromLink)
+            && !assumeBotUsername)
             throw new ArgumentException("目标看起来不是 Bot 用户名（需以 bot 结尾）", nameof(input));
 
         return (s, startFromLink);

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using System.Net.Mail;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
@@ -920,6 +921,177 @@ public class AccountTelegramToolsService
             var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
             return (false, msg, null);
         }
+    }
+
+    public sealed record ResolvedChatTarget(InputPeer Peer, string Title, string CanonicalId);
+
+    /// <summary>
+    /// 解析群组/频道目标，支持：
+    /// - 用户名/链接：@username、username、https://t.me/xxx、t.me/xxx、tg://join?invite=hash
+    /// - 频道/群组 ID：123456、-123456、-1001234567890
+    /// </summary>
+    public async Task<(bool Success, string? Error, ResolvedChatTarget? Target)> ResolveChatTargetAsync(
+        int accountId,
+        string target,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var raw = (target ?? string.Empty).Trim();
+            if (raw.Length == 0)
+                return (false, "目标为空", null);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (TryParseChatIdCandidate(raw, out var normalizedId))
+            {
+                var resolvedById = await TryResolveChatByIdFromDialogsAsync(client, normalizedId, cancellationToken);
+                if (resolvedById != null)
+                    return (true, null, resolvedById);
+
+                return (false, $"未找到 chatId={raw} 对应的群组/频道（请确认该账号已加入目标）", null);
+            }
+
+            var url = NormalizeTelegramJoinUrl(raw);
+            var chat = await client.AnalyzeInviteLink(url, join: false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var peer = chat switch
+            {
+                TL.Channel c => c.ToInputPeer(),
+                TL.Chat c => c.ToInputPeer(),
+                _ => null
+            };
+
+            if (peer == null)
+                return (false, "无法解析目标群组/频道", null);
+
+            return chat switch
+            {
+                TL.Channel channel => (true, null, new ResolvedChatTarget(peer, NormalizeChatTitle(channel.title, channel.id.ToString(CultureInfo.InvariantCulture)), BuildChannelBotApiChatId(channel.id).ToString(CultureInfo.InvariantCulture))),
+                TL.Chat basic => (true, null, new ResolvedChatTarget(peer, NormalizeChatTitle(basic.title, basic.id.ToString(CultureInfo.InvariantCulture)), basic.id.ToString(CultureInfo.InvariantCulture))),
+                _ => (true, null, new ResolvedChatTarget(peer, raw, raw))
+            };
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 向已解析的群组/频道目标发送文本消息。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> SendMessageToResolvedChatAsync(
+        int accountId,
+        ResolvedChatTarget target,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var text = (message ?? string.Empty).Trim();
+            if (text.Length == 0)
+                return (false, "消息内容为空");
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _ = await client.SendMessageAsync(target.Peer, text);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
+    private async Task<ResolvedChatTarget?> TryResolveChatByIdFromDialogsAsync(
+        Client client,
+        long normalizedId,
+        CancellationToken cancellationToken)
+    {
+        var dialogs = await client.Messages_GetAllDialogs();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var chat in dialogs.chats.Values)
+        {
+            switch (chat)
+            {
+                case TL.Channel channel when channel.IsActive:
+                {
+                    var rawId = channel.id;
+                    var botApiId = BuildChannelBotApiChatId(rawId);
+                    if (normalizedId != rawId && normalizedId != botApiId)
+                        continue;
+
+                    return new ResolvedChatTarget(
+                        channel.ToInputPeer(),
+                        NormalizeChatTitle(channel.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                        botApiId.ToString(CultureInfo.InvariantCulture));
+                }
+                case TL.Chat basic when basic.IsActive:
+                {
+                    var rawId = basic.id;
+                    var negativeId = -rawId;
+                    if (normalizedId != rawId && normalizedId != negativeId)
+                        continue;
+
+                    return new ResolvedChatTarget(
+                        basic.ToInputPeer(),
+                        NormalizeChatTitle(basic.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                        rawId.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseChatIdCandidate(string raw, out long normalizedId)
+    {
+        normalizedId = 0;
+        var s = (raw ?? string.Empty).Trim();
+        if (s.Length == 0)
+            return false;
+
+        if (s.StartsWith("+", StringComparison.Ordinal))
+            return false;
+
+        if (!long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return false;
+
+        if (parsed < 0 && s.StartsWith("-100", StringComparison.Ordinal))
+        {
+            var suffix = s[4..];
+            if (suffix.Length > 0 && long.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelId) && channelId > 0)
+            {
+                normalizedId = parsed;
+                return true;
+            }
+        }
+
+        normalizedId = parsed;
+        return true;
+    }
+
+    private static long BuildChannelBotApiChatId(long channelId)
+    {
+        var text = "-100" + channelId.ToString(CultureInfo.InvariantCulture);
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        return channelId;
+    }
+
+    private static string NormalizeChatTitle(string? title, string fallback)
+    {
+        var text = (title ?? string.Empty).Trim();
+        return text.Length == 0 ? fallback : text;
     }
 
     private static string NormalizeTelegramJoinUrl(string input)

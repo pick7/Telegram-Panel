@@ -202,6 +202,7 @@
         // fallback：兼容历史任务
         return taskType switch
         {
+            BatchTaskTypes.UserChatActive => "user",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "bot",
             BatchTaskTypes.BotSetAdmins => "bot",
             _ => "other"
@@ -247,6 +248,7 @@
 
         return type switch
         {
+            BatchTaskTypes.UserChatActive => "账号持续活跃（群组/频道）",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "Bot频道批量设置管理员（账号执行）",
             BatchTaskTypes.BotSetAdmins => "Bot频道批量设置管理员（机器人执行）",
             _ => type
@@ -307,6 +309,8 @@
         var failureLines = ExtractBotAdminFailureLines(task);
         if (failureLines.Count > 0)
             details += $"\n失败频道:\n{string.Join('\n', failureLines)}";
+        else if (IsUserChatActiveTask(task.TaskType) && TryBuildUserChatActiveDetails(task, out var activeDetails))
+            details += activeDetails;
         else if (!IsBotAdminTask(task.TaskType) && !string.IsNullOrEmpty(task.Config))
             details += $"\n配置信息:\n{task.Config}";
 
@@ -318,6 +322,9 @@
 
     private static bool IsBotAdminTask(string taskType) =>
         taskType is BatchTaskTypes.BotChannelSetAdminsByAccount or BatchTaskTypes.BotSetAdmins;
+
+    private static bool IsUserChatActiveTask(string taskType) =>
+        taskType is BatchTaskTypes.UserChatActive;
 
     private static List<string> ExtractBotAdminFailureLines(BatchTask task)
     {
@@ -375,6 +382,88 @@
         }
 
         return lines;
+    }
+
+    private static bool TryBuildUserChatActiveDetails(BatchTask task, out string details)
+    {
+        details = string.Empty;
+        if (!IsUserChatActiveTask(task.TaskType) || string.IsNullOrWhiteSpace(task.Config))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(task.Config);
+            var root = doc.RootElement;
+
+            var categoryName = root.TryGetProperty("category_name", out var categoryNameEl) ? (categoryNameEl.GetString() ?? "").Trim() : "";
+            var categoryId = root.TryGetProperty("category_id", out var categoryIdEl) && categoryIdEl.TryGetInt32(out var cid) ? cid : 0;
+            var maxMessages = root.TryGetProperty("max_messages", out var maxMessagesEl) && maxMessagesEl.TryGetInt32(out var mm) ? mm : 0;
+            var accountMode = root.TryGetProperty("account_mode", out var accountModeEl) ? (accountModeEl.GetString() ?? "").Trim() : "";
+            var targetMode = root.TryGetProperty("target_mode", out var targetModeEl) ? (targetModeEl.GetString() ?? "").Trim() : "";
+            var messageMode = root.TryGetProperty("message_mode", out var messageModeEl) ? (messageModeEl.GetString() ?? "").Trim() : "";
+            var delayMin = root.TryGetProperty("delay_min_ms", out var delayMinEl) && delayMinEl.TryGetInt32(out var dmin) ? dmin : 0;
+            var delayMax = root.TryGetProperty("delay_max_ms", out var delayMaxEl) && delayMaxEl.TryGetInt32(out var dmax) ? dmax : 0;
+            var targetCount = root.TryGetProperty("targets", out var targetsEl) && targetsEl.ValueKind == JsonValueKind.Array
+                ? targetsEl.GetArrayLength()
+                : 0;
+            var dictCount = root.TryGetProperty("dictionary", out var dictEl) && dictEl.ValueKind == JsonValueKind.Array
+                ? dictEl.GetArrayLength()
+                : 0;
+
+            var lines = new List<string>();
+            if (root.TryGetProperty("recent_failures", out var failuresEl) && failuresEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in failuresEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var account = item.TryGetProperty("account", out var accountEl) ? (accountEl.GetString() ?? "").Trim() : "";
+                    var target = item.TryGetProperty("target", out var targetEl) ? (targetEl.GetString() ?? "").Trim() : "";
+                    var reason = item.TryGetProperty("reason", out var reasonEl) ? (reasonEl.GetString() ?? "").Trim() : "";
+                    var time = item.TryGetProperty("time_utc", out var timeEl) ? (timeEl.GetString() ?? "").Trim() : "";
+
+                    var line = $"{(account.Length == 0 ? "-" : account)} -> {(target.Length == 0 ? "-" : target)}：{(reason.Length == 0 ? "失败" : reason)}";
+                    if (time.Length > 0)
+                        line = $"{line}（{time}）";
+                    lines.Add(line);
+                }
+            }
+
+            var categoryText = categoryName.Length > 0 ? $"{categoryName} (#{categoryId})" : $"#{categoryId}";
+            details += "\n配置摘要:\n";
+            details += $"分类: {categoryText}\n";
+            details += $"目标数: {targetCount}\n";
+            details += $"词典数: {dictCount}\n";
+            details += $"账号模式: {NormalizeTaskModeDisplay(accountMode)}\n";
+            details += $"目标模式: {NormalizeTaskModeDisplay(targetMode)}\n";
+            details += $"词典模式: {NormalizeTaskModeDisplay(messageMode)}\n";
+            details += $"间隔: {delayMin} ~ {delayMax} ms\n";
+            details += $"最多发送: {(maxMessages <= 0 ? "持续运行（直到取消）" : maxMessages.ToString())}\n";
+
+            if (lines.Count > 0)
+            {
+                details += "\n最近失败:\n";
+                details += string.Join('\n', lines.TakeLast(20));
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeTaskModeDisplay(string? mode)
+    {
+        var text = (mode ?? "").Trim();
+        return text switch
+        {
+            "random" => "随机",
+            "queue" => "队列循环",
+            _ => string.IsNullOrWhiteSpace(text) ? "-" : text
+        };
     }
 
     private async Task CancelTask(int id)

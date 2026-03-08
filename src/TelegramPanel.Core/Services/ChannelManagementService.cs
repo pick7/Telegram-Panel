@@ -37,6 +37,7 @@ public class ChannelManagementService
     /// </summary>
     public async Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryChannelsForViewPagedAsync(
         int accountId,
+        int? groupId,
         string? filterType,
         string? membershipRole,
         string? search,
@@ -44,7 +45,7 @@ public class ChannelManagementService
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        return await _channelRepository.QueryForViewPagedAsync(accountId, filterType, membershipRole, search, pageIndex, pageSize, cancellationToken);
+        return await _channelRepository.QueryForViewPagedAsync(accountId, groupId, filterType, membershipRole, search, pageIndex, pageSize, cancellationToken);
     }
 
     public async Task<IEnumerable<Channel>> GetChannelsByCreatorAsync(int accountId)

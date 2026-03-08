@@ -12,7 +12,7 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
     {
     }
 
-    private IQueryable<Channel> BuildForViewQuery(int accountId, string? filterType, string? membershipRole, string? search)
+    private IQueryable<Channel> BuildForViewQuery(int accountId, int? groupId, string? filterType, string? membershipRole, string? search)
     {
         var query = _dbSet
             .AsNoTracking()
@@ -22,28 +22,37 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
             .AsSplitQuery()
             .AsQueryable();
 
+        query = query.Where(c => c.CreatorAccountId != null || c.AccountChannels.Any());
+
+        membershipRole = (membershipRole ?? "all").Trim().ToLowerInvariant();
         if (accountId > 0)
         {
             query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId));
 
-            membershipRole = (membershipRole ?? "all").Trim().ToLowerInvariant();
             if (membershipRole == "creator")
-            {
                 query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && x.IsCreator));
-            }
             else if (membershipRole == "admin")
-            {
                 query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && x.IsAdmin && !x.IsCreator));
-            }
             else if (membershipRole == "member")
-            {
                 query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && !x.IsAdmin));
-            }
         }
-        else
+        else if (membershipRole == "creator")
         {
-            query = query.Where(c => c.CreatorAccountId != null || c.AccountChannels.Any());
+            query = query.Where(c => c.AccountChannels.Any(x => x.IsCreator));
         }
+        else if (membershipRole == "admin")
+        {
+            query = query.Where(c => c.AccountChannels.Any(x => x.IsAdmin && !x.IsCreator));
+        }
+        else if (membershipRole == "member")
+        {
+            query = query.Where(c => c.AccountChannels.Any(x => !x.IsAdmin));
+        }
+
+        if (groupId.HasValue && groupId.Value > 0)
+            query = query.Where(c => c.GroupId == groupId.Value);
+        else if (groupId.HasValue && groupId.Value == 0)
+            query = query.Where(c => c.GroupId == null);
 
         filterType = (filterType ?? "all").Trim().ToLowerInvariant();
         if (filterType == "public")
@@ -57,7 +66,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
             var like = $"%{search}%";
             query = query.Where(c =>
                 EF.Functions.Like(c.Title, like)
-                || (c.Username != null && EF.Functions.Like(c.Username, like)));
+                || (c.Username != null && EF.Functions.Like(c.Username, like))
+                || (c.Group != null && EF.Functions.Like(c.Group.Name, like)));
         }
 
         return query.OrderByDescending(c => c.SyncedAt);
@@ -68,6 +78,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(c => c.Id == id);
     }
 
@@ -76,6 +88,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
     }
@@ -85,6 +99,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(c => c.TelegramId == telegramId);
     }
 
@@ -93,6 +109,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .Where(c => c.CreatorAccountId != null)
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
@@ -103,6 +121,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .Where(c => c.CreatorAccountId == accountId)
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
@@ -116,6 +136,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .Where(c => links.Any(x => x.ChannelId == c.Id))
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
@@ -126,6 +148,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .Where(c => c.GroupId == groupId)
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
@@ -136,6 +160,8 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         return await _dbSet
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .Where(c => c.IsBroadcast)
             .OrderByDescending(c => c.SyncedAt)
             .ToListAsync();
@@ -143,6 +169,7 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
 
     public async Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryForViewPagedAsync(
         int accountId,
+        int? groupId,
         string? filterType,
         string? membershipRole,
         string? search,
@@ -154,7 +181,7 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         if (pageSize <= 0) pageSize = 20;
         if (pageSize > 500) pageSize = 500;
 
-        var query = BuildForViewQuery(accountId, filterType, membershipRole, search);
+        var query = BuildForViewQuery(accountId, groupId, filterType, membershipRole, search);
         var total = await query.CountAsync(cancellationToken);
         var items = await query
             .Skip(pageIndex * pageSize)

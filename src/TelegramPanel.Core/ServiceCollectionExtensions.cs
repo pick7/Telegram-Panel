@@ -35,6 +35,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ChannelManagementService>();
         services.AddScoped<ChannelGroupManagementService>();
         services.AddScoped<GroupManagementService>();
+        services.AddScoped<GroupCategoryManagementService>();
         services.AddScoped<BatchTaskManagementService>();
         services.AddScoped<BotManagementService>();
 

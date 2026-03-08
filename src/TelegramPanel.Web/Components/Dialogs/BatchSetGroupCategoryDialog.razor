@@ -5,14 +5,14 @@
     <DialogContent>
         <MudStack Spacing="3">
             <MudAlert Severity="Severity.Info">
-                将为 <strong>@SelectedCount</strong> 个频道设置分类
+                将为 <strong>@SelectedCount</strong> 个群组设置分类
             </MudAlert>
 
-            <MudSelect @bind-Value="selectedGroupId" Label="选择目标分类" Variant="Variant.Outlined" Required="true">
+            <MudSelect @bind-Value="selectedCategoryId" Label="选择目标分类" Variant="Variant.Outlined" Required="true">
                 <MudSelectItem Value="0">未分类</MudSelectItem>
-                @foreach (var g in Groups)
+                @foreach (var category in Categories)
                 {
-                    <MudSelectItem Value="@g.Id">@g.Name</MudSelectItem>
+                    <MudSelectItem Value="@category.Id">@category.Name</MudSelectItem>
                 }
             </MudSelect>
         </MudStack>
@@ -26,16 +26,15 @@
 @code
 {
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
-    [Parameter] public List<ChannelGroup> Groups { get; set; } = new();
+    [Parameter] public List<GroupCategory> Categories { get; set; } = new();
     [Parameter] public int SelectedCount { get; set; }
 
-    private int selectedGroupId;
+    private int selectedCategoryId;
 
     private void Cancel() => MudDialog.Cancel();
 
     private void Confirm()
     {
-        MudDialog.Close(DialogResult.Ok(selectedGroupId));
+        MudDialog.Close(DialogResult.Ok(selectedCategoryId));
     }
 }
-

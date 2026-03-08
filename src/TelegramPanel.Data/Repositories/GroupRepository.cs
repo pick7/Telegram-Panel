@@ -12,37 +12,47 @@ public class GroupRepository : Repository<Group>, IGroupRepository
     {
     }
 
-    private IQueryable<Group> BuildForViewQuery(int accountId, string? filterType, string? membershipRole, string? search)
+    private IQueryable<Group> BuildForViewQuery(int accountId, int? categoryId, string? filterType, string? membershipRole, string? search)
     {
         var query = _dbSet
             .AsNoTracking()
             .Include(g => g.CreatorAccount)
+            .Include(g => g.Category)
             .Include(g => g.AccountGroups)
             .AsSplitQuery()
             .AsQueryable();
 
+        query = query.Where(g => g.CreatorAccountId != null || g.AccountGroups.Any());
+
+        membershipRole = (membershipRole ?? "all").Trim().ToLowerInvariant();
         if (accountId > 0)
         {
             query = query.Where(g => g.AccountGroups.Any(x => x.AccountId == accountId));
 
-            membershipRole = (membershipRole ?? "all").Trim().ToLowerInvariant();
             if (membershipRole == "creator")
-            {
                 query = query.Where(g => g.AccountGroups.Any(x => x.AccountId == accountId && x.IsCreator));
-            }
             else if (membershipRole == "admin")
-            {
                 query = query.Where(g => g.AccountGroups.Any(x => x.AccountId == accountId && x.IsAdmin && !x.IsCreator));
-            }
             else if (membershipRole == "member")
-            {
                 query = query.Where(g => g.AccountGroups.Any(x => x.AccountId == accountId && !x.IsAdmin));
-            }
         }
-        else
+        else if (membershipRole == "creator")
         {
-            query = query.Where(g => g.CreatorAccountId != null || g.AccountGroups.Any());
+            query = query.Where(g => g.AccountGroups.Any(x => x.IsCreator));
         }
+        else if (membershipRole == "admin")
+        {
+            query = query.Where(g => g.AccountGroups.Any(x => x.IsAdmin && !x.IsCreator));
+        }
+        else if (membershipRole == "member")
+        {
+            query = query.Where(g => g.AccountGroups.Any(x => !x.IsAdmin));
+        }
+
+        if (categoryId.HasValue && categoryId.Value > 0)
+            query = query.Where(g => g.CategoryId == categoryId.Value);
+        else if (categoryId.HasValue && categoryId.Value == 0)
+            query = query.Where(g => g.CategoryId == null);
 
         filterType = (filterType ?? "all").Trim().ToLowerInvariant();
         if (filterType == "public")
@@ -56,7 +66,8 @@ public class GroupRepository : Repository<Group>, IGroupRepository
             var like = $"%{search}%";
             query = query.Where(g =>
                 EF.Functions.Like(g.Title, like)
-                || (g.Username != null && EF.Functions.Like(g.Username, like)));
+                || (g.Username != null && EF.Functions.Like(g.Username, like))
+                || (g.Category != null && EF.Functions.Like(g.Category.Name, like)));
         }
 
         return query.OrderByDescending(g => g.SyncedAt);
@@ -66,6 +77,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
     {
         return await _dbSet
             .Include(g => g.CreatorAccount)
+            .Include(g => g.Category)
             .Include(g => g.AccountGroups)
             .AsSplitQuery()
             .FirstOrDefaultAsync(g => g.Id == id);
@@ -75,6 +87,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
     {
         return await _dbSet
             .Include(g => g.CreatorAccount)
+            .Include(g => g.Category)
             .Include(g => g.AccountGroups)
             .AsSplitQuery()
             .Where(g => g.CreatorAccountId != null || g.AccountGroups.Any())
@@ -86,6 +99,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
     {
         return await _dbSet
             .Include(g => g.CreatorAccount)
+            .Include(g => g.Category)
             .Include(g => g.AccountGroups)
             .AsSplitQuery()
             .FirstOrDefaultAsync(g => g.TelegramId == telegramId);
@@ -95,6 +109,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
     {
         return await _dbSet
             .Include(g => g.CreatorAccount)
+            .Include(g => g.Category)
             .Include(g => g.AccountGroups)
             .AsSplitQuery()
             .Where(g => g.CreatorAccountId == accountId)
@@ -104,6 +119,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
 
     public async Task<(IReadOnlyList<Group> Items, int TotalCount)> QueryForViewPagedAsync(
         int accountId,
+        int? categoryId,
         string? filterType,
         string? membershipRole,
         string? search,
@@ -115,7 +131,7 @@ public class GroupRepository : Repository<Group>, IGroupRepository
         if (pageSize <= 0) pageSize = 20;
         if (pageSize > 500) pageSize = 500;
 
-        var query = BuildForViewQuery(accountId, filterType, membershipRole, search);
+        var query = BuildForViewQuery(accountId, categoryId, filterType, membershipRole, search);
         var total = await query.CountAsync(cancellationToken);
         var items = await query
             .Skip(pageIndex * pageSize)

@@ -32,12 +32,20 @@
             <MudSelectItem Value='@("private")'>私密</MudSelectItem>
         </MudSelect>
         <MudSelect @bind-Value="filterMembershipRole" @bind-Value:after="OnFiltersChanged" Label="账号角色" Variant="Variant.Outlined" Dense="true"
-                   Disabled="@(filterAccount <= 0)"
                    Class="tp-input-full-xs" Style="min-width: 140px; flex: 0 1 180px;">
             <MudSelectItem Value='@("all")'>全部角色</MudSelectItem>
-            <MudSelectItem Value='@("creator")'>我创建</MudSelectItem>
-            <MudSelectItem Value='@("admin")'>我管理</MudSelectItem>
+            <MudSelectItem Value='@("creator")'>创建者</MudSelectItem>
+            <MudSelectItem Value='@("admin")'>管理员</MudSelectItem>
             <MudSelectItem Value='@("member")'>非管理员</MudSelectItem>
+        </MudSelect>
+        <MudSelect @bind-Value="filterGroupId" @bind-Value:after="OnFiltersChanged" Label="频道分类" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 160px; flex: 0 1 220px;">
+            <MudSelectItem Value='@(-1)'>全部分类</MudSelectItem>
+            <MudSelectItem Value='@(0)'>未分类</MudSelectItem>
+            @foreach (var group in groups)
+            {
+                <MudSelectItem Value="@group.Id">@group.Name</MudSelectItem>
+            }
         </MudSelect>
         <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
@@ -67,7 +75,7 @@
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="BatchCopyInvitesSelected">批量复制邀请链接（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="BatchExportInvitesSelected">批量导出邀请链接（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetAdminsSelected">批量设置管理员（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分组（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分类（已选）</MudMenuItem>
     </MudMenu>
 
     @if (selectedChannels.Count > 0)
@@ -89,6 +97,7 @@
                 <MudTh>频道名称</MudTh>
                 <MudTh>用户名</MudTh>
                 <MudTh>类型</MudTh>
+                <MudTh>频道分类</MudTh>
                 <MudTh>成员数</MudTh>
                 @if (filterAccount > 0)
                 {
@@ -124,6 +133,11 @@
                 <MudTd DataLabel="类型">
                     <MudChip T="string" Size="Size.Small" Color="@(string.IsNullOrEmpty(context.Username) ? Color.Warning : Color.Success)">
                         @(string.IsNullOrEmpty(context.Username) ? "私密" : "公开")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="频道分类">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.GroupId.HasValue ? Color.Info : Color.Default)">
+                        @(context.Group?.Name ?? "未分类")
                     </MudChip>
                 </MudTd>
                 <MudTd DataLabel="成员数">@context.MemberCount</MudTd>
@@ -189,6 +203,7 @@
     private bool loading = true;
     private string searchString = "";
     private int filterAccount = 0;
+    private int filterGroupId = -1;
     private string filterType = "all";
     private string filterMembershipRole = "all";
     private HashSet<Channel> selectedChannels = new();
@@ -241,7 +256,7 @@
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"加载分组失败：{ex.Message}", Severity.Error);
+            Snackbar.Add($"加载分类失败：{ex.Message}", Severity.Error);
         }
     }
 
@@ -252,8 +267,9 @@
         {
             var (items, total) = await ChannelManagement.QueryChannelsForViewPagedAsync(
                 accountId: filterAccount,
+                groupId: filterGroupId,
                 filterType: filterType,
-                membershipRole: filterAccount > 0 ? filterMembershipRole : "all",
+                membershipRole: filterMembershipRole,
                 search: searchString,
                 pageIndex: state.Page,
                 pageSize: state.PageSize,
@@ -310,9 +326,6 @@
 
     private async Task OnFiltersChanged()
     {
-        if (filterAccount <= 0)
-            filterMembershipRole = "all";
-
         await ReloadTable();
     }
 
@@ -684,7 +697,7 @@
             ["SelectedCount"] = targets.Count
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
-        var dialog = DialogService.Show<BatchSetChannelGroupDialog>("批量修改分组", parameters, options);
+        var dialog = DialogService.Show<BatchSetChannelGroupDialog>("批量修改分类", parameters, options);
         var result = await dialog.Result;
         if (result is not { Canceled: false })
             return;
@@ -700,11 +713,11 @@
 
             selectedChannels.Clear();
             await ReloadTable();
-            Snackbar.Add($"分组已更新：{targets.Count} 个频道", Severity.Success);
+            Snackbar.Add($"分类已更新：{targets.Count} 个频道", Severity.Success);
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"修改分组失败：{ex.Message}", Severity.Error);
+            Snackbar.Add($"修改分类失败：{ex.Message}", Severity.Error);
         }
         finally
         {

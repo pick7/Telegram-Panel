@@ -34,6 +34,7 @@ public class GroupManagementService
 
     public async Task<(IReadOnlyList<Group> Items, int TotalCount)> QueryGroupsForViewPagedAsync(
         int accountId,
+        int? categoryId,
         string? filterType,
         string? membershipRole,
         string? search,
@@ -41,7 +42,7 @@ public class GroupManagementService
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        return await _groupRepository.QueryForViewPagedAsync(accountId, filterType, membershipRole, search, pageIndex, pageSize, cancellationToken);
+        return await _groupRepository.QueryForViewPagedAsync(accountId, categoryId, filterType, membershipRole, search, pageIndex, pageSize, cancellationToken);
     }
 
     public async Task<IEnumerable<Group>> GetGroupsByCreatorAsync(int accountId)
@@ -62,6 +63,8 @@ public class GroupManagementService
             existing.MemberCount = group.MemberCount;
             existing.About = group.About;
             existing.AccessHash = group.AccessHash;
+            if (group.CategoryId.HasValue)
+                existing.CategoryId = group.CategoryId;
             if (existing.CreatorAccountId == null && group.CreatorAccountId != null)
                 existing.CreatorAccountId = group.CreatorAccountId;
             if (group.CreatedAt.HasValue)
@@ -87,6 +90,17 @@ public class GroupManagementService
         var group = await _groupRepository.GetByIdAsync(id);
         if (group != null)
             await _groupRepository.DeleteAsync(group);
+    }
+
+    public async Task UpdateGroupCategoryAsync(int groupId, int? categoryId)
+    {
+        var group = await _groupRepository.GetByIdAsync(groupId);
+        if (group != null)
+        {
+            group.CategoryId = categoryId;
+            group.SyncedAt = DateTime.UtcNow;
+            await _groupRepository.UpdateAsync(group);
+        }
     }
 
     public async Task<int> GetTotalGroupCountAsync()

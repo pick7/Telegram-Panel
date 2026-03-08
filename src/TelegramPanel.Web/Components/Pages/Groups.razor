@@ -1,5 +1,6 @@
 @page "/groups"
 @inject GroupManagementService GroupManagement
+@inject GroupCategoryManagementService GroupCategoryManagement
 @inject AccountManagementService AccountManagement
 @inject TelegramPanel.Web.Services.DataSyncService DataSync
 @inject IGroupService GroupService
@@ -31,12 +32,20 @@
             <MudSelectItem Value='@("private")'>私密</MudSelectItem>
         </MudSelect>
         <MudSelect @bind-Value="filterMembershipRole" @bind-Value:after="OnFiltersChanged" Label="账号角色" Variant="Variant.Outlined" Dense="true"
-                   Disabled="@(filterAccount <= 0)"
                    Class="tp-input-full-xs" Style="min-width: 140px; flex: 0 1 180px;">
             <MudSelectItem Value='@("all")'>全部角色</MudSelectItem>
             <MudSelectItem Value='@("creator")'>我创建</MudSelectItem>
             <MudSelectItem Value='@("admin")'>我管理</MudSelectItem>
             <MudSelectItem Value='@("member")'>非管理员</MudSelectItem>
+        </MudSelect>
+        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="群组分类" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 160px; flex: 0 1 220px;">
+            <MudSelectItem Value='@(-1)'>全部分类</MudSelectItem>
+            <MudSelectItem Value='@(0)'>未分类</MudSelectItem>
+            @foreach (var category in categories)
+            {
+                <MudSelectItem Value="@category.Id">@category.Name</MudSelectItem>
+            }
         </MudSelect>
         <MudTextField @bind-Value="searchString" Placeholder="搜索群组..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
@@ -64,6 +73,7 @@
              Size="Size.Small" Disabled="@loading" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
         <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="BatchCopyLinksSelected">批量复制加入链接（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="BatchExportLinksSelected">批量导出加入链接（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="OpenBatchSetCategorySelected">批量修改分类（已选）</MudMenuItem>
         <MudDivider />
         <MudMenuItem Disabled="@(selectedGroups.Count == 0)" Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="DeleteSelectedGroups">批量删除（已选）</MudMenuItem>
     </MudMenu>
@@ -87,6 +97,7 @@
                 <MudTh>群组名称</MudTh>
                 <MudTh>用户名</MudTh>
                 <MudTh>类型</MudTh>
+                <MudTh>群组分类</MudTh>
                 <MudTh>成员数</MudTh>
                 @if (filterAccount > 0)
                 {
@@ -122,6 +133,11 @@
                 <MudTd DataLabel="类型">
                     <MudChip T="string" Size="Size.Small" Color="@(string.IsNullOrWhiteSpace(context.Username) ? Color.Default : Color.Primary)">
                         @(string.IsNullOrWhiteSpace(context.Username) ? "私密" : "公开")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="群组分类">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.CategoryId.HasValue ? Color.Info : Color.Default)">
+                        @(context.Category?.Name ?? "未分类")
                     </MudChip>
                 </MudTd>
                 <MudTd DataLabel="成员数">@context.MemberCount</MudTd>
@@ -177,10 +193,12 @@
     private MudTable<Group>? _table;
     private List<Group> groups = new();
     private List<Account> accounts = new();
+    private List<GroupCategory> categories = new();
     private int totalCount;
     private bool loading = true;
     private string searchString = "";
     private int filterAccount = 0;
+    private int filterCategoryId = -1;
     private string filterType = "all";
     private string filterMembershipRole = "all";
     private HashSet<Group> selectedGroups = new();
@@ -206,6 +224,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadAccounts();
+        await LoadCategories();
     }
 
     private async Task LoadAccounts()
@@ -223,6 +242,19 @@
         }
     }
 
+    private async Task LoadCategories()
+    {
+        try
+        {
+            var list = await GroupCategoryManagement.GetAllCategoriesAsync();
+            categories = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载分类失败：{ex.Message}", Severity.Error);
+        }
+    }
+
     private async Task<TableData<Group>> LoadGroupsServerData(TableState state, CancellationToken cancellationToken)
     {
         loading = true;
@@ -230,8 +262,9 @@
         {
             var (items, total) = await GroupManagement.QueryGroupsForViewPagedAsync(
                 accountId: filterAccount,
+                categoryId: filterCategoryId,
                 filterType: filterType,
-                membershipRole: filterAccount > 0 ? filterMembershipRole : "all",
+                membershipRole: filterMembershipRole,
                 search: searchString,
                 pageIndex: state.Page,
                 pageSize: state.PageSize,
@@ -289,9 +322,6 @@
 
     private async Task OnFiltersChanged()
     {
-        if (filterAccount <= 0)
-            filterMembershipRole = "all";
-
         await ReloadTable();
     }
 
@@ -489,6 +519,52 @@
 
         Navigation.NavigateTo(url, forceLoad: true);
         await Task.CompletedTask;
+    }
+
+    private async Task OpenBatchSetCategorySelected()
+    {
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        if (categories.Count == 0)
+            await LoadCategories();
+
+        var parameters = new DialogParameters
+        {
+            ["Categories"] = categories,
+            ["SelectedCount"] = targets.Count
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BatchSetGroupCategoryDialog>("批量修改分类", parameters, options);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false })
+            return;
+
+        var categoryIdRaw = result.Data is int x ? x : 0;
+        int? categoryId = categoryIdRaw <= 0 ? null : categoryIdRaw;
+
+        loading = true;
+        try
+        {
+            foreach (var group in targets)
+                await GroupManagement.UpdateGroupCategoryAsync(group.Id, categoryId);
+
+            selectedGroups.Clear();
+            await ReloadTable();
+            Snackbar.Add($"分类已更新：{targets.Count} 个群组", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"修改分类失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
     }
 
     private async Task SyncCurrentAccountGroups()

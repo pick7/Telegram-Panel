@@ -20,6 +20,7 @@ public class AppDbContext : DbContext
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<ChannelGroup> ChannelGroups => Set<ChannelGroup>();
     public DbSet<Group> Groups => Set<Group>();
+    public DbSet<GroupCategory> GroupCategories => Set<GroupCategory>();
     public DbSet<BatchTask> BatchTasks => Set<BatchTask>();
     public DbSet<Bot> Bots => Set<Bot>();
     public DbSet<BotChannel> BotChannels => Set<BotChannel>();
@@ -44,11 +45,8 @@ public class AppDbContext : DbContext
             entity.Property(e => e.TelegramStatusDetails).HasMaxLength(2000);
 
             entity.HasIndex(e => e.Phone).IsUnique();
-            // 注意：UserId 在未登录/未验证的 session 导入场景可能为 0，SQLite 的 UNIQUE 约束会导致多账号导入失败。
-            // 这里保留索引但不做唯一约束，真正的去重以 Phone 为准。
             entity.HasIndex(e => e.UserId);
 
-            // 与AccountCategory的关系
             entity.HasOne(e => e.Category)
                 .WithMany(c => c.Accounts)
                 .HasForeignKey(e => e.CategoryId)
@@ -78,13 +76,11 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.TelegramId).IsUnique();
             entity.HasIndex(e => e.Username);
 
-            // 与Account的关系（创建者）
             entity.HasOne(e => e.CreatorAccount)
                 .WithMany(a => a.Channels)
                 .HasForeignKey(e => e.CreatorAccountId)
                 .OnDelete(DeleteBehavior.SetNull);
 
-            // 与ChannelGroup的关系
             entity.HasOne(e => e.Group)
                 .WithMany(g => g.Channels)
                 .HasForeignKey(e => e.GroupId)
@@ -95,7 +91,6 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<AccountChannel>(entity =>
         {
             entity.HasKey(e => e.Id);
-
             entity.HasIndex(e => new { e.AccountId, e.ChannelId }).IsUnique();
             entity.HasIndex(e => e.ChannelId);
 
@@ -130,11 +125,16 @@ public class AppDbContext : DbContext
 
             entity.HasIndex(e => e.TelegramId).IsUnique();
             entity.HasIndex(e => e.Username);
+            entity.HasIndex(e => e.CategoryId);
 
-            // 与Account的关系（创建者）
             entity.HasOne(e => e.CreatorAccount)
                 .WithMany(a => a.Groups)
                 .HasForeignKey(e => e.CreatorAccountId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(e => e.Category)
+                .WithMany(c => c.Groups)
+                .HasForeignKey(e => e.CategoryId)
                 .OnDelete(DeleteBehavior.SetNull);
         });
 
@@ -142,7 +142,6 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<AccountGroup>(entity =>
         {
             entity.HasKey(e => e.Id);
-
             entity.HasIndex(e => new { e.AccountId, e.GroupId }).IsUnique();
             entity.HasIndex(e => e.GroupId);
 
@@ -155,6 +154,16 @@ public class AppDbContext : DbContext
                 .WithMany(g => g.AccountGroups)
                 .HasForeignKey(e => e.GroupId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // GroupCategory配置
+        modelBuilder.Entity<GroupCategory>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Description).HasMaxLength(500);
+
+            entity.HasIndex(e => e.Name).IsUnique();
         });
 
         // BatchTask配置

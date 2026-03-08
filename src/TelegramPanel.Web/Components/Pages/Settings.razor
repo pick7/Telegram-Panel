@@ -158,10 +158,20 @@
                     <MudNumericField @bind-Value="syncInterval" Label="同步间隔 (小时)" Variant="Variant.Outlined" Class="mt-3"
                                      Min="1" Max="24" />
                 }
-                <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true" Class="mt-3"
-                           OnClick="@(async (MouseEventArgs _) => await SaveSyncConfig())">
-                    保存同步设置
-                </MudButton>
+                <MudStack Row="true" Spacing="2" Class="mt-3" Style="flex-wrap: wrap;">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Class="tp-input-full-xs"
+                               Style="flex: 1; min-width: 220px;"
+                               OnClick="@(async (MouseEventArgs _) => await SaveSyncConfig())">
+                        保存同步设置
+                    </MudButton>
+
+                    <MudButton Variant="Variant.Filled" Color="Color.Info" Class="tp-input-full-xs"
+                               Style="flex: 1; min-width: 220px;"
+                               Disabled="@syncing"
+                               OnClick="@(async (MouseEventArgs _) => await SyncNow())">
+                        @(syncing ? "同步中..." : "立即同步频道/群组")
+                    </MudButton>
+                </MudStack>
 
                 <MudDivider Class="my-4" />
 
@@ -180,10 +190,6 @@
                     保存 Bot 自动同步设置
                 </MudButton>
 
-                <MudButton Variant="Variant.Outlined" Color="Color.Info" FullWidth="true" Class="mt-4"
-                           OnClick="@(async (MouseEventArgs _) => await SyncNow())">
-                    立即同步
-                </MudButton>
             </MudCardContent>
         </MudCard>
 

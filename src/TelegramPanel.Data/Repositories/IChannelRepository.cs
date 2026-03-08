@@ -16,6 +16,7 @@ public interface IChannelRepository : IRepository<Channel>
 
     Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryForViewPagedAsync(
         int accountId,
+        int? groupId,
         string? filterType,
         string? membershipRole,
         string? search,

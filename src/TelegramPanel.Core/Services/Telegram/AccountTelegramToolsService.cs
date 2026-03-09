@@ -1210,6 +1210,16 @@ public class AccountTelegramToolsService
             _ = await client.Messages_GetBotCallbackAnswer(target.Peer, messageId, callbackData, null, false);
             return (true, null);
         }
+        catch (Exception ex) when (IsBotCallbackTimeout(ex))
+        {
+            _logger.LogInformation(
+                ex,
+                "Telegram bot callback timed out after click, treat as delivered: accountId={AccountId}, chat={ChatId}, messageId={MessageId}",
+                accountId,
+                target.CanonicalId,
+                messageId);
+            return (true, null);
+        }
         catch (Exception ex)
         {
             var (summary, details) = MapTelegramException(ex);
@@ -2019,6 +2029,12 @@ public class AccountTelegramToolsService
     /// <summary>
     /// 将 Telegram 异常映射为可读的摘要和详情。
     /// </summary>
+    private static bool IsBotCallbackTimeout(Exception ex)
+    {
+        var msg = ex.Message ?? string.Empty;
+        return msg.Contains("BOT_RESPONSE_TIMEOUT", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static (string summary, string details) MapTelegramException(Exception ex)
     {
         var msg = ex.Message ?? string.Empty;

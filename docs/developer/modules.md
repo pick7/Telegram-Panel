@@ -258,6 +258,116 @@ public sealed class MyHandler : IModuleTaskHandler
 }
 ```
 
+### 调用宿主 AI 服务（推荐给模块复用）
+
+宿主提供 `ITelegramPanelAiService`，模块可以直接复用主程序里已配置好的 OpenAI 兼容 AI 能力，不需要在模块里重复保存端点、Key 或自己再接一套 SDK。
+
+前置条件：
+
+- 在面板「系统设置 -> AI 设置」中已配置 `AI:OpenAI:Endpoint`
+- 已配置 `AI:OpenAI:ApiKey`
+- 已配置全局默认模型，或者模块调用时显式传入 `Model`
+- 若系统设置里配置了 `AI:OpenAI:RetryCount`，模块调用也会自动享受同一套重试策略
+
+当前宿主暴露两类能力：
+
+- `ChooseActionAsync(...)`：根据消息文本、按钮列表、可选图片，返回动作决策
+- `ReplyTextAsync(...)`：根据题目、上下文、可选图片，返回最终文本答案
+
+相关契约位于：`src/TelegramPanel.Modules.Abstractions/AiServices.cs`
+
+`ChooseActionAsync(...)` 的返回约定：
+
+- `Success=true` 且 `Mode=click_button`：使用 `ButtonIndex`（0 基）点击按钮
+- `Success=true` 且 `Mode=reply_text`：使用 `ReplyText` 发送文本
+- `Success=false`：查看 `Error`
+- `Reason` 仅用于日志或调试，不建议模块把它当成业务字段
+
+示例（模块任务里调用宿主 AI 识别按钮）：
+
+```csharp
+using TelegramPanel.Modules;
+
+public sealed class MyAiTaskHandler : IModuleTaskHandler
+{
+    public string TaskType => "example.ai-check";
+    private readonly ITelegramPanelAiService _ai;
+
+    public MyAiTaskHandler(ITelegramPanelAiService ai)
+    {
+        _ai = ai;
+    }
+
+    public async Task ExecuteAsync(IModuleTaskExecutionHost host, CancellationToken ct)
+    {
+        var result = await _ai.ChooseActionAsync(
+            new TelegramPanelAiChooseActionRequest(
+                Model: null, // null 表示回退到系统设置里的默认模型
+                MessageText: "请选择正确验证码",
+                Buttons: new[]
+                {
+                    new TelegramPanelAiButtonOption(0, "12"),
+                    new TelegramPanelAiButtonOption(1, "18"),
+                    new TelegramPanelAiButtonOption(2, "21")
+                },
+                Image: null,
+                Context: "这是 Telegram 群验证消息，请只返回最可靠动作。"),
+            ct);
+
+        if (!result.Success)
+            throw new InvalidOperationException(result.Error ?? "AI 决策失败");
+
+        if (string.Equals(result.Mode, "click_button", StringComparison.OrdinalIgnoreCase))
+        {
+            var buttonIndex = result.ButtonIndex ?? -1;
+            // 这里结合你自己的 Telegram 调用链执行点击
+        }
+    }
+}
+```
+
+示例（模块任务里调用宿主 AI 生成文本答案）：
+
+```csharp
+using TelegramPanel.Modules;
+
+public sealed class MyAiReplyHandler : IModuleTaskHandler
+{
+    public string TaskType => "example.ai-reply";
+    private readonly ITelegramPanelAiService _ai;
+
+    public MyAiReplyHandler(ITelegramPanelAiService ai)
+    {
+        _ai = ai;
+    }
+
+    public async Task ExecuteAsync(IModuleTaskExecutionHost host, CancellationToken ct)
+    {
+        var result = await _ai.ReplyTextAsync(
+            new TelegramPanelAiReplyTextRequest(
+                Model: "gpt-4o-mini",
+                Prompt: "你是 Telegram 验证助手，请只返回最终答案。",
+                Query: "请计算：12 + 19 = ?",
+                Image: null,
+                Context: "不要解释，不要带多余符号。"),
+            ct);
+
+        if (!result.Success)
+            throw new InvalidOperationException(result.Error ?? "AI 作答失败");
+
+        var replyText = result.ReplyText ?? string.Empty;
+        // 这里结合你自己的 Telegram 调用链发送 replyText
+    }
+}
+```
+
+建议：
+
+- 优先把模型名做成模块配置项；未配置时传 `null`，回退全局默认模型
+- 模块只关心 `Success / Error / Mode / ButtonIndex / ReplyText`，不要依赖具体提示词实现细节
+- 若需要图像识别，传入 `TelegramPanelAiImageInput`，建议使用 JPEG 字节数组
+- 模块不要自己拼 `/chat/completions` 或自己做端点规范化，这些都交给宿主
+
 ## 账号导出下载（Telethon / Tdata）
 
 如果模块需要“下载某个账号的数据包”，建议优先使用宿主服务直接生成 Zip（同进程内调用），避免绕 HTTP 鉴权与 Cookie。

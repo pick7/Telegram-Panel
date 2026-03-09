@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
 
@@ -9,10 +11,17 @@ namespace TelegramPanel.Core.Services;
 public class BatchTaskManagementService
 {
     private readonly IBatchTaskRepository _batchTaskRepository;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<BatchTaskManagementService> _logger;
 
-    public BatchTaskManagementService(IBatchTaskRepository batchTaskRepository)
+    public BatchTaskManagementService(
+        IBatchTaskRepository batchTaskRepository,
+        IConfiguration configuration,
+        ILogger<BatchTaskManagementService> logger)
     {
         _batchTaskRepository = batchTaskRepository;
+        _configuration = configuration;
+        _logger = logger;
     }
 
     public async Task<BatchTask?> GetTaskAsync(int id)
@@ -38,6 +47,11 @@ public class BatchTaskManagementService
     public async Task<IEnumerable<BatchTask>> GetRecentTasksAsync(int count = 20)
     {
         return await _batchTaskRepository.GetRecentTasksAsync(count);
+    }
+
+    public async Task<int> TrimHistoryTasksAsync(int keepCount, CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.TrimHistoryTasksAsync(keepCount, cancellationToken);
     }
 
     public async Task<BatchTask> CreateTaskAsync(BatchTask task)
@@ -123,12 +137,13 @@ public class BatchTaskManagementService
     public async Task CompleteTaskAsync(int taskId, bool success = true)
     {
         var task = await _batchTaskRepository.GetByIdAsync(taskId);
-        if (task != null)
-        {
-            task.Status = success ? "completed" : "failed";
-            task.CompletedAt = DateTime.UtcNow;
-            await _batchTaskRepository.UpdateAsync(task);
-        }
+        if (task == null)
+            return;
+
+        task.Status = success ? "completed" : "failed";
+        task.CompletedAt = DateTime.UtcNow;
+        await _batchTaskRepository.UpdateAsync(task);
+        await TrimHistoryTasksIfNeededAsync();
     }
 
     public async Task DeleteTaskAsync(int id)
@@ -138,5 +153,30 @@ public class BatchTaskManagementService
         {
             await _batchTaskRepository.DeleteAsync(task);
         }
+    }
+
+    private async Task TrimHistoryTasksIfNeededAsync(CancellationToken cancellationToken = default)
+    {
+        var keepCount = GetHistoryRetentionLimit();
+        if (keepCount <= 0)
+            return;
+
+        var deletedCount = await _batchTaskRepository.TrimHistoryTasksAsync(keepCount, cancellationToken);
+        if (deletedCount > 0)
+        {
+            _logger.LogInformation(
+                "Trimmed {DeletedCount} historical batch tasks, keepCount={KeepCount}",
+                deletedCount,
+                keepCount);
+        }
+    }
+
+    private int GetHistoryRetentionLimit()
+    {
+        var rawValue = _configuration["BatchTasks:HistoryRetentionLimit"];
+        if (!int.TryParse(rawValue, out var keepCount) || keepCount < 0)
+            return 0;
+
+        return Math.Min(keepCount, 5000);
     }
 }

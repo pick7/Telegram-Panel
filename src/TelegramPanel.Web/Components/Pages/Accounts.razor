@@ -115,6 +115,7 @@
                 <MudTh>频道/群组</MudTh>
                 <MudTh>状态</MudTh>
                 <MudTh>Telegram 状态</MudTh>
+                <MudTh>注册时间（估算，非百分百正确）</MudTh>
                 <MudTh>最后数据同步</MudTh>
                 <MudTh Style="min-width: 180px;">操作</MudTh>
             </HeaderContent>
@@ -136,7 +137,7 @@
                     }
                 </MudTd>
                 <MudTd DataLabel="频道/群组">
-                    <MudText Typo="Typo.body2">@context.Channels.Count / @context.Groups.Count</MudText>
+                    <MudText Typo="Typo.body2">@context.ChannelCount / @context.GroupCount</MudText>
                 </MudTd>
                 <MudTd DataLabel="状态">
                     <MudChip T="string" Size="Size.Small" Color="@(context.IsActive ? Color.Success : Color.Default)">
@@ -155,6 +156,7 @@
                         <MudChip T="string" Size="Size.Small" Color="Color.Default">未检测</MudChip>
                     }
                 </MudTd>
+                <MudTd DataLabel="注册时间（估算，非百分百正确）"><PanelTime Value="context.EstimatedRegistrationAt" EmptyText="-" /></MudTd>
                 <MudTd DataLabel="最后数据同步"><PanelTime Value="context.LastSyncAt" /></MudTd>
                 <MudTd DataLabel="操作">
                     <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
@@ -168,6 +170,8 @@
                         <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
                              <MudMenuItem Icon="@Icons.Material.Filled.GroupAdd" Disabled="@loading" OnClick="@(() => OpenJoinSubscribe(context))">加群/订阅</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.ExitToApp" Disabled="@loading" OnClick="@(() => OpenLeaveUnsubscribe(context))">退群/退订</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.Campaign" Disabled="@loading" OnClick="@(() => OpenAccountChannels(context))">查看加入的频道</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.Forum" Disabled="@loading" OnClick="@(() => OpenAccountGroups(context))">查看加入的群组</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.MarkEmailUnread" Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))">系统通知（验证码）</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.Devices" Disabled="@loading" OnClick="@(() => OpenDevices(context))">在线设备</MudMenuItem>
                               <MudDivider />
@@ -320,6 +324,28 @@
         var result = await dialog.Result;
         if (result is { Canceled: false })
             await ReloadTable();
+    }
+
+    private Task OpenAccountChannels(Account account)
+    {
+        var parameters = new DialogParameters
+        {
+            ["AccountId"] = account.Id
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.AccountChannelMembershipsDialog>("加入的频道", parameters, options);
+        return Task.CompletedTask;
+    }
+
+    private Task OpenAccountGroups(Account account)
+    {
+        var parameters = new DialogParameters
+        {
+            ["AccountId"] = account.Id
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.AccountGroupMembershipsDialog>("加入的群组", parameters, options);
+        return Task.CompletedTask;
     }
 
     private async Task OpenChangeTwoFactorPassword(Account account)

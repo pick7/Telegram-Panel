@@ -35,4 +35,24 @@ public class BatchTaskRepository : Repository<BatchTask>, IBatchTaskRepository
             .Take(count)
             .ToListAsync();
     }
+
+    public async Task<int> TrimHistoryTasksAsync(int keepCount, CancellationToken cancellationToken = default)
+    {
+        if (keepCount <= 0)
+            return 0;
+
+        var staleTasks = await _dbSet
+            .Where(t => t.Status == "completed" || t.Status == "failed")
+            .OrderByDescending(t => t.CreatedAt)
+            .ThenByDescending(t => t.Id)
+            .Skip(keepCount)
+            .ToListAsync(cancellationToken);
+
+        if (staleTasks.Count == 0)
+            return 0;
+
+        _dbSet.RemoveRange(staleTasks);
+        await SaveChangesWithSqliteLockRetryAsync(cancellationToken);
+        return staleTasks.Count;
+    }
 }

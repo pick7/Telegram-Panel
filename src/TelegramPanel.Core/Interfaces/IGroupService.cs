@@ -13,9 +13,29 @@ public interface IGroupService
     Task<List<GroupInfo>> GetOwnedGroupsAsync(int accountId);
 
     /// <summary>
+    /// 创建群组（超级群组）
+    /// </summary>
+    Task<GroupInfo> CreateGroupAsync(int accountId, string title, string about, bool isPublic = false, string? username = null);
+
+    /// <summary>
+    /// 获取账号当前可见的全部群组（创建者/管理员/普通成员）
+    /// </summary>
+    Task<List<GroupInfo>> GetVisibleGroupsAsync(int accountId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 获取群组详情
     /// </summary>
     Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId);
+
+    /// <summary>
+    /// 退出群组。
+    /// </summary>
+    Task<bool> LeaveGroupAsync(int accountId, long groupId);
+
+    /// <summary>
+    /// 解散群组（超级群需要创建者权限；基础群暂不支持）。
+    /// </summary>
+    Task<bool> DisbandGroupAsync(int accountId, long groupId);
 
     /// <summary>
     /// 导出加入链接：公开群组返回 t.me 链接；否则导出邀请链接。

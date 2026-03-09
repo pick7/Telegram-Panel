@@ -1,6 +1,7 @@
+using MudBlazor;
 using TelegramPanel.Core.BatchTasks;
 using TelegramPanel.Modules;
-using MudBlazor;
+using TelegramPanel.Web.Services;
 
 namespace TelegramPanel.Web.Modules.BuiltIn;
 
@@ -23,6 +24,7 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
     public void ConfigureServices(IServiceCollection services, ModuleHostContext context)
     {
         // 内置任务的执行由宿主 BatchTaskBackgroundService 负责；这里只提供“元数据”用于 UI 展示与创建。
+        services.AddSingleton<IModuleTaskRerunBuilder, UserChatActiveTaskRerunBuilder>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints, ModuleHostContext context)
@@ -40,6 +42,15 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
             Description = "按账号分类持续向指定目标发送词典内容，支持间隔抖动、随机/队列循环。",
             Icon = Icons.Material.Filled.Chat,
             EditorComponentType = typeof(TelegramPanel.Web.Components.Dialogs.UserChatActiveTaskEditor).AssemblyQualifiedName ?? "",
+            TaskCenter = new ModuleTaskCenterCapabilities
+            {
+                CanPause = true,
+                CanResume = true,
+                CanEdit = true,
+                CanRerun = true,
+                EditComponentType = typeof(TelegramPanel.Web.Components.Dialogs.UserChatActiveTaskEditor).AssemblyQualifiedName ?? "",
+                AutoPauseBeforeEdit = true
+            },
             Order = 120
         };
 

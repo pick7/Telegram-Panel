@@ -18,6 +18,11 @@ public interface IChannelService
     Task<List<ChannelInfo>> GetAdminedChannelsAsync(int accountId);
 
     /// <summary>
+    /// 获取账号当前可见的全部频道（创建者/管理员/普通成员）
+    /// </summary>
+    Task<List<ChannelInfo>> GetVisibleChannelsAsync(int accountId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 创建新频道
     /// </summary>
     Task<ChannelInfo> CreateChannelAsync(int accountId, string title, string about, bool isPublic = false);
@@ -51,6 +56,16 @@ public interface IChannelService
     /// 设置是否允许转发（关闭后为“保护内容”，禁止转发/保存）
     /// </summary>
     Task<bool> SetForwardingAllowedAsync(int accountId, long channelId, bool allowed);
+
+    /// <summary>
+    /// 退出频道或取消订阅。
+    /// </summary>
+    Task<bool> LeaveChannelAsync(int accountId, long channelId);
+
+    /// <summary>
+    /// 解散频道（需要频道创建者权限）。
+    /// </summary>
+    Task<bool> DisbandChannelAsync(int accountId, long channelId);
 
     /// <summary>
     /// 导出频道加入链接：公开频道返回 t.me 链接；私密频道导出邀请链接（需要权限）。

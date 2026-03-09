@@ -16,6 +16,12 @@ public sealed class UserChatActiveTaskConfig
     [JsonPropertyName("category_name")]
     public string? CategoryName { get; set; }
 
+    [JsonPropertyName("category_ids")]
+    public List<int> CategoryIds { get; set; } = new();
+
+    [JsonPropertyName("category_names")]
+    public List<string> CategoryNames { get; set; } = new();
+
     [JsonPropertyName("targets")]
     public List<string> Targets { get; set; } = new();
 

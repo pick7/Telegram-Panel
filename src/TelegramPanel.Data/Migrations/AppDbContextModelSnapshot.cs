@@ -15,7 +15,7 @@ namespace TelegramPanel.Data.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "8.0.22");
+            modelBuilder.HasAnnotation("ProductVersion", "8.0.24");
 
             modelBuilder.Entity("TelegramPanel.Data.Entities.Account", b =>
                 {
@@ -35,6 +35,12 @@ namespace TelegramPanel.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("EstimatedRegistrationAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("EstimatedRegistrationCheckedAtUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("IsActive")
@@ -159,7 +165,42 @@ namespace TelegramPanel.Data.Migrations
                     b.HasIndex("AccountId", "ChannelId")
                         .IsUnique();
 
+                    b.HasIndex("ChannelId", "IsCreator", "IsAdmin");
+
                     b.ToTable("AccountChannels");
+                });
+
+            modelBuilder.Entity("TelegramPanel.Data.Entities.AccountGroup", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("AccountId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("GroupId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsAdmin")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsCreator")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("SyncedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupId");
+
+                    b.HasIndex("AccountId", "GroupId")
+                        .IsUnique();
+
+                    b.HasIndex("GroupId", "IsCreator", "IsAdmin");
+
+                    b.ToTable("AccountGroups");
                 });
 
             modelBuilder.Entity("TelegramPanel.Data.Entities.BatchTask", b =>
@@ -416,6 +457,8 @@ namespace TelegramPanel.Data.Migrations
 
                     b.HasIndex("GroupId");
 
+                    b.HasIndex("SyncedAt");
+
                     b.HasIndex("TelegramId")
                         .IsUnique();
 
@@ -463,10 +506,13 @@ namespace TelegramPanel.Data.Migrations
                     b.Property<long?>("AccessHash")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("CategoryId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime?>("CreatedAt")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("CreatorAccountId")
+                    b.Property<int?>("CreatorAccountId")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("MemberCount")
@@ -489,7 +535,11 @@ namespace TelegramPanel.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CategoryId");
+
                     b.HasIndex("CreatorAccountId");
+
+                    b.HasIndex("SyncedAt");
 
                     b.HasIndex("TelegramId")
                         .IsUnique();
@@ -497,6 +547,32 @@ namespace TelegramPanel.Data.Migrations
                     b.HasIndex("Username");
 
                     b.ToTable("Groups");
+                });
+
+            modelBuilder.Entity("TelegramPanel.Data.Entities.GroupCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("GroupCategories");
                 });
 
             modelBuilder.Entity("TelegramPanel.Data.Entities.Account", b =>
@@ -526,6 +602,25 @@ namespace TelegramPanel.Data.Migrations
                     b.Navigation("Account");
 
                     b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("TelegramPanel.Data.Entities.AccountGroup", b =>
+                {
+                    b.HasOne("TelegramPanel.Data.Entities.Account", "Account")
+                        .WithMany("AccountGroups")
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("TelegramPanel.Data.Entities.Group", "Group")
+                        .WithMany("AccountGroups")
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Account");
+
+                    b.Navigation("Group");
                 });
 
             modelBuilder.Entity("TelegramPanel.Data.Entities.BotChannel", b =>
@@ -576,11 +671,17 @@ namespace TelegramPanel.Data.Migrations
 
             modelBuilder.Entity("TelegramPanel.Data.Entities.Group", b =>
                 {
+                    b.HasOne("TelegramPanel.Data.Entities.GroupCategory", "Category")
+                        .WithMany("Groups")
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("TelegramPanel.Data.Entities.Account", "CreatorAccount")
                         .WithMany("Groups")
                         .HasForeignKey("CreatorAccountId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Category");
 
                     b.Navigation("CreatorAccount");
                 });
@@ -588,6 +689,8 @@ namespace TelegramPanel.Data.Migrations
             modelBuilder.Entity("TelegramPanel.Data.Entities.Account", b =>
                 {
                     b.Navigation("AccountChannels");
+
+                    b.Navigation("AccountGroups");
 
                     b.Navigation("Channels");
 
@@ -622,6 +725,16 @@ namespace TelegramPanel.Data.Migrations
             modelBuilder.Entity("TelegramPanel.Data.Entities.ChannelGroup", b =>
                 {
                     b.Navigation("Channels");
+                });
+
+            modelBuilder.Entity("TelegramPanel.Data.Entities.Group", b =>
+                {
+                    b.Navigation("AccountGroups");
+                });
+
+            modelBuilder.Entity("TelegramPanel.Data.Entities.GroupCategory", b =>
+                {
+                    b.Navigation("Groups");
                 });
 #pragma warning restore 612, 618
         }

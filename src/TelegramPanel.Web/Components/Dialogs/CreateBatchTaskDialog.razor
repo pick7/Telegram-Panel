@@ -204,11 +204,7 @@
         if (!Contributions.TaskTypeToDefinition.TryGetValue(opt.TaskType, out var reg))
             return;
 
-        var typeName = opt.EditorComponentType.Trim();
-        var moduleTypeName = NormalizeModuleTypeName(typeName);
-        editorComponentType =
-            Type.GetType(typeName, throwOnError: false, ignoreCase: false)
-            ?? reg.Module.Instance.GetType().Assembly.GetType(moduleTypeName, throwOnError: false, ignoreCase: false);
+        editorComponentType = ModuleTaskEditorComponentResolver.ResolveCreateEditor(reg);
 
         if (editorComponentType == null)
             return;
@@ -224,21 +220,6 @@
     {
         editorDraft = draft;
     }
-
-    private static string NormalizeModuleTypeName(string typeName)
-    {
-        typeName = (typeName ?? "").Trim();
-        if (typeName.Length == 0)
-            return typeName;
-
-        // 兼容 AssemblyQualifiedName：Assembly.GetType 只接受纯 FullName
-        var comma = typeName.IndexOf(',', StringComparison.Ordinal);
-        if (comma > 0)
-            return typeName.Substring(0, comma).Trim();
-
-        return typeName;
-    }
-
     private async Task Create()
     {
         if (creating)

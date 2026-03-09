@@ -10,4 +10,5 @@ public interface IBatchTaskRepository : IRepository<BatchTask>
     Task<IEnumerable<BatchTask>> GetByStatusAsync(string status);
     Task<IEnumerable<BatchTask>> GetRunningTasksAsync();
     Task<IEnumerable<BatchTask>> GetRecentTasksAsync(int count = 20);
+    Task<int> TrimHistoryTasksAsync(int keepCount, CancellationToken cancellationToken = default);
 }

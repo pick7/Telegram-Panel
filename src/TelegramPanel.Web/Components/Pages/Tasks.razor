@@ -110,6 +110,8 @@
                         <MudIconButton Icon="@Icons.Material.Filled.Cancel" Size="Size.Small" Color="Color.Warning"
                                        OnClick="@(() => CancelTask(context.Id))" />
                     }
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                   OnClick="@(() => DeleteTask(context))" />
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
@@ -175,7 +177,7 @@
                                        OnClick="@(() => RerunTask(context))" />
                     }
                     <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                   OnClick="@(() => DeleteTask(context.Id))" />
+                                   OnClick="@(() => DeleteTask(context))" />
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
@@ -296,6 +298,7 @@
             BatchTaskTypes.UserChatActive => "user",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "bot",
             BatchTaskTypes.BotSetAdmins => "bot",
+            BatchTaskTypes.AccountAutoSync => "system",
             _ => "other"
         };
     }
@@ -327,7 +330,11 @@
             && !string.IsNullOrWhiteSpace(reg.Definition.Icon))
             return reg.Definition.Icon;
 
-        return Icons.Material.Filled.Task;
+        return type switch
+        {
+            BatchTaskTypes.AccountAutoSync => Icons.Material.Filled.Sync,
+            _ => Icons.Material.Filled.Task
+        };
     }
 
     private string GetTaskTypeName(string type)
@@ -342,6 +349,7 @@
             BatchTaskTypes.UserChatActive => "账号持续活跃（群组/频道）",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "Bot频道批量设置管理员（账号执行）",
             BatchTaskTypes.BotSetAdmins => "Bot频道批量设置管理员（机器人执行）",
+            BatchTaskTypes.AccountAutoSync => "账号数据同步",
             _ => type
         };
     }
@@ -538,8 +546,7 @@
             using var doc = JsonDocument.Parse(task.Config);
             var root = doc.RootElement;
 
-            var categoryName = root.TryGetProperty("category_name", out var categoryNameEl) ? (categoryNameEl.GetString() ?? "").Trim() : "";
-            var categoryId = root.TryGetProperty("category_id", out var categoryIdEl) && categoryIdEl.TryGetInt32(out var cid) ? cid : 0;
+            var categoryText = BuildSelectedCategorySummary(root);
             var maxMessages = root.TryGetProperty("max_messages", out var maxMessagesEl) && maxMessagesEl.TryGetInt32(out var mm) ? mm : 0;
             var accountMode = root.TryGetProperty("account_mode", out var accountModeEl) ? (accountModeEl.GetString() ?? "").Trim() : "";
             var targetMode = root.TryGetProperty("target_mode", out var targetModeEl) ? (targetModeEl.GetString() ?? "").Trim() : "";
@@ -573,7 +580,6 @@
                 }
             }
 
-            var categoryText = categoryName.Length > 0 ? $"{categoryName} (#{categoryId})" : $"#{categoryId}";
             details += "\n配置摘要:\n";
             details += $"分类: {categoryText}\n";
             details += $"目标数: {targetCount}\n";
@@ -605,6 +611,72 @@
 
         var seconds = milliseconds / 1000d;
         return seconds.ToString("0.###");
+    }
+
+    private static string BuildSelectedCategorySummary(JsonElement root)
+    {
+        var ids = ExtractSelectedCategoryIds(root);
+        var names = ExtractSelectedCategoryNames(root);
+        var count = Math.Max(ids.Count, names.Count);
+        if (count == 0)
+            return "-";
+
+        var parts = new List<string>();
+        for (var i = 0; i < count; i++)
+        {
+            var id = i < ids.Count ? ids[i] : 0;
+            var name = i < names.Count ? names[i] : string.Empty;
+
+            if (id > 0 && name.Length > 0)
+                parts.Add($"{name} (#{id})");
+            else if (id > 0)
+                parts.Add($"#{id}");
+            else if (name.Length > 0)
+                parts.Add(name);
+        }
+
+        return parts.Count == 0 ? "-" : string.Join(", ", parts);
+    }
+
+    private static List<int> ExtractSelectedCategoryIds(JsonElement root)
+    {
+        var ids = new List<int>();
+        if (root.TryGetProperty("category_ids", out var idsEl) && idsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in idsEl.EnumerateArray())
+            {
+                if (item.TryGetInt32(out var id) && id > 0)
+                    ids.Add(id);
+            }
+        }
+
+        if (ids.Count == 0 && root.TryGetProperty("category_id", out var categoryIdEl) && categoryIdEl.TryGetInt32(out var categoryId) && categoryId > 0)
+            ids.Add(categoryId);
+
+        return ids.Distinct().ToList();
+    }
+
+    private static List<string> ExtractSelectedCategoryNames(JsonElement root)
+    {
+        var names = new List<string>();
+        if (root.TryGetProperty("category_names", out var namesEl) && namesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in namesEl.EnumerateArray())
+            {
+                var name = (item.GetString() ?? string.Empty).Trim();
+                if (name.Length > 0)
+                    names.Add(name);
+            }
+        }
+
+        if (names.Count == 0 && root.TryGetProperty("category_name", out var categoryNameEl))
+        {
+            var fallbackName = (categoryNameEl.GetString() ?? string.Empty).Trim();
+            if (fallbackName.Length > 0)
+                names.Add(fallbackName);
+        }
+
+        return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private static string NormalizeTaskModeDisplay(string? mode)
@@ -688,20 +760,26 @@
         }
     }
 
-    private async Task DeleteTask(int id)
+    private async Task DeleteTask(BatchTask task)
     {
+        var status = GetDisplayStatus(task);
+        var isActive = IsActiveStatus(status);
+        var message = isActive
+            ? $"确定要删除任务 #{task.Id} 吗？删除后将停止后台执行并移除记录，此操作不可恢复。"
+            : $"确定要删除任务 #{task.Id} 的记录吗？此操作不可恢复。";
+
         bool? result = await DialogService.ShowMessageBox(
             "确认删除",
-            "确定要删除这个任务记录吗？此操作不可恢复。",
+            message,
             yesText: "删除", cancelText: "取消");
 
         if (result == true)
         {
             try
             {
-                await TaskManagement.DeleteTaskAsync(id);
-                tasks.RemoveAll(t => t.Id == id);
-                Snackbar.Add("任务已删除", Severity.Success);
+                await TaskManagement.DeleteTaskAsync(task.Id);
+                await LoadTasks();
+                Snackbar.Add(isActive ? "任务已删除，后台执行将在下一次状态检查时停止" : "任务已删除", Severity.Success);
             }
             catch (Exception ex)
             {
@@ -885,8 +963,13 @@
             throw new InvalidOperationException($"任务配置 JSON 无效：{ex.Message}");
         }
 
-        if (cfg.CategoryId <= 0)
+        cfg.CategoryIds = NormalizeCategoryIdsForRerun(cfg.CategoryIds, cfg.CategoryId);
+        if (cfg.CategoryIds.Count == 0)
             throw new InvalidOperationException("任务缺少账号分类，无法重新运行");
+
+        cfg.CategoryId = cfg.CategoryIds[0];
+        cfg.CategoryNames = NormalizeCategoryNamesForRerun(cfg.CategoryNames, cfg.CategoryName);
+        cfg.CategoryName = cfg.CategoryNames.FirstOrDefault() ?? cfg.CategoryName;
 
         cfg.Targets = (cfg.Targets ?? new List<string>())
             .Select(x => (x ?? string.Empty).Trim())
@@ -921,6 +1004,34 @@
         cfg.RecentFailures = new List<UserChatActiveTaskRuntimeFailure>();
 
         return cfg;
+    }
+
+    private static List<int> NormalizeCategoryIdsForRerun(IEnumerable<int>? values, int fallback)
+    {
+        var ids = (values ?? Array.Empty<int>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0 && fallback > 0)
+            ids.Add(fallback);
+
+        return ids;
+    }
+
+    private static List<string> NormalizeCategoryNamesForRerun(IEnumerable<string>? values, string? fallback)
+    {
+        var names = (values ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var fallbackName = (fallback ?? string.Empty).Trim();
+        if (names.Count == 0 && fallbackName.Length > 0)
+            names.Add(fallbackName);
+
+        return names;
     }
 
     private static string NormalizeModeValue(string? mode)

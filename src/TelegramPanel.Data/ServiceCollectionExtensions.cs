@@ -23,9 +23,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<IAccountCategoryRepository, AccountCategoryRepository>();
         services.AddScoped<IAccountChannelRepository, AccountChannelRepository>();
+        services.AddScoped<IAccountGroupRepository, AccountGroupRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IChannelGroupRepository, ChannelGroupRepository>();
         services.AddScoped<IGroupRepository, GroupRepository>();
+        services.AddScoped<IGroupCategoryRepository, GroupCategoryRepository>();
         services.AddScoped<IBatchTaskRepository, BatchTaskRepository>();
         services.AddScoped<IBotRepository, BotRepository>();
         services.AddScoped<IBotChannelRepository, BotChannelRepository>();

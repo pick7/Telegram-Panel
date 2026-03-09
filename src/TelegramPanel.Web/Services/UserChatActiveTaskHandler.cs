@@ -25,9 +25,10 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         var config = DeserializeConfig(host.Config);
         ValidateAndNormalizeConfig(config);
 
+        var selectedCategoryIds = NormalizeSelectedCategoryIds(config).ToHashSet();
         var allAccounts = (await accountManagement.GetAllAccountsAsync())
             .Where(x => x.IsActive && x.UserId > 0 && x.Category?.ExcludeFromOperations != true)
-            .Where(x => x.CategoryId == config.CategoryId)
+            .Where(x => x.CategoryId.HasValue && selectedCategoryIds.Contains(x.CategoryId.Value))
             .OrderBy(x => x.Id)
             .ToList();
 
@@ -196,8 +197,13 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
     private static void ValidateAndNormalizeConfig(UserChatActiveTaskConfig config)
     {
-        if (config.CategoryId <= 0)
+        config.CategoryIds = NormalizeSelectedCategoryIds(config);
+        if (config.CategoryIds.Count == 0)
             throw new InvalidOperationException("任务缺少账号分类");
+
+        config.CategoryId = config.CategoryIds[0];
+        config.CategoryNames = NormalizeSelectedCategoryNames(config);
+        config.CategoryName = config.CategoryNames.FirstOrDefault() ?? config.CategoryName;
 
         config.Targets = config.Targets
             .Select(x => (x ?? string.Empty).Trim())
@@ -229,6 +235,34 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         config.MessageMode = NormalizeMode(config.MessageMode);
 
         config.RecentFailures ??= new List<UserChatActiveTaskRuntimeFailure>();
+    }
+
+    private static List<int> NormalizeSelectedCategoryIds(UserChatActiveTaskConfig config)
+    {
+        var ids = (config.CategoryIds ?? new List<int>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0 && config.CategoryId > 0)
+            ids.Add(config.CategoryId);
+
+        return ids;
+    }
+
+    private static List<string> NormalizeSelectedCategoryNames(UserChatActiveTaskConfig config)
+    {
+        var names = (config.CategoryNames ?? new List<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var fallbackName = (config.CategoryName ?? string.Empty).Trim();
+        if (names.Count == 0 && fallbackName.Length > 0)
+            names.Add(fallbackName);
+
+        return names;
     }
 
     private static string NormalizeMode(string? mode)

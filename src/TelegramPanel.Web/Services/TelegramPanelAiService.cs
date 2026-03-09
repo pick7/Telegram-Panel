@@ -82,46 +82,16 @@ public sealed class TelegramPanelAiService : ITelegramPanelAiService
 
         try
         {
-            var content = await SendChatCompletionAsync(settings, model, systemPrompt, userContent, cancellationToken);
-            var json = ExtractJsonObject(content);
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            var mode = root.TryGetProperty("mode", out var modeElement)
-                ? (modeElement.GetString() ?? string.Empty).Trim()
-                : string.Empty;
-            var reason = root.TryGetProperty("reason", out var reasonElement)
-                ? reasonElement.GetString()
-                : null;
-
-            if (string.Equals(mode, "click_button", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!root.TryGetProperty("button_index", out var buttonIndexElement)
-                    || buttonIndexElement.ValueKind != JsonValueKind.Number
-                    || !buttonIndexElement.TryGetInt32(out var buttonIndex))
-                {
-                    return new TelegramPanelAiChooseActionResult(false, null, null, null, null, "AI 返回了点击按钮模式，但缺少有效的 button_index");
-                }
-
-                return new TelegramPanelAiChooseActionResult(true, "click_button", buttonIndex, null, reason, null);
-            }
-
-            if (string.Equals(mode, "reply_text", StringComparison.OrdinalIgnoreCase))
-            {
-                var replyText = root.TryGetProperty("reply_text", out var replyElement)
-                    ? (replyElement.GetString() ?? string.Empty).Trim()
-                    : string.Empty;
-
-                if (replyText.Length == 0)
-                    return new TelegramPanelAiChooseActionResult(false, null, null, null, null, "AI 返回了 reply_text 模式，但 reply_text 为空");
-
-                return new TelegramPanelAiChooseActionResult(true, "reply_text", null, replyText, reason, null);
-            }
-
-            return new TelegramPanelAiChooseActionResult(false, null, null, null, null, $"AI 返回了未知模式：{mode}");
+            return await ExecuteWithRetryAsync(
+                operationName: "验证决策",
+                model: model,
+                retryCount: settings.RetryCount,
+                action: ct => ChooseActionCoreAsync(settings, model, systemPrompt, userContent, ct),
+                cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse AI choice response");
+            _logger.LogWarning(ex, "Failed to parse AI choice response after retries");
             return new TelegramPanelAiChooseActionResult(false, null, null, null, null, $"AI 响应解析失败：{ex.Message}");
         }
     }
@@ -164,16 +134,24 @@ public sealed class TelegramPanelAiService : ITelegramPanelAiService
 
         try
         {
-            var content = await SendChatCompletionAsync(settings, model, systemPrompt, userContent, cancellationToken);
-            var normalized = StripMarkdownFence(content).Trim();
-            if (normalized.Length == 0)
-                return new TelegramPanelAiReplyTextResult(false, null, "AI 返回了空回复");
+            return await ExecuteWithRetryAsync(
+                operationName: "文本作答",
+                model: model,
+                retryCount: settings.RetryCount,
+                action: async ct =>
+                {
+                    var content = await SendChatCompletionAsync(settings, model, systemPrompt, userContent, ct);
+                    var normalized = StripMarkdownFence(content).Trim();
+                    if (normalized.Length == 0)
+                        throw new InvalidOperationException("AI 返回了空回复");
 
-            return new TelegramPanelAiReplyTextResult(true, normalized, null);
+                    return new TelegramPanelAiReplyTextResult(true, normalized, null);
+                },
+                cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to generate AI reply text");
+            _logger.LogWarning(ex, "Failed to generate AI reply text after retries");
             return new TelegramPanelAiReplyTextResult(false, null, $"AI 请求失败：{ex.Message}");
         }
     }
@@ -190,12 +168,17 @@ public sealed class TelegramPanelAiService : ITelegramPanelAiService
 
         try
         {
-            var content = await SendChatCompletionAsync(
-                settings,
-                model,
-                "你是 AI 连通性测试助手。请只回复 pong。",
-                "ping",
-                cancellationToken);
+            var content = await ExecuteWithRetryAsync(
+                operationName: "连通测试",
+                model: model,
+                retryCount: settings.RetryCount,
+                action: ct => SendChatCompletionAsync(
+                    settings,
+                    model,
+                    "你是 AI 连通性测试助手。请只回复 pong。",
+                    "ping",
+                    ct),
+                cancellationToken: cancellationToken);
 
             var normalized = StripMarkdownFence(content).Trim();
             if (normalized.Length == 0)
@@ -205,9 +188,95 @@ public sealed class TelegramPanelAiService : ITelegramPanelAiService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "AI connectivity test failed");
+            _logger.LogWarning(ex, "AI connectivity test failed after retries");
             return (false, model, null, ex.Message);
         }
+    }
+
+    private async Task<TelegramPanelAiChooseActionResult> ChooseActionCoreAsync(
+        AiOpenAiSettingsSnapshot settings,
+        string model,
+        string systemPrompt,
+        object userContent,
+        CancellationToken cancellationToken)
+    {
+        var content = await SendChatCompletionAsync(settings, model, systemPrompt, userContent, cancellationToken);
+        var json = ExtractJsonObject(content);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var mode = root.TryGetProperty("mode", out var modeElement)
+            ? (modeElement.GetString() ?? string.Empty).Trim()
+            : string.Empty;
+        var reason = root.TryGetProperty("reason", out var reasonElement)
+            ? reasonElement.GetString()
+            : null;
+
+        if (string.Equals(mode, "click_button", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!root.TryGetProperty("button_index", out var buttonIndexElement)
+                || buttonIndexElement.ValueKind != JsonValueKind.Number
+                || !buttonIndexElement.TryGetInt32(out var buttonIndex))
+            {
+                throw new InvalidOperationException("AI 返回了点击按钮模式，但缺少有效的 button_index");
+            }
+
+            return new TelegramPanelAiChooseActionResult(true, "click_button", buttonIndex, null, reason, null);
+        }
+
+        if (string.Equals(mode, "reply_text", StringComparison.OrdinalIgnoreCase))
+        {
+            var replyText = root.TryGetProperty("reply_text", out var replyElement)
+                ? (replyElement.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+
+            if (replyText.Length == 0)
+                throw new InvalidOperationException("AI 返回了 reply_text 模式，但 reply_text 为空");
+
+            return new TelegramPanelAiChooseActionResult(true, "reply_text", null, replyText, reason, null);
+        }
+
+        throw new InvalidOperationException($"AI 返回了未知模式：{mode}");
+    }
+
+    private async Task<T> ExecuteWithRetryAsync<T>(
+        string operationName,
+        string model,
+        int retryCount,
+        Func<CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        var normalizedRetryCount = AiOpenAiSettingsSnapshot.NormalizeRetryCount(retryCount);
+        var maxAttempts = Math.Max(1, normalizedRetryCount + 1);
+        Exception? lastException = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await action(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                if (attempt >= maxAttempts || !IsRetryableAiFailure(ex, cancellationToken))
+                    break;
+
+                var delay = GetRetryDelay(attempt);
+                _logger.LogWarning(
+                    ex,
+                    "AI {OperationName} 失败，准备重试：第 {NextAttempt}/{MaxAttempts} 次，模型={Model}，等待 {DelayMs}ms",
+                    operationName,
+                    attempt + 1,
+                    maxAttempts,
+                    model,
+                    (int)delay.TotalMilliseconds);
+
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay, cancellationToken);
+            }
+        }
+
+        throw lastException ?? new InvalidOperationException($"AI {operationName} 失败");
     }
 
     private async Task<string> SendChatCompletionAsync(
@@ -264,6 +333,63 @@ public sealed class TelegramPanelAiService : ITelegramPanelAiService
             _logger.LogWarning(ex, "Failed to parse AI completion response: {Body}", body);
             throw new InvalidOperationException($"AI 响应结构无效：{ex.Message}");
         }
+    }
+
+    private static bool IsRetryableAiFailure(Exception ex, CancellationToken cancellationToken)
+    {
+        if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            return false;
+
+        if (ex is HttpRequestException)
+            return true;
+
+        if (ex is TaskCanceledException)
+            return true;
+
+        var message = ex.Message ?? string.Empty;
+        if (message.Contains("端点未配置", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Key 未配置", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("未配置 AI", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("端点格式无效", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (TryGetHttpStatusCode(ex, out var statusCode))
+            return statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500;
+
+        return true;
+    }
+
+    private static bool TryGetHttpStatusCode(Exception ex, out int statusCode)
+    {
+        const string marker = "AI 请求失败（HTTP ";
+        var message = ex.Message ?? string.Empty;
+        var start = message.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            statusCode = 0;
+            return false;
+        }
+
+        start += marker.Length;
+        var end = message.IndexOf('）', start);
+        if (end < 0)
+            end = message.IndexOf(')', start);
+
+        if (end <= start)
+        {
+            statusCode = 0;
+            return false;
+        }
+
+        return int.TryParse(message[start..end], out statusCode);
+    }
+
+    private static TimeSpan GetRetryDelay(int attempt)
+    {
+        var delayMs = Math.Min(3000, 800 * Math.Max(1, attempt));
+        return TimeSpan.FromMilliseconds(delayMs);
     }
 
     private static string ExtractJsonObject(string content)

@@ -10,6 +10,8 @@ public sealed class AiOpenAiOptions
 
     public List<string> PresetModels { get; set; } = new();
 
+    public int RetryCount { get; set; } = 2;
+
     public AiOpenAiSettingsSnapshot ToSnapshot()
     {
         return AiOpenAiSettingsSnapshot.From(this);
@@ -20,9 +22,10 @@ public sealed record AiOpenAiSettingsSnapshot(
     string? Endpoint,
     string? ApiKey,
     string? DefaultModel,
-    IReadOnlyList<string> PresetModels)
+    IReadOnlyList<string> PresetModels,
+    int RetryCount)
 {
-    public static AiOpenAiSettingsSnapshot Empty { get; } = new(null, null, null, Array.Empty<string>());
+    public static AiOpenAiSettingsSnapshot Empty { get; } = new(null, null, null, Array.Empty<string>(), 2);
 
     public string CompletionsPath => "/chat/completions";
 
@@ -115,7 +118,8 @@ public sealed record AiOpenAiSettingsSnapshot(
             NormalizeEndpoint(options.Endpoint),
             NormalizeApiKey(options.ApiKey),
             defaultModel,
-            presetModels);
+            presetModels,
+            NormalizeRetryCount(options.RetryCount));
     }
 
     public static string? NormalizeEndpoint(string? value)
@@ -158,6 +162,14 @@ public sealed record AiOpenAiSettingsSnapshot(
     {
         var model = (value ?? string.Empty).Trim();
         return model.Length == 0 ? null : model;
+    }
+
+    public static int NormalizeRetryCount(int value)
+    {
+        if (value < 0)
+            return 0;
+
+        return value > 5 ? 5 : value;
     }
 
     public static List<string> NormalizeModelEntries(IEnumerable<string>? values, string? defaultModel = null)

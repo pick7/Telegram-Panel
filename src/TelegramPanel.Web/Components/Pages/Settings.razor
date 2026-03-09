@@ -98,8 +98,11 @@
                 <MudTextField @bind-Value="aiPresetModelsText" Label="预设模型（每行一个）" Variant="Variant.Outlined" Class="mt-3"
                               Lines="4"
                               HelperText="例如：gpt-4o-mini、qwen-vl-plus；任务编辑器会直接复用这里的预设。" />
+                <MudNumericField @bind-Value="aiRetryCount" Label="AI 失败重试次数" Variant="Variant.Outlined" Class="mt-3"
+                                 Min="0" Max="5"
+                                 HelperText="0 表示不重试；实际最多请求次数 = 1 + 重试次数。建议 2。" />
                 <MudText Typo="Typo.caption" Class="mt-2 mud-text-secondary">
-                    测试连通会直接使用当前表单里的端点、Key 和模型，不必先保存。
+                    测试连通会直接使用当前表单里的端点、Key、模型和重试次数，不必先保存。
                 </MudText>
             </MudCardContent>
             <MudCardActions>
@@ -331,6 +334,7 @@
     private string aiApiKey = "";
     private string aiDefaultModel = "";
     private string aiPresetModelsText = "";
+    private int aiRetryCount = 2;
     private bool aiTesting = false;
 
     private sealed record TimeZoneChoice(string Id, string Label);
@@ -383,6 +387,7 @@
         aiApiKey = Configuration["AI:OpenAI:ApiKey"] ?? "";
         aiDefaultModel = Configuration["AI:OpenAI:DefaultModel"] ?? "";
         aiPresetModelsText = string.Join(System.Environment.NewLine, Configuration.GetSection("AI:OpenAI:PresetModels").GetChildren().Select(x => x.Value).Where(x => !string.IsNullOrWhiteSpace(x)));
+        aiRetryCount = AiOpenAiSettingsSnapshot.NormalizeRetryCount(Configuration.GetValue("AI:OpenAI:RetryCount", 2));
     }
 
     private async Task SaveApiConfig()
@@ -484,12 +489,19 @@
 
     private async Task SaveAiConfig()
     {
+        if (aiRetryCount < 0 || aiRetryCount > 5)
+        {
+            Snackbar.Add("AI 失败重试次数范围应为 0-5", Severity.Error);
+            return;
+        }
+
         try
         {
             var normalizedEndpoint = AiOpenAiSettingsSnapshot.NormalizeEndpoint(aiEndpoint);
             var normalizedApiKey = AiOpenAiSettingsSnapshot.NormalizeApiKey(aiApiKey);
             var normalizedDefaultModel = AiOpenAiSettingsSnapshot.NormalizeModel(aiDefaultModel);
             var presetModels = AiOpenAiSettingsSnapshot.NormalizeModelEntries(ParseLines(aiPresetModelsText), normalizedDefaultModel);
+            var normalizedRetryCount = AiOpenAiSettingsSnapshot.NormalizeRetryCount(aiRetryCount);
 
             var root = await LoadOrCreateLocalConfigAsync();
             var ai = EnsureObject(root, "AI");
@@ -498,6 +510,7 @@
             openAi["Endpoint"] = normalizedEndpoint ?? string.Empty;
             openAi["ApiKey"] = normalizedApiKey ?? string.Empty;
             openAi["DefaultModel"] = normalizedDefaultModel ?? string.Empty;
+            openAi["RetryCount"] = normalizedRetryCount;
 
             var modelsArray = new System.Text.Json.Nodes.JsonArray();
             foreach (var model in presetModels)
@@ -510,6 +523,7 @@
             aiApiKey = normalizedApiKey ?? string.Empty;
             aiDefaultModel = normalizedDefaultModel ?? string.Empty;
             aiPresetModelsText = string.Join(System.Environment.NewLine, presetModels);
+            aiRetryCount = normalizedRetryCount;
 
             Snackbar.Add("AI 配置已保存（配置热重载后生效）", Severity.Success);
             StateHasChanged();
@@ -525,6 +539,12 @@
         if (aiTesting)
             return;
 
+        if (aiRetryCount < 0 || aiRetryCount > 5)
+        {
+            Snackbar.Add("AI 失败重试次数范围应为 0-5", Severity.Error);
+            return;
+        }
+
         aiTesting = true;
         try
         {
@@ -532,7 +552,8 @@
             var normalizedApiKey = AiOpenAiSettingsSnapshot.NormalizeApiKey(aiApiKey);
             var normalizedDefaultModel = AiOpenAiSettingsSnapshot.NormalizeModel(aiDefaultModel);
             var presetModels = AiOpenAiSettingsSnapshot.NormalizeModelEntries(ParseLines(aiPresetModelsText), normalizedDefaultModel);
-            var snapshot = new AiOpenAiSettingsSnapshot(normalizedEndpoint, normalizedApiKey, normalizedDefaultModel, presetModels);
+            var normalizedRetryCount = AiOpenAiSettingsSnapshot.NormalizeRetryCount(aiRetryCount);
+            var snapshot = new AiOpenAiSettingsSnapshot(normalizedEndpoint, normalizedApiKey, normalizedDefaultModel, presetModels, normalizedRetryCount);
             var testModel = ResolveAiTestModel(snapshot);
 
             if (!snapshot.TryValidateForTask(testModel, out var validateError))

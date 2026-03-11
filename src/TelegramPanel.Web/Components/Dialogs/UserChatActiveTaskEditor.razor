@@ -140,7 +140,7 @@
                     <MudSelect T="string" @bind-Value="verificationMatchMode" @bind-Value:after="OnInputsChanged"
                                Label="验证消息匹配方式" Variant="Variant.Outlined" Dense="true"
                                HelperText="仅匹配 bot 消息。关键词/正则会同时匹配消息正文与按钮文字。">
-                        <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.MentionOrReply">仅 @账号 / 回复消息</MudSelectItem>
+                        <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.MentionOrReply">仅 &#64;账号 / 回复消息</MudSelectItem>
                         <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Keyword">关键词匹配</MudSelectItem>
                         <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Regex">正则匹配</MudSelectItem>
                     </MudSelect>

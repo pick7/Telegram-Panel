@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data.Entities;
@@ -28,12 +29,45 @@ public sealed class UserChatActiveAiVerificationService
         UserChatActiveTaskConfig config,
         CancellationToken cancellationToken)
     {
+        var matchMode = UserChatActiveAiVerificationMatchModes.Normalize(config.VerificationMatchMode);
+        var keywordList = NormalizeKeywordList(config.VerificationKeywords);
+        var regexList = NormalizeRegexList(config.VerificationRegexes);
+        Func<TelegramAccountMessageUpdate, bool>? messageFilter = null;
+
+        if (string.Equals(matchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal))
+        {
+            if (keywordList.Count == 0)
+                return (false, "AI 验证关键词为空，无法匹配验证消息", null);
+
+            messageFilter = update => MatchByKeywords(update, keywordList);
+        }
+        else if (string.Equals(matchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal))
+        {
+            if (regexList.Count == 0)
+                return (false, "AI 验证正则为空，无法匹配验证消息", null);
+
+            List<Regex> regexes;
+            try
+            {
+                regexes = regexList
+                    .Select(x => new Regex(x, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                return (false, $"AI 验证正则无效：{ex.Message}", null);
+            }
+
+            messageFilter = update => MatchByRegex(update, regexes);
+        }
+
         var wait = await _accountTools.WaitForBotVerificationMessageAsync(
             account.Id,
             target,
             sentMessageId,
             account.Username,
             config.VerificationTimeoutSeconds,
+            messageFilter,
             cancellationToken);
 
         if (!wait.Success || wait.Candidate == null)
@@ -139,6 +173,70 @@ public sealed class UserChatActiveAiVerificationService
             candidate.MessageId);
 
         return (true, null, $"AI 文本回复：{replyContent}");
+    }
+
+    private static List<string> NormalizeKeywordList(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> NormalizeRegexList(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool MatchByKeywords(TelegramAccountMessageUpdate update, IReadOnlyList<string> keywords)
+    {
+        var text = BuildMatchText(update);
+        if (text.Length == 0)
+            return false;
+
+        foreach (var keyword in keywords)
+        {
+            if (text.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool MatchByRegex(TelegramAccountMessageUpdate update, IReadOnlyList<Regex> regexes)
+    {
+        var text = BuildMatchText(update);
+        if (text.Length == 0)
+            return false;
+
+        foreach (var regex in regexes)
+        {
+            if (regex.IsMatch(text))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string BuildMatchText(TelegramAccountMessageUpdate update)
+    {
+        var text = update.Text;
+        if (update.Buttons.Count == 0)
+            return text;
+
+        var buttonText = string.Join(" ", update.Buttons.Select(x => x.Text).Where(x => !string.IsNullOrWhiteSpace(x)));
+        if (string.IsNullOrWhiteSpace(text))
+            return buttonText.Trim();
+
+        if (string.IsNullOrWhiteSpace(buttonText))
+            return text;
+
+        return $"{text}\n{buttonText}".Trim();
     }
 
     private static TelegramInlineButtonOption? TryMatchButtonByReplyText(

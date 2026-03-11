@@ -8,6 +8,24 @@ public static class UserChatActiveTaskModes
     public const string Queue = "queue";
 }
 
+public static class UserChatActiveAiVerificationMatchModes
+{
+    public const string MentionOrReply = "mention_or_reply";
+    public const string Keyword = "keyword";
+    public const string Regex = "regex";
+
+    public static string Normalize(string? value)
+    {
+        if (string.Equals(value, Keyword, StringComparison.OrdinalIgnoreCase))
+            return Keyword;
+
+        if (string.Equals(value, Regex, StringComparison.OrdinalIgnoreCase))
+            return Regex;
+
+        return MentionOrReply;
+    }
+}
+
 public sealed class UserChatActiveTaskConfig
 {
     [JsonPropertyName("category_id")]
@@ -54,6 +72,15 @@ public sealed class UserChatActiveTaskConfig
 
     [JsonPropertyName("verification_timeout_seconds")]
     public int VerificationTimeoutSeconds { get; set; } = 15;
+
+    [JsonPropertyName("verification_match_mode")]
+    public string VerificationMatchMode { get; set; } = UserChatActiveAiVerificationMatchModes.MentionOrReply;
+
+    [JsonPropertyName("verification_keywords")]
+    public List<string> VerificationKeywords { get; set; } = new();
+
+    [JsonPropertyName("verification_regexes")]
+    public List<string> VerificationRegexes { get; set; } = new();
 
     [JsonPropertyName("canceled")]
     public bool Canceled { get; set; }

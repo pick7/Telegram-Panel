@@ -3,6 +3,7 @@
 @inject TemplateRenderingService TemplateRendering
 @inject Microsoft.Extensions.Options.IOptionsMonitor<AiOpenAiOptions> AiOptionsMonitor
 @using System.Text.Json
+@using System.Text.RegularExpressions
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Modules
 @using TelegramPanel.Web.Services
@@ -134,9 +135,52 @@
                               HelperText="例如：gpt-4o-mini、qwen-vl-plus、glm-4.5v。" />
             }
 
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" @bind-Value="verificationMatchMode" @bind-Value:after="OnInputsChanged"
+                               Label="验证消息匹配方式" Variant="Variant.Outlined" Dense="true"
+                               HelperText="仅匹配 bot 消息。关键词/正则会同时匹配消息正文与按钮文字。">
+                        <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.MentionOrReply">仅 @账号 / 回复消息</MudSelectItem>
+                        <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Keyword">关键词匹配</MudSelectItem>
+                        <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Regex">正则匹配</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+            </MudGrid>
+
+            @if (IsKeywordMatchMode)
+            {
+                <MudTextField @bind-Value="verificationKeywordsText" @bind-Value:after="OnInputsChanged"
+                              Label="验证关键词（每行一个）"
+                              Variant="Variant.Outlined"
+                              Lines="4"
+                              Immediate="true"
+                              HelperText="命中任意关键词即触发 AI 识别（不区分大小写）。" />
+            }
+
+            @if (IsRegexMatchMode)
+            {
+                <MudTextField @bind-Value="verificationRegexText" @bind-Value:after="OnInputsChanged"
+                              Label="验证正则（每行一个）"
+                              Variant="Variant.Outlined"
+                              Lines="4"
+                              Immediate="true"
+                              HelperText="示例：人机验证|验证码|captcha。正则不区分大小写。" />
+            }
+
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                仅处理同一目标群里的 <strong>bot</strong> 验证消息，并要求它 <strong>&#64;当前执行账号</strong> 或 <strong>直接回复刚发出的消息</strong>。
-                有按钮时会优先让 AI 决定点击哪个按钮；没有按钮时会让 AI 直接生成回复文本。
+                @if (IsKeywordMatchMode)
+                {
+                    <div>仅处理同一目标群里的 <strong>bot</strong> 消息，且命中你设置的关键词。</div>
+                }
+                else if (IsRegexMatchMode)
+                {
+                    <div>仅处理同一目标群里的 <strong>bot</strong> 消息，且匹配你设置的正则。</div>
+                }
+                else
+                {
+                    <div>仅处理同一目标群里的 <strong>bot</strong> 消息，并要求它 <strong>&#64;当前执行账号</strong> 或 <strong>直接回复刚发出的消息</strong>。</div>
+                }
+                <div>有按钮时会优先让 AI 决定点击哪个按钮；没有按钮时会让 AI 直接生成回复文本。</div>
             </MudAlert>
         }
     }
@@ -164,6 +208,9 @@
     private int maxMessages;
     private bool enableAiVerification;
     private int verificationTimeoutSeconds = 15;
+    private string verificationMatchMode = UserChatActiveAiVerificationMatchModes.MentionOrReply;
+    private string verificationKeywordsText = string.Empty;
+    private string verificationRegexText = string.Empty;
     private string? initialAiModel;
     private string selectedAiModelOption = UseGlobalDefaultModelOption;
     private string customAiModel = string.Empty;
@@ -175,6 +222,8 @@
 
     private bool IsCustomAiModelSelected => string.Equals(selectedAiModelOption, CustomModelOption, StringComparison.Ordinal);
     private string UseGlobalDefaultModelLabel => globalDefaultAiModelLabel;
+    private bool IsKeywordMatchMode => string.Equals(verificationMatchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal);
+    private bool IsRegexMatchMode => string.Equals(verificationMatchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal);
 
     protected override async Task OnInitializedAsync()
     {
@@ -233,6 +282,9 @@
             enableAiVerification = cfg.EnableAiVerification;
             verificationTimeoutSeconds = cfg.VerificationTimeoutSeconds < 3 ? 15 : cfg.VerificationTimeoutSeconds;
             initialAiModel = AiOpenAiSettingsSnapshot.NormalizeModel(cfg.AiModel);
+            verificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(cfg.VerificationMatchMode);
+            verificationKeywordsText = string.Join(Environment.NewLine, cfg.VerificationKeywords ?? new List<string>());
+            verificationRegexText = string.Join(Environment.NewLine, cfg.VerificationRegexes ?? new List<string>());
         }
         catch
         {
@@ -299,6 +351,9 @@
     {
         var targets = ParseTargetLines(targetsText);
         var dictionary = ParseMessageLines(dictionaryText);
+        var verificationKeywords = ParseVerificationLines(verificationKeywordsText);
+        var verificationRegexes = ParseVerificationLines(verificationRegexText);
+        var normalizedMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(verificationMatchMode);
         var selectedIds = NormalizeCategoryIds(selectedCategoryIds, 0);
         var selectedCategories = categories.Where(x => selectedIds.Contains(x.Id)).ToList();
 
@@ -383,6 +438,35 @@
                 await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请选择有效的自定义模型名"));
                 return;
             }
+
+            if (string.Equals(normalizedMatchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal)
+                && verificationKeywords.Count == 0)
+            {
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请选择至少一个验证关键词"));
+                return;
+            }
+
+            if (string.Equals(normalizedMatchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal))
+            {
+                if (verificationRegexes.Count == 0)
+                {
+                    await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请选择至少一个验证正则"));
+                    return;
+                }
+
+                foreach (var pattern in verificationRegexes)
+                {
+                    try
+                    {
+                        _ = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    }
+                    catch (Exception ex)
+                    {
+                        await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, $"验证正则无效：{ex.Message}"));
+                        return;
+                    }
+                }
+            }
         }
 
         var categoryNames = selectedCategories.Select(x => x.Name).ToList();
@@ -402,7 +486,10 @@
             MessageMode = messageMode,
             EnableAiVerification = enableAiVerification,
             AiModel = resolvedAiModel,
-            VerificationTimeoutSeconds = enableAiVerification ? verificationTimeoutSeconds : 15
+            VerificationTimeoutSeconds = enableAiVerification ? verificationTimeoutSeconds : 15,
+            VerificationMatchMode = normalizedMatchMode,
+            VerificationKeywords = verificationKeywords,
+            VerificationRegexes = verificationRegexes
         };
 
         var total = maxMessages > 0 ? maxMessages : 0;
@@ -474,6 +561,19 @@
             .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
             .Select(x => (x ?? string.Empty).Trim())
             .Where(x => x.Length > 0)
+            .ToList();
+    }
+
+    private static List<string> ParseVerificationLines(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+
+        return text
+            .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 }

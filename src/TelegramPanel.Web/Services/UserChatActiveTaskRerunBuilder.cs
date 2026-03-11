@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text.RegularExpressions;
 using TelegramPanel.Core.BatchTasks;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Modules;
@@ -80,6 +81,37 @@ public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
         cfg.TargetMode = NormalizeModeValue(cfg.TargetMode);
         cfg.MessageMode = NormalizeModeValue(cfg.MessageMode);
 
+        cfg.VerificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(cfg.VerificationMatchMode);
+        cfg.VerificationKeywords = NormalizeVerificationItems(cfg.VerificationKeywords);
+        cfg.VerificationRegexes = NormalizeVerificationItems(cfg.VerificationRegexes);
+
+        if (cfg.EnableAiVerification)
+        {
+            if (string.Equals(cfg.VerificationMatchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal)
+                && cfg.VerificationKeywords.Count == 0)
+            {
+                throw new InvalidOperationException("AI 验证已启用，但未配置关键词匹配内容");
+            }
+
+            if (string.Equals(cfg.VerificationMatchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal))
+            {
+                if (cfg.VerificationRegexes.Count == 0)
+                    throw new InvalidOperationException("AI 验证已启用，但未配置正则匹配内容");
+
+                foreach (var pattern in cfg.VerificationRegexes)
+                {
+                    try
+                    {
+                        _ = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"AI 验证正则无效：{ex.Message}");
+                    }
+                }
+            }
+        }
+
         cfg.Canceled = false;
         cfg.Error = null;
         cfg.RecentFailures = new List<UserChatActiveTaskRuntimeFailure>();
@@ -121,4 +153,14 @@ public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
             ? UserChatActiveTaskModes.Queue
             : UserChatActiveTaskModes.Random;
     }
+
+    private static List<string> NormalizeVerificationItems(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
 }

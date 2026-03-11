@@ -1148,6 +1148,7 @@ public class AccountTelegramToolsService
         int sentMessageId,
         string? currentUsername,
         int timeoutSeconds,
+        Func<TelegramAccountMessageUpdate, bool>? messageFilter = null,
         CancellationToken cancellationToken = default)
     {
         if (timeoutSeconds < 3)
@@ -1161,7 +1162,7 @@ public class AccountTelegramToolsService
             var waitStartedAt = DateTimeOffset.UtcNow.AddSeconds(-2);
             var update = await _updateHub.WaitForAsync(
                 accountId,
-                x => IsCandidateVerificationMessage(x, target, currentUsername, sentMessageId),
+                x => IsCandidateVerificationMessage(x, target, currentUsername, sentMessageId, messageFilter),
                 waitStartedAt,
                 TimeSpan.FromSeconds(timeoutSeconds),
                 cancellationToken);
@@ -1274,13 +1275,17 @@ public class AccountTelegramToolsService
         TelegramAccountMessageUpdate update,
         ResolvedChatTarget target,
         string? currentUsername,
-        int sentMessageId)
+        int sentMessageId,
+        Func<TelegramAccountMessageUpdate, bool>? messageFilter)
     {
         if (!update.SenderIsBot)
             return false;
 
         if (!IsSamePeer(target.Peer, update.Message.peer_id))
             return false;
+
+        if (messageFilter != null)
+            return messageFilter(update);
 
         var mentionsAccount = ContainsUsernameMention(update.Message.message, currentUsername);
         var replyToSent = update.ReplyToMessageId == sentMessageId;

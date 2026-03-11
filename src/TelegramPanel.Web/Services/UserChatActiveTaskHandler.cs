@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -464,6 +465,37 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         config.TargetMode = NormalizeMode(config.TargetMode);
         config.MessageMode = NormalizeMode(config.MessageMode);
 
+        config.VerificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(config.VerificationMatchMode);
+        config.VerificationKeywords = NormalizeVerificationItems(config.VerificationKeywords);
+        config.VerificationRegexes = NormalizeVerificationItems(config.VerificationRegexes);
+
+        if (config.EnableAiVerification)
+        {
+            if (string.Equals(config.VerificationMatchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal)
+                && config.VerificationKeywords.Count == 0)
+            {
+                throw new InvalidOperationException("AI 验证已启用，但未配置关键词匹配内容");
+            }
+
+            if (string.Equals(config.VerificationMatchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal))
+            {
+                if (config.VerificationRegexes.Count == 0)
+                    throw new InvalidOperationException("AI 验证已启用，但未配置正则匹配内容");
+
+                foreach (var pattern in config.VerificationRegexes)
+                {
+                    try
+                    {
+                        _ = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"AI 验证正则无效：{ex.Message}");
+                    }
+                }
+            }
+        }
+
         config.RecentFailures ??= new List<UserChatActiveTaskRuntimeFailure>();
     }
 
@@ -500,6 +532,15 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         return string.Equals((mode ?? string.Empty).Trim(), UserChatActiveTaskModes.Queue, StringComparison.OrdinalIgnoreCase)
             ? UserChatActiveTaskModes.Queue
             : UserChatActiveTaskModes.Random;
+    }
+
+    private static List<string> NormalizeVerificationItems(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static int SelectIndex(string mode, int count, ref int queueIndex)

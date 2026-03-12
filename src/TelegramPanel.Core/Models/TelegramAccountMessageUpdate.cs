@@ -17,6 +17,9 @@ public sealed record TelegramAccountMessageUpdate(
     long? SenderUserId,
     string? SenderUsername,
     bool SenderIsBot,
+    long? SenderChatId,
+    string? SenderChatUsername,
+    string? SenderPostAuthor,
     int? ReplyToMessageId,
     int? ThreadId,
     IReadOnlyList<TelegramInlineButton> Buttons)

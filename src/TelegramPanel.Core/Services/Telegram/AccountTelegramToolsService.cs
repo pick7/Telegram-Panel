@@ -1314,14 +1314,24 @@ public class AccountTelegramToolsService
         if (allowedUsernames == null || allowedUsernames.Count == 0)
             return false;
 
-        var username = (update.SenderUsername ?? string.Empty).Trim().TrimStart('@');
-        if (username.Length == 0)
-            return false;
-
-        foreach (var allowed in allowedUsernames)
+        var candidates = new[]
         {
-            if (string.Equals(allowed, username, StringComparison.OrdinalIgnoreCase))
-                return true;
+            update.SenderUsername,
+            update.SenderChatUsername,
+            update.SenderPostAuthor
+        };
+
+        foreach (var candidate in candidates)
+        {
+            var normalized = (candidate ?? string.Empty).Trim().TrimStart('@');
+            if (normalized.Length == 0)
+                continue;
+
+            foreach (var allowed in allowedUsernames)
+            {
+                if (string.Equals(allowed, normalized, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
         }
 
         return false;

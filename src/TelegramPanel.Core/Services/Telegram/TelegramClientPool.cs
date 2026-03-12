@@ -324,12 +324,25 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         try
         {
             var senderUserId = (message.from_id as PeerUser)?.user_id;
+            var senderChatId = (message.from_id as PeerChannel)?.channel_id
+                               ?? (message.from_id as PeerChat)?.chat_id;
             User? sender = null;
             if (senderUserId.HasValue
                 && updateManager.Users.TryGetValue(senderUserId.Value, out var userBase)
                 && userBase is User user)
             {
                 sender = user;
+            }
+            string? senderChatUsername = null;
+            if (senderChatId.HasValue
+                && updateManager.Chats.TryGetValue(senderChatId.Value, out var chatBase))
+            {
+                switch (chatBase)
+                {
+                    case Channel channel:
+                        senderChatUsername = channel.username;
+                        break;
+                }
             }
 
             var buttons = ExtractInlineButtons(message.reply_markup);
@@ -342,6 +355,9 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 SenderUserId: senderUserId,
                 SenderUsername: sender?.username,
                 SenderIsBot: sender?.IsBot == true,
+                SenderChatId: senderChatId,
+                SenderChatUsername: senderChatUsername,
+                SenderPostAuthor: message.post_author,
                 ReplyToMessageId: reply?.reply_to_msg_id,
                 ThreadId: reply?.reply_to_top_id,
                 Buttons: buttons);

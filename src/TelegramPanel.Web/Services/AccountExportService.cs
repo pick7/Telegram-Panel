@@ -397,8 +397,9 @@ public class AccountExportService
                 phoneNumber: account.Phone,
                 userId: account.UserId > 0 ? account.UserId : null);
 
-            if (sourceClient.User == null)
-                return PreparedExportSession.Fail("当前账号未处于已登录状态，无法生成独立 session");
+            var sourceUser = await EnsureSourceClientLoggedInAsync(sourceClient, account, cancellationToken);
+            if (sourceUser == null)
+                return PreparedExportSession.Fail("当前账号 session 无法恢复登录状态，无法生成独立 session");
 
             string Config(string what)
             {
@@ -444,6 +445,9 @@ public class AccountExportService
             if (account.UserId > 0 && user.id != account.UserId)
                 return PreparedExportSession.Fail($"新 session 登录到了错误账号（期望 {account.UserId}，实际 {user.id}）");
 
+            if (sourceUser.id != 0 && user.id != sourceUser.id)
+                return PreparedExportSession.Fail($"新 session 登录到了错误账号（期望 {sourceUser.id}，实际 {user.id}）");
+
             _logger.LogInformation(
                 "Generated independent export session for account {AccountId}, userId={UserId}",
                 account.Id,
@@ -466,6 +470,40 @@ public class AccountExportService
             linkedCts.Dispose();
             if (!keepTempSession)
                 TryDeleteFile(tempSessionPath);
+        }
+    }
+
+    private async Task<User?> EnsureSourceClientLoggedInAsync(Client sourceClient, Account account, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (sourceClient.User != null)
+            return sourceClient.User;
+
+        try
+        {
+            await sourceClient.ConnectAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to connect source client while preparing independent export session for account {AccountId}", account.Id);
+            throw;
+        }
+
+        if (sourceClient.User != null)
+            return sourceClient.User;
+
+        if (sourceClient.UserId == 0 && account.UserId <= 0)
+            return null;
+
+        try
+        {
+            return await sourceClient.LoginUserIfNeeded(reloginOnFailedResume: false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to restore source session login state for account {AccountId}", account.Id);
+            return null;
         }
     }
 

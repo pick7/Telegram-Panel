@@ -384,6 +384,7 @@ public class AccountExportService
         var acceptTasks = new ConcurrentBag<Task>();
         Exception? acceptError = null;
         var keepTempSession = false;
+        var twoFactorPassword = NormalizeOptionalSecret(account.TwoFactorPassword);
         using var acceptLock = new SemaphoreSlim(1, 1);
 
         try
@@ -411,6 +412,7 @@ public class AccountExportService
                     "session_pathname" => tempSessionPath,
                     "session_key" => apiHash,
                     "phone_number" => string.IsNullOrWhiteSpace(normalizedPhone) ? null! : normalizedPhone,
+                    "password" => string.IsNullOrWhiteSpace(twoFactorPassword) ? null! : twoFactorPassword,
                     _ => null!
                 };
             }
@@ -463,7 +465,7 @@ public class AccountExportService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to generate independent export session for account {AccountId}", account.Id);
-            return PreparedExportSession.Fail(ex.Message);
+            return PreparedExportSession.Fail(TranslateIndependentExportError(ex, string.IsNullOrWhiteSpace(twoFactorPassword)));
         }
         finally
         {
@@ -471,6 +473,19 @@ public class AccountExportService
             if (!keepTempSession)
                 TryDeleteFile(tempSessionPath);
         }
+    }
+
+    private static string TranslateIndependentExportError(Exception ex, bool passwordMissing)
+    {
+        var message = (ex.Message ?? string.Empty).Trim();
+        if (message.Contains("config value for password", StringComparison.OrdinalIgnoreCase))
+        {
+            return passwordMissing
+                ? "该账号启用了二级密码，但系统未保存二级密码，无法生成独立 session。请先在【账号详情】中保存二级密码后再导出。"
+                : "该账号需要二级密码才能完成独立 session 登录，但当前保存的二级密码未生效。请到【账号详情】确认二级密码后重试。";
+        }
+
+        return string.IsNullOrWhiteSpace(message) ? ex.GetType().Name : message;
     }
 
     private async Task<User?> EnsureSourceClientLoggedInAsync(Client sourceClient, Account account, CancellationToken cancellationToken)
@@ -598,6 +613,14 @@ public class AccountExportService
         {
             // ignore
         }
+    }
+
+    private static string? NormalizeOptionalSecret(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return value.Trim();
     }
 
     private sealed class PreparedExportSession : IAsyncDisposable

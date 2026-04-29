@@ -55,6 +55,8 @@ public sealed class BatchTaskBackgroundService : BackgroundService
         // 延迟一点，避免与启动时 DB 迁移抢资源
         await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
 
+        await RecoverInterruptedTasksAsync(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -79,6 +81,17 @@ public sealed class BatchTaskBackgroundService : BackgroundService
             }
 
             await Task.Delay(interval, stoppingToken);
+        }
+    }
+
+    private async Task RecoverInterruptedTasksAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var taskManagement = scope.ServiceProvider.GetRequiredService<BatchTaskManagementService>();
+        var requeued = await taskManagement.RequeueRunningTasksAsync();
+        if (requeued > 0)
+        {
+            _logger.LogInformation("Recovered {Count} interrupted running batch tasks and set them back to pending", requeued);
         }
     }
 

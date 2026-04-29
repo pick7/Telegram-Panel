@@ -43,6 +43,162 @@
 
 > 说明：模块启用/停用通常需要重启；宿主启动时只会加载“启用”的模块，因此 UI/任务/API 列表会随启用状态变化。
 
+## 长时间运行任务与重启恢复（重要）
+
+如果你的模块实现的是“持续监控 / 长轮询 / 等待条件出现后再执行”的任务，需要注意下面这几个规则：
+
+### 1）批量任务框架默认仍然是“一次执行”
+
+- 宿主的 `BatchTaskBackgroundService` 会从数据库里捞出 `pending` 任务，调用对应的 `IModuleTaskHandler.ExecuteAsync(...)`
+- **只要你的 `ExecuteAsync(...)` 返回，宿主就会把这条批量任务标记为 `completed` 或 `failed`**
+- 所以“持续任务”并不是宿主自动帮你持续；而是你的执行器必须自己维持循环，并在适当的时候才返回
+
+换句话说：
+
+- 一次性任务：执行器跑完就返回
+- 持续监控任务：执行器自己 `while (...)` 循环，直到达到停止条件、被用户暂停/取消，或者你明确决定结束
+
+### 2）持续任务必须轮询 `IsStillRunningAsync(...)`
+
+宿主通过 `IModuleTaskExecutionHost.IsStillRunningAsync(...)` 把“当前任务是否还允许继续跑”暴露给模块。
+
+模块作者在长循环里必须定期检查：
+
+```csharp
+while (!cancellationToken.IsCancellationRequested)
+{
+    if (!await host.IsStillRunningAsync(cancellationToken))
+        return;
+
+    // 你的持续监控逻辑
+}
+```
+
+推荐检查位置：
+
+- 每一轮大循环开始时
+- 每次 `Task.Delay(...)` 前后
+- 每次外部请求、网络调用、数据库批量操作前
+
+这样用户在任务中心点击“暂停 / 恢复 / 取消”时，模块才能及时响应。
+
+### 3）持续任务的运行状态必须写回 `task.Config`
+
+如果你的任务需要跨轮次记住状态，例如：
+
+- 已处理过哪些用户名 / 频道 / 消息
+- 上次检查时间
+- 当前游标 / offset / pageToken
+- 外部系统返回的中间状态
+
+不要只存在内存里，应该定期序列化回 `BatchTask.Config`。
+
+宿主提供了 `BatchTaskManagementService.UpdateTaskConfigAsync(...)`，推荐在模块里这样做：
+
+```csharp
+var taskManagement = host.Services.GetRequiredService<BatchTaskManagementService>();
+
+config.LastCheckTime = DateTime.UtcNow;
+config.ProcessedIds = processedIds.ToList();
+
+await taskManagement.UpdateTaskConfigAsync(
+    host.TaskId,
+    JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
+```
+
+这样做的目的有两个：
+
+- 任务详情里能看到实时状态
+- 宿主重启后，任务可以从上次进度继续恢复，而不是从头开始
+
+### 4）宿主现在会自动恢复“中断中的 running 任务”
+
+当前宿主实现中，`BatchTaskBackgroundService` 启动时会把数据库里残留的 `running` 批量任务重新置回 `pending`，然后由后台执行器重新拉起。
+
+这意味着：
+
+- 如果程序异常退出 / 重启
+- 只要这条任务上次状态还停留在 `running`
+- 宿主下次启动后会自动尝试恢复它
+
+因此，**模块作者必须把持续任务写成“可重复进入、可从 Config 恢复”的形式**。
+
+也就是说，不要依赖：
+
+- 进程内静态变量
+- 单次启动时生成但未持久化的随机状态
+- 只存在内存里的队列 / 集合 / 指针
+
+而应该依赖：
+
+- `task.Config`
+- 模块自己的持久化数据目录
+- 外部系统里可重复读取的状态
+
+### 5）“持续任务”和“Cron 计划任务”不是一回事
+
+宿主里现在有两套概念：
+
+- **批量任务（BatchTask）**
+  说明：提交后立即执行一次；是否持续由模块执行器自己决定
+- **计划任务（ScheduledTask / Cron）**
+  说明：由宿主按 Cron 周期反复创建新的批量任务
+
+适用建议：
+
+- 想要“进程内一直守着等机会”：用持续批量任务
+- 想要“每隔一段时间触发一次检查”：用 Cron 计划任务
+
+如果模块页面没有走任务中心的“Cron 计划”创建入口，而是自己直接 `CreateTaskAsync(...)`，那它创建出来的就只是普通批量任务，不会自动变成计划任务。
+
+### 6）持续任务的停止条件要写清楚
+
+模块作者最好明确区分以下几种结束原因：
+
+- 用户主动暂停 / 取消
+- 达到运行时长上限
+- 所有目标都已处理完成
+- 当前资源暂时不足，但后续可能恢复
+
+其中最后一种很常见，比如：
+
+- 暂时没有可用私密频道
+- 目标接口限流
+- 外部站点临时不可达
+
+这类情况如果业务上允许后续继续等待，**不要直接结束任务**，而应该：
+
+1. 写入错误/提示状态到 `Config`
+2. 等待一段时间
+3. 进入下一轮重试
+
+示例：
+
+```csharp
+if (availableChannels.Count == 0)
+{
+    config.Error = "当前没有可用私密频道";
+    await SaveConfigAsync(taskManagement, host.TaskId, config);
+
+    if (!await DelayWithPauseCheckAsync(host, TimeSpan.FromMinutes(5), cancellationToken))
+        return;
+
+    continue;
+}
+```
+
+### 7）给持续任务的一个实践建议
+
+如果你的模块是“监控类任务”，推荐至少维护这些字段：
+
+- `StartedAtUtc`
+- `LastCheckTime`
+- `Error`
+- `Canceled`
+- 业务游标（例如 `AssignedUsernames` / `HandledMessageIds` / `LastOffset`）
+
+这样无论是排错、前端展示，还是重启恢复，都会清晰很多。
+
 ## Bot 更新订阅（allowed_updates）
 
 如果模块需要消费 Telegram Bot API 的更新（`getUpdates` / Webhook），**不要**在模块里对同一个 Bot Token 自行启动轮询器（会导致 409 Conflict）。请通过宿主的 `BotUpdateHub` 订阅/广播更新。

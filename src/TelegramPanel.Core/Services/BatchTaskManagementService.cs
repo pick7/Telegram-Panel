@@ -134,6 +134,28 @@ public class BatchTaskManagementService
         }
     }
 
+    public async Task<int> RequeueRunningTasksAsync(Func<BatchTask, bool>? predicate = null)
+    {
+        var runningTasks = (await _batchTaskRepository.GetByStatusAsync("running")).ToList();
+        if (runningTasks.Count == 0)
+            return 0;
+
+        var requeued = 0;
+        foreach (var task in runningTasks)
+        {
+            if (predicate != null && !predicate(task))
+                continue;
+
+            task.Status = "pending";
+            task.StartedAt = null;
+            task.CompletedAt = null;
+            await _batchTaskRepository.UpdateFreshAsync(task);
+            requeued++;
+        }
+
+        return requeued;
+    }
+
     public async Task CompleteTaskAsync(int taskId, bool success = true)
     {
         var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);

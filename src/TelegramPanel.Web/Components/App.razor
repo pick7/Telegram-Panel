@@ -8,14 +8,19 @@
     <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
     <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
     <link href="app.css" rel="stylesheet" />
-    <HeadOutlet @rendermode="InteractiveServer" />
+    <HeadOutlet @rendermode="ServerRenderMode" />
 </head>
 
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    <Routes @rendermode="ServerRenderMode" />
     <script src="_framework/blazor.web.js"></script>
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
     <script src="app.js"></script>
 </body>
 
 </html>
+
+@code {
+    private static readonly IComponentRenderMode ServerRenderMode =
+        new InteractiveServerRenderMode(prerender: false);
+}

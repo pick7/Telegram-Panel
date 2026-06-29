@@ -368,8 +368,14 @@
 
     private double GetProgress(BatchTask task)
     {
-        if (task.Total == 0) return 0;
-        return (double)task.Completed / task.Total * 100;
+        if (task.Total <= 0)
+            return 0;
+
+        var value = (double)Math.Max(0, task.Completed) / task.Total * 100;
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return 0;
+
+        return Math.Clamp(value, 0, 100);
     }
 
     private string GetCategory(string taskType)

@@ -326,7 +326,7 @@ public class DataSyncService
 
                 await _telegramTools.EnsureEstimatedRegistrationAsync(account.Id, cancellationToken);
 
-                await _accountManagement.UpdateLastSyncTimeAsync(account.Id);
+                await MarkAccountSyncSucceededAsync(account);
             }
             catch (Exception ex)
             {
@@ -432,7 +432,8 @@ public class DataSyncService
             {
                 "visible_channels_sync",
                 "visible_groups_sync",
-                "lightweight_telegram_status_refresh_on_sync_error"
+                "lightweight_telegram_status_refresh_on_sync_error",
+                "successful_sync_clears_transient_telegram_status"
             },
             excludes = new[]
             {
@@ -455,6 +456,37 @@ public class DataSyncService
         };
 
         return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private async Task MarkAccountSyncSucceededAsync(Account account)
+    {
+        if (ShouldMarkTelegramStatusOkAfterSuccessfulSync(account))
+        {
+            var now = DateTime.UtcNow;
+            account.LastSyncAt = now;
+            account.TelegramStatusOk = true;
+            account.TelegramStatusSummary = "正常";
+            account.TelegramStatusDetails = "后台自动同步成功：频道/群组同步已完成，账号可连接 Telegram；未执行深度探测。";
+            account.TelegramStatusCheckedAtUtc = now;
+            await _accountManagement.UpdateAccountAsync(account);
+            return;
+        }
+
+        await _accountManagement.UpdateLastSyncTimeAsync(account.Id);
+    }
+
+    private static bool ShouldMarkTelegramStatusOkAfterSuccessfulSync(Account account)
+    {
+        var summary = (account.TelegramStatusSummary ?? string.Empty).Trim();
+        if (summary.Length == 0)
+            return true;
+
+        if (string.Equals(summary, "正常", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return summary.Contains("连接失败", StringComparison.OrdinalIgnoreCase)
+               || summary.Contains("请求超时", StringComparison.OrdinalIgnoreCase)
+               || summary.Contains("刷新失败", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record SyncFailureItem(int AccountId, string Phone, string Error);

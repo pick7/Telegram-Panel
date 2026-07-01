@@ -15,7 +15,16 @@ else if (componentType == null)
 }
 else
 {
-    <DynamicComponent Type="componentType" Parameters="parameters" />
+    <ErrorBoundary>
+        <ChildContent>
+            <DynamicComponent Type="componentType" Parameters="parameters" />
+        </ChildContent>
+        <ErrorContent Context="ex">
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">
+                模块页面渲染失败：@ex.Message
+            </MudAlert>
+        </ErrorContent>
+    </ErrorBoundary>
 }
 
 @code

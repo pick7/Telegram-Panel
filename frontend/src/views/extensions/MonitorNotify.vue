@@ -683,7 +683,7 @@ onMounted(load)
   padding: 12px;
   border: 1px solid var(--tp-border);
   border-radius: 4px;
-  background: rgba(144, 202, 249, 0.06);
+  background: var(--tp-info-bg);
   line-height: 1.7;
 }
 

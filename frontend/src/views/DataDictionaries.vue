@@ -464,7 +464,7 @@ onMounted(load)
   border: 1px solid var(--tp-border);
   border-radius: 4px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--tp-code-bg);
 }
 
 .image-preview {

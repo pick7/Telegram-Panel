@@ -33,8 +33,8 @@
       <el-button link class="appbar-icon" title="GitHub" @click="openGithub">
         <el-icon :size="22"><Link /></el-icon>
       </el-button>
-      <el-button link class="appbar-icon" title="切换主题" @click="toggleTheme">
-        <el-icon :size="22"><Moon /></el-icon>
+      <el-button link class="appbar-icon" :title="isDark ? '切换到白天模式' : '切换到黑夜模式'" @click="toggleTheme">
+        <el-icon :size="22"><component :is="isDark ? Sunny : Moon" /></el-icon>
       </el-button>
       <el-dropdown @command="onCommand">
         <span class="user-menu">
@@ -57,8 +57,8 @@
         :default-active="activeIndex"
         :default-openeds="defaultOpeneds"
         background-color="transparent"
-        text-color="#c6cad4"
-        active-text-color="#90caf9"
+        :text-color="menuTextColor"
+        :active-text-color="menuActiveTextColor"
         class="menu"
         @select="handleSelect"
       >
@@ -87,8 +87,8 @@
         :default-active="activeIndex"
         :default-openeds="defaultOpeneds"
         background-color="transparent"
-        text-color="#c6cad4"
-        active-text-color="#90caf9"
+        :text-color="menuTextColor"
+        :active-text-color="menuActiveTextColor"
         @select="handleMobileSelect"
       >
         <template v-for="item in menuItems" :key="item.index">
@@ -221,6 +221,7 @@ import {
   Plus,
   Promotion,
   Setting,
+  Sunny,
   SwitchButton,
   Tickets,
   Tools,
@@ -250,6 +251,8 @@ const pageTitle = computed(() => (route.meta.title as string) || '')
 const activeIndex = computed(() => (route.path === '/dictionaries' ? '/data-dictionaries' : route.path))
 const isEmbedMode = computed(() => route.query.embed === '1')
 const defaultOpeneds = ['accounts-group', 'channels-group', 'groups-group', 'bots-group', 'extensions-group']
+const menuTextColor = computed(() => (isDark.value ? '#c6cad4' : '#374151'))
+const menuActiveTextColor = computed(() => (isDark.value ? '#90caf9' : '#1976d2'))
 const canApplyVersionUpdate = computed(() =>
   versionInfo.value?.success === true
   && versionInfo.value.enabled

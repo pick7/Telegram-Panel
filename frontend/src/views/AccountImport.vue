@@ -1078,7 +1078,7 @@ onMounted(() => {
   border: 1px solid var(--tp-border);
   border-radius: 4px;
   color: var(--tp-text);
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--tp-code-bg);
 }
 
 .import-tips {

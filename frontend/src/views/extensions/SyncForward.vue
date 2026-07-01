@@ -798,7 +798,7 @@ onMounted(load)
 .help-block pre {
   margin: 12px 0 0;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--tp-code-bg);
   border: 1px solid var(--tp-border);
   border-radius: 4px;
   overflow: auto;

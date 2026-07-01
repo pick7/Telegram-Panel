@@ -1,12 +1,18 @@
+FROM node:20-bookworm-slim AS frontend-build
+WORKDIR /src/frontend
+
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN corepack enable \
+    && pnpm install --frozen-lockfile=false
+COPY frontend/ ./
+RUN pnpm run build
+
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 COPY . .
+COPY --from=frontend-build /src/src/TelegramPanel.Web/wwwroot/panel-spa ./src/TelegramPanel.Web/wwwroot/panel-spa
 
-RUN corepack enable \
-    && cd frontend \
-    && pnpm install --frozen-lockfile=false \
-    && pnpm run build
 RUN dotnet restore "TelegramPanel.sln"
 RUN dotnet publish "src/TelegramPanel.Web/TelegramPanel.Web.csproj" -c Release -o /app/publish --no-restore
 

@@ -28,4 +28,11 @@ public sealed class ScheduledTaskRepository : Repository<ScheduledTask>, ISchedu
             .ThenBy(x => x.Id)
             .ToListAsync(cancellationToken);
     }
+
+    public async Task<int> CountEnabledAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .AsNoTracking()
+            .CountAsync(x => x.Status == ScheduledTaskStatuses.Enabled, cancellationToken);
+    }
 }

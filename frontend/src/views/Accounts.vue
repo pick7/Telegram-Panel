@@ -1,0 +1,1633 @@
+<template>
+  <div class="accounts-page">
+    <el-card shadow="never" class="page-card">
+      <div class="toolbar">
+        <el-select v-model="filters.categoryId" placeholder="全部分类" clearable class="filter">
+          <el-option label="全部分类" :value="null" />
+          <el-option v-for="category in categories" :key="category.id" :label="category.name" :value="category.id" />
+        </el-select>
+        <el-checkbox v-model="filters.onlyWaste">只看废号</el-checkbox>
+        <el-input
+          v-model="filters.search"
+          placeholder="搜索账号..."
+          clearable
+          class="search"
+          :prefix-icon="Search"
+          @keyup.enter="load"
+        />
+        <el-button type="primary" :icon="Refresh" :loading="loading" @click="reload">刷新列表</el-button>
+      </div>
+    </el-card>
+
+    <div class="action-bar">
+      <el-button :icon="selectionIcon" :disabled="loading || rows.length === 0" @click="cycleSelection">
+        {{ selectionText }}
+      </el-button>
+      <el-button :icon="Refresh" :disabled="loading || selectedIds.length === 0" @click="batchRefreshStatus">
+        刷新已选状态
+      </el-button>
+      <el-button :icon="Monitor" :disabled="loading || selectedIds.length === 0" @click="batchKickDevices">
+        踢出其他设备（已选）
+      </el-button>
+      <el-button type="danger" :icon="Delete" :disabled="loading || selectedIds.length === 0" @click="cleanupWaste('selected')">
+        清理废号（已选）
+      </el-button>
+      <el-button v-if="filters.onlyWaste" type="danger" :icon="Delete" :disabled="loading || rows.length === 0" @click="cleanupWaste('filtered')">
+        清理废号（筛选）
+      </el-button>
+      <el-button type="danger" :icon="Delete" :disabled="loading" @click="cleanupWaste('all')">
+        清理所有废号
+      </el-button>
+
+      <el-dropdown trigger="click" :disabled="loading" @command="handleBatchCommand">
+        <el-button :icon="MoreFilled">
+          批量操作<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="batch-join" :disabled="selectedIds.length === 0">批量加群/订阅/启用Bot（已选）</el-dropdown-item>
+            <el-dropdown-item command="batch-leave" :disabled="selectedIds.length === 0">批量退群/退订/停用Bot（已选）</el-dropdown-item>
+            <el-dropdown-item command="two-factor" :disabled="selectedIds.length === 0">修改二级密码（已选）</el-dropdown-item>
+            <el-dropdown-item command="recovery-email" :disabled="selectedIds.length === 0">批量换绑邮箱（找回+登录）（Cloud Mail）（已选）</el-dropdown-item>
+            <el-dropdown-item command="kick-devices" :disabled="selectedIds.length === 0">批量踢出所有其他设备（已选）</el-dropdown-item>
+            <el-dropdown-item command="category" :disabled="selectedIds.length === 0">批量修改分类（已选）</el-dropdown-item>
+            <el-dropdown-item command="nickname" :disabled="selectedIds.length === 0">批量改昵称（已选）</el-dropdown-item>
+            <el-dropdown-item command="avatar" :disabled="selectedIds.length === 0">批量改头像（已选）</el-dropdown-item>
+            <el-dropdown-item command="username" :disabled="selectedIds.length === 0">批量改用户名（已选）</el-dropdown-item>
+            <el-dropdown-item command="bio" :disabled="selectedIds.length === 0">批量改Bio（已选）</el-dropdown-item>
+            <el-dropdown-item command="delete" :disabled="selectedIds.length === 0">删除已选</el-dropdown-item>
+            <el-dropdown-item command="export-selected">导出已选</el-dropdown-item>
+            <el-dropdown-item command="export-page">导出当前页</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+
+      <el-tag v-if="selectedIds.length > 0" type="info">已选 {{ selectedIds.length }}</el-tag>
+      <span v-else class="muted">共 {{ total }} 个账号</span>
+    </div>
+
+    <el-card shadow="never" class="page-card mt-4">
+      <el-table
+        ref="tableRef"
+        v-loading="loading"
+        :data="rows"
+        stripe
+        row-key="id"
+        class="accounts-table"
+        @selection-change="onSelectionChange"
+      >
+        <el-table-column type="selection" width="48" reserve-selection />
+        <el-table-column prop="displayPhone" label="手机号" min-width="150" />
+        <el-table-column prop="nickname" label="昵称" min-width="130">
+          <template #default="{ row }">{{ row.nickname || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="username" label="用户名" min-width="130">
+          <template #default="{ row }">{{ row.username ? `@${row.username}` : '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="170">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.remark" :content="row.remark" placement="top">
+              <span class="ellipsis">{{ row.remark }}</span>
+            </el-tooltip>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="userId" label="用户ID" min-width="120" />
+        <el-table-column label="分类" min-width="130">
+          <template #default="{ row }">
+            <el-tag v-if="row.category" :color="row.category.color || undefined" effect="plain">
+              {{ row.category.name }}
+            </el-tag>
+            <span v-else>未分类</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="频道/群组" width="110">
+          <template #default="{ row }">{{ row.channelCount }} / {{ row.groupCount }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="86">
+          <template #default="{ row }">
+            <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? '活跃' : '停用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="Telegram 状态" min-width="180">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.telegramStatusSummary" :content="buildStatusTitle(row)" placement="top">
+              <el-tag :type="row.telegramStatusOk ? 'success' : 'danger'" size="small">{{ row.telegramStatusSummary }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else type="info" size="small">未检测</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="注册时间（估算，非百分百正确）" min-width="210">
+          <template #default="{ row }">{{ formatTime(row.estimatedRegistrationAt, '-') }}</template>
+        </el-table-column>
+        <el-table-column label="最后数据同步" min-width="170">
+          <template #default="{ row }">{{ formatTime(row.lastSyncAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions">
+              <el-tooltip content="查看详情" placement="top">
+                <el-button link type="primary" :icon="InfoFilled" @click="openDetails(row)" />
+              </el-tooltip>
+              <el-tooltip content="编辑用户资料" placement="top">
+                <el-button link type="primary" :icon="Edit" :disabled="loading" @click="openProfile(row)" />
+              </el-tooltip>
+              <el-tooltip content="刷新 Telegram 状态" placement="top">
+                <el-button link type="primary" :icon="Refresh" :disabled="loading" @click="refreshStatus(row)" />
+              </el-tooltip>
+              <el-dropdown trigger="click" @command="(command: string | number | object) => handleRowCommand(String(command), row)">
+                <el-button link :icon="MoreFilled" />
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="join" :icon="UserFilled">加群/订阅</el-dropdown-item>
+                    <el-dropdown-item command="leave" :icon="SwitchButton">退群/退订</el-dropdown-item>
+                    <el-dropdown-item command="channels" :icon="Promotion">查看加入的频道</el-dropdown-item>
+                    <el-dropdown-item command="groups" :icon="ChatDotRound">查看加入的群组</el-dropdown-item>
+                    <el-dropdown-item command="inbox" :icon="Message">系统通知（验证码）</el-dropdown-item>
+                    <el-dropdown-item command="devices" :icon="Monitor">在线设备</el-dropdown-item>
+                    <el-dropdown-item divided command="two-factor" :icon="Lock">修改二级密码</el-dropdown-item>
+                    <el-dropdown-item command="recovery-email" :icon="Message">绑定/换绑找回邮箱</el-dropdown-item>
+                    <el-dropdown-item command="login-email" :icon="Message">绑定/换绑登录邮箱</el-dropdown-item>
+                    <el-dropdown-item divided command="toggle" :icon="SwitchButton">{{ row.isActive ? '停用' : '启用' }}</el-dropdown-item>
+                    <el-dropdown-item command="delete" :icon="Delete">删除账号</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next"
+          @change="load"
+        />
+      </div>
+    </el-card>
+
+    <el-dialog v-model="details.visible" title="账号详情" width="560px">
+      <el-skeleton v-if="details.loading" :rows="6" animated />
+      <template v-else-if="details.account">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="注册时间（估算，非百分百正确）">{{ formatTime(details.account.estimatedRegistrationAt, '-') }}</el-descriptions-item>
+          <el-descriptions-item label="导入时间">{{ formatTime(details.account.createdAt) }}</el-descriptions-item>
+          <el-descriptions-item label="Session 路径">{{ details.account.sessionPath }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider />
+        <el-form label-position="top">
+          <el-form-item label="账号备注">
+            <el-input v-model="details.form.remark" type="textarea" :rows="3" maxlength="500" show-word-limit />
+          </el-form-item>
+          <el-form-item label="当前保存的二级密码">
+            <el-input v-model="details.form.twoFactorPassword" :type="details.showPassword ? 'text' : 'password'">
+              <template #append>
+                <el-button :icon="details.showPassword ? Hide : View" @click="details.showPassword = !details.showPassword" />
+              </template>
+            </el-input>
+          </el-form-item>
+        </el-form>
+      </template>
+      <template #footer>
+        <el-button @click="details.visible = false">关闭</el-button>
+        <el-button type="primary" :loading="details.saving" @click="saveDetails">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="profile.visible" title="编辑用户资料" width="620px">
+      <el-form label-position="top">
+        <el-alert title="可修改：昵称、Bio、用户名、头像。批量修改请使用账号列表上方的批量操作。" type="info" :closable="false" show-icon />
+        <div class="dialog-account">账号：{{ profile.row?.displayPhone }}</div>
+        <el-form-item>
+          <el-checkbox v-model="profile.form.editNickname">修改昵称</el-checkbox>
+          <el-input v-model="profile.form.nickname" :disabled="!profile.form.editNickname" placeholder="昵称将写入 Telegram 的 first_name（last_name 置空）" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="profile.form.editBio">修改 Bio（简介）</el-checkbox>
+          <el-input v-model="profile.form.bio" :disabled="!profile.form.editBio" type="textarea" :rows="4" placeholder="留空也会生效（可用于清空 Bio）" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="profile.form.editUsername">修改用户名（t.me/xxx）</el-checkbox>
+          <el-input v-model="profile.form.username" :disabled="!profile.form.editUsername" placeholder="只能包含字母/数字/下划线，留空可清空用户名" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="profile.form.editAvatar">上传头像</el-checkbox>
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept="image/*"
+            :on-change="onAvatarChange"
+            :on-remove="onAvatarRemove"
+            :disabled="!profile.form.editAvatar"
+          >
+            <el-button :icon="Picture" :disabled="!profile.form.editAvatar">选择头像图片</el-button>
+          </el-upload>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="profile.visible = false">取消</el-button>
+        <el-button type="primary" :loading="profile.saving" @click="saveProfile">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <BatchChatMembershipDialog ref="batchChatMembershipRef" @completed="onChatMembershipCompleted" />
+
+    <el-dialog v-model="categoryDialog.visible" title="批量修改分类" width="420px">
+      <el-select v-model="categoryDialog.categoryId" clearable placeholder="未分类" style="width: 100%">
+        <el-option label="未分类" :value="null" />
+        <el-option v-for="category in categories" :key="category.id" :label="category.name" :value="category.id" />
+      </el-select>
+      <template #footer>
+        <el-button @click="categoryDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="categoryDialog.saving" @click="saveBatchCategory">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="twoFactor.visible" :title="twoFactor.accountIds.length > 1 ? '批量修改二级密码' : '修改二级密码'" width="560px">
+      <el-form label-position="top">
+        <el-alert
+          title="忘记原二级密码时，可发起重置申请，通常需要等待 7 天。等待结束后再回来设置新的二级密码。"
+          type="info"
+          :closable="false"
+          show-icon
+          class="mb-3"
+        />
+        <el-form-item v-if="twoFactor.accountIds.length > 1">
+          <el-switch v-model="twoFactor.form.useStoredPasswords" active-text="使用数据库中保存的原二级密码" />
+        </el-form-item>
+        <el-alert
+          v-if="twoFactor.accountIds.length > 1 && twoFactor.form.useStoredPasswords"
+          title="将为每个账号使用其在数据库中保存的二级密码；未保存密码的账号会使用下方统一原密码兜底。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="mb-3"
+        />
+        <el-form-item :label="twoFactor.accountIds.length > 1 ? '原二级密码（统一/兜底）' : '原二级密码'">
+          <el-input v-model="twoFactor.form.currentPassword" type="password" show-password placeholder="账号未开启两步验证时可留空" />
+        </el-form-item>
+        <el-form-item label="新二级密码">
+          <el-input v-model="twoFactor.form.newPassword" type="password" show-password />
+        </el-form-item>
+        <el-form-item label="确认新二级密码">
+          <el-input v-model="twoFactor.form.confirmPassword" type="password" show-password />
+        </el-form-item>
+        <el-form-item label="密码提示（可选）">
+          <el-input v-model="twoFactor.form.hint" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="twoFactor.form.saveNewPasswordToDb">修改成功后将新密码保存到数据库</el-checkbox>
+        </el-form-item>
+        <div class="muted">账号数量：{{ twoFactor.accountIds.length }}</div>
+      </el-form>
+      <template #footer>
+        <el-button @click="twoFactor.visible = false">关闭</el-button>
+        <el-button type="warning" plain :loading="twoFactor.running" @click="requestTwoFactorReset">忘记密码（申请重置）</el-button>
+        <el-button type="primary" :loading="twoFactor.running" @click="submitTwoFactor">开始修改</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="emailDialog.visible" :title="emailDialog.title" width="520px">
+      <el-form label-position="top">
+        <div v-if="emailDialog.row" class="dialog-account">账号：{{ emailDialog.row.displayPhone }}</div>
+        <el-alert v-if="emailDialog.statusText" :title="emailDialog.statusText" type="info" :closable="false" show-icon />
+        <el-alert
+          v-if="emailDialog.kind === 'recovery' && emailDialog.canOpenTwoFactor"
+          title="该账号未开启两步验证，无法绑定找回邮箱。请先设置二级密码。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="mb-3"
+        />
+        <template v-else>
+          <el-form-item v-if="emailDialog.kind === 'recovery'" label="原二级密码">
+            <el-input v-model="emailDialog.currentPassword" type="password" show-password placeholder="留空时优先使用系统保存的二级密码" />
+          </el-form-item>
+          <el-form-item :label="emailDialog.kind === 'recovery' ? '新找回邮箱' : '新登录邮箱'">
+            <el-input v-model="emailDialog.email" placeholder="name@example.com" />
+          </el-form-item>
+          <el-form-item label="邮箱验证码">
+            <el-input v-model="emailDialog.code" placeholder="收到验证码后填写并确认" />
+          </el-form-item>
+          <div class="field-help">
+            {{
+              emailDialog.kind === 'recovery'
+                ? '即使发送/重发提示失败，但实际收到了邮件验证码，也可以直接输入验证码确认。'
+                : '如果提示不支持新增登录邮箱，将无法在该账号已登录状态下设置。'
+            }}
+          </div>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="emailDialog.visible = false">关闭</el-button>
+        <el-button v-if="emailDialog.kind === 'recovery' && emailDialog.hasPendingRecoveryEmail" :loading="emailDialog.sending" @click="resendRecoveryEmailCode">
+          重发验证码
+        </el-button>
+        <el-button v-if="emailDialog.kind === 'recovery' && emailDialog.hasPendingRecoveryEmail" type="warning" plain :loading="emailDialog.sending" @click="cancelRecoveryEmail">
+          取消验证
+        </el-button>
+        <el-button v-if="emailDialog.kind === 'recovery' && emailDialog.canOpenTwoFactor" type="warning" plain @click="openTwoFactorFromEmail">
+          去设置二级密码
+        </el-button>
+        <el-button v-if="emailDialog.kind === 'login'" :loading="emailDialog.sending" @click="resendLoginEmailCode">
+          重发验证码
+        </el-button>
+        <el-button v-if="!(emailDialog.kind === 'recovery' && emailDialog.canOpenTwoFactor)" :loading="emailDialog.sending" @click="sendEmailCode">
+          发送验证码
+        </el-button>
+        <el-button
+          v-if="!(emailDialog.kind === 'recovery' && emailDialog.canOpenTwoFactor)"
+          type="primary"
+          :loading="emailDialog.confirming"
+          @click="confirmEmailCode"
+        >
+          确认验证码
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <BatchRecoveryEmailDialog ref="batchRecoveryEmailRef" @completed="onBatchRecoveryEmailCompleted" />
+
+    <el-dialog v-model="batchProfile.visible" :title="batchProfile.title" width="560px">
+      <el-form label-position="top">
+        <template v-if="batchProfile.mode === 'nickname'">
+          <el-alert
+            title="每行一个昵称模板，按顺序分配给已选账号；用完后从头轮询。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb-3"
+          />
+          <el-form-item label="昵称模板（换行分隔）">
+            <el-input
+              v-model="batchProfile.value"
+              type="textarea"
+              :rows="6"
+              placeholder="例如：{diqu}歌神{geshou}"
+            />
+          </el-form-item>
+          <el-checkbox v-model="batchProfile.appendPhoneLast4WhenDuplicate">
+            昵称重复时追加手机号后 4 位
+          </el-checkbox>
+          <div v-if="textVariableText" class="field-help">可用文本变量：{{ textVariableText }}</div>
+        </template>
+        <el-form-item v-else-if="batchProfile.mode === 'bio'" label="Bio（简介）">
+          <el-input v-model="batchProfile.value" type="textarea" :rows="4" placeholder="将对所有选中账号写入相同 Bio，留空可清空" />
+        </el-form-item>
+        <template v-else-if="batchProfile.mode === 'username'">
+          <el-alert
+            title="用户名模板不要带开头的 @，批量执行时建议使用文本字典提供不同值。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb-3"
+          />
+          <el-form-item label="用户名模板">
+            <el-input v-model="batchProfile.value" placeholder="例如：tg_{city}_{time}" />
+          </el-form-item>
+          <div class="field-help">支持变量：{time}、{index}、{id}、{phone}、{last4}</div>
+          <div v-if="textVariableText" class="field-help">可用文本变量：{{ textVariableText }}</div>
+        </template>
+        <template v-else>
+          <el-alert
+            title="支持固定上传单个头像，或选择图片字典变量按字典读取方式为每个账号取图。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb-3"
+          />
+          <el-form-item label="头像来源">
+            <el-radio-group v-model="batchProfile.avatarSource">
+              <el-radio-button label="fixed">固定上传</el-radio-button>
+              <el-radio-button label="dictionary">图片字典变量</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="batchProfile.avatarSource === 'fixed'" label="头像图片">
+            <el-upload
+              v-model:file-list="batchProfile.avatarFiles"
+              :auto-upload="false"
+              :limit="1"
+              accept="image/*"
+              :on-change="onBatchAvatarChange"
+              :on-remove="onBatchAvatarRemove"
+            >
+              <el-button :icon="Picture">选择头像图片</el-button>
+            </el-upload>
+          </el-form-item>
+          <el-form-item v-else label="图片字典">
+            <el-select v-model="batchProfile.dictionaryName" class="full" placeholder="请选择图片字典">
+              <el-option v-for="item in imageDictionaries" :key="item.name" :label="`${item.displayName}（{${item.name}}）`" :value="item.name" />
+            </el-select>
+          </el-form-item>
+        </template>
+        <div class="muted">账号数量：{{ selectedIds.length }}</div>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchProfile.visible = false">关闭</el-button>
+        <el-button type="primary" :loading="batchProfile.running" @click="submitBatchProfile">开始修改</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="listDialog.visible" :title="listDialog.title" width="760px">
+      <el-skeleton v-if="listDialog.loading" :rows="6" animated />
+      <template v-else>
+        <el-table v-if="listDialog.type === 'memberships'" :data="listDialog.memberships" stripe>
+          <el-table-column prop="title" label="名称" min-width="180" />
+          <el-table-column label="用户名" min-width="140">
+            <template #default="{ row }">{{ row.username ? `@${row.username}` : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="角色" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.isCreator ? 'success' : row.isAdmin ? 'primary' : 'info'" size="small">
+                {{ row.isCreator ? '创建者' : row.isAdmin ? '管理员' : '成员' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="categoryName" label="分类" min-width="120">
+            <template #default="{ row }">{{ row.categoryName || '未分类' }}</template>
+          </el-table-column>
+          <el-table-column prop="memberCount" label="成员数" width="100" />
+          <el-table-column label="最后同步" min-width="170">
+            <template #default="{ row }">{{ formatTime(row.syncedAt) }}</template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else-if="listDialog.type === 'devices'" :data="listDialog.devices" stripe>
+          <el-table-column label="当前" width="80">
+            <template #default="{ row }"><el-tag :type="row.current ? 'success' : 'info'" size="small">{{ row.current ? '是' : '否' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="应用/设备" min-width="200">
+            <template #default="{ row }">
+              <div>{{ row.title }}</div>
+              <div class="cell-sub">ApiId={{ row.apiId }} {{ row.appVersion || '' }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="系统" min-width="150">
+            <template #default="{ row }">{{ [row.platform, row.systemVersion].filter(Boolean).join(' ') || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="IP/地区" min-width="160">
+            <template #default="{ row }">
+              <div>{{ row.ip || '-' }}</div>
+              <div class="cell-sub">{{ [row.country, row.region].filter(Boolean).join(' ') }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="最近活跃" min-width="170">
+            <template #default="{ row }">{{ formatTime(row.lastActiveAtUtc, '-') }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90">
+            <template #default="{ row }">
+              <el-button link type="danger" :disabled="row.current" @click="kickDevice(row)">踢出</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-scrollbar v-else height="420px">
+          <el-empty v-if="listDialog.messages.length === 0" description="暂无系统通知" />
+          <div v-for="message in listDialog.messages" :key="message.id" class="message-item">
+            <div class="cell-sub">{{ formatTime(message.dateUtc, '-') }}</div>
+            <div class="message-text">{{ message.text }}</div>
+          </div>
+        </el-scrollbar>
+      </template>
+      <template #footer>
+        <el-button v-if="listDialog.type === 'devices'" :loading="listDialog.loading" @click="kickAllDevicesForDialog">踢出所有其他设备</el-button>
+        <el-button @click="listDialog.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="resultDialog.visible" :title="resultDialog.title" width="700px">
+      <div class="result-summary">{{ resultDialog.summary }}</div>
+      <el-table v-if="resultDialog.items.length" :data="resultDialog.items" stripe max-height="420">
+        <el-table-column prop="phone" label="账号" min-width="150" />
+        <el-table-column label="结果" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.success ? 'success' : 'danger'" size="small">{{ row.success ? '成功' : '失败' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="summary" label="摘要" min-width="120" />
+        <el-table-column prop="error" label="原因" min-width="220" />
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="resultDialog.visible = false">知道了</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="exportDialog.visible" title="选择导出格式" width="520px">
+      <p>将导出 {{ exportDialog.ids.length }} 个账号（{{ exportDialog.scopeLabel }}）。</p>
+      <el-alert title="导出时会自动为每个账号生成一份独立新 session，避免和面板当前在线 session 冲突。" type="info" :closable="false" show-icon />
+      <div class="export-options">
+        <el-card shadow="never">
+          <h4>Telethon（默认）</h4>
+          <p class="muted">每个账号导出独立 .json + .session (+2fa.txt)，适合现有批量导入流程。</p>
+          <el-button type="primary" @click="exportAccounts('telethon')">导出 Telethon</el-button>
+        </el-card>
+        <el-card shadow="never">
+          <h4>Tdata</h4>
+          <p class="muted">每个账号额外导出独立 tdata/，并同时保留 .json + .session (+2fa.txt)。</p>
+          <el-button @click="exportAccounts('tdata')">导出 Tdata</el-button>
+        </el-card>
+      </div>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import {
+  ArrowDown,
+  ChatDotRound,
+  CollectionTag,
+  Delete,
+  Edit,
+  Hide,
+  InfoFilled,
+  Lock,
+  Message,
+  Monitor,
+  MoreFilled,
+  Picture,
+  Promotion,
+  Refresh,
+  Search,
+  Select,
+  Switch,
+  SwitchButton,
+  UserFilled,
+  View,
+} from '@element-plus/icons-vue'
+import type { TableInstance, UploadFile } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { panelApi } from '@/api/panel'
+import BatchChatMembershipDialog from '@/components/BatchChatMembershipDialog.vue'
+import BatchRecoveryEmailDialog from '@/components/BatchRecoveryEmailDialog.vue'
+import { confirmChatMembershipRisk } from '@/utils/riskWarning'
+import type {
+  AccountBatchOperationResult,
+  AccountCategory,
+  AccountChatMembership,
+  AccountDetail,
+  AccountListItem,
+  AccountOperationItem,
+  BatchTask,
+  DataDictionary,
+  TelegramAuthorization,
+  TelegramSystemMessage,
+} from '@/api/types'
+import { formatTime } from '@/utils/format'
+
+type Row = AccountListItem & { busy?: boolean }
+type SelectionMode = 'select' | 'invert' | 'clear'
+
+const loading = ref(false)
+const rows = ref<Row[]>([])
+const categories = ref<AccountCategory[]>([])
+const dictionaries = ref<DataDictionary[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const tableRef = ref<TableInstance>()
+const batchChatMembershipRef = ref<InstanceType<typeof BatchChatMembershipDialog>>()
+const batchRecoveryEmailRef = ref<InstanceType<typeof BatchRecoveryEmailDialog>>()
+const selectedRows = ref<Row[]>([])
+const selectionMode = ref<SelectionMode>('select')
+const filters = reactive({
+  categoryId: null as number | null,
+  search: '',
+  onlyWaste: false,
+})
+
+let filterTimer: number | undefined
+
+const selectedIds = computed(() => selectedRows.value.map((x) => x.id))
+const imageDictionaries = computed(() =>
+  dictionaries.value
+    .filter((x) => x.isEnabled && x.type === 'image' && x.enabledItemCount > 0)
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')),
+)
+const textDictionaries = computed(() =>
+  dictionaries.value
+    .filter((x) => x.isEnabled && x.type === 'text' && x.enabledItemCount > 0)
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')),
+)
+const textVariableText = computed(() => textDictionaries.value.map((x) => `{${x.name}}`).join('、'))
+const selectionText = computed(() => {
+  if (selectionMode.value === 'invert') return '反选本页'
+  if (selectionMode.value === 'clear') return '清空选择'
+  return '全选本页'
+})
+const selectionIcon = computed<Component>(() => {
+  if (selectionMode.value === 'invert') return Switch
+  if (selectionMode.value === 'clear') return Delete
+  return Select
+})
+
+const details = reactive({
+  visible: false,
+  loading: false,
+  saving: false,
+  showPassword: false,
+  account: null as AccountDetail | null,
+  form: {
+    remark: '',
+    twoFactorPassword: '',
+  },
+})
+
+const profile = reactive({
+  visible: false,
+  saving: false,
+  row: null as Row | null,
+  avatarFile: null as File | null,
+  form: {
+    editNickname: false,
+    nickname: '',
+    editBio: false,
+    bio: '',
+    editUsername: false,
+    username: '',
+    editAvatar: false,
+  },
+})
+
+const categoryDialog = reactive({
+  visible: false,
+  saving: false,
+  categoryId: null as number | null,
+})
+
+const twoFactor = reactive({
+  visible: false,
+  running: false,
+  accountIds: [] as number[],
+  form: {
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+    hint: '',
+    useStoredPasswords: true,
+    saveNewPasswordToDb: true,
+  },
+})
+
+const emailDialog = reactive({
+  visible: false,
+  sending: false,
+  confirming: false,
+  kind: 'recovery' as 'recovery' | 'login',
+  row: null as Row | null,
+  title: '',
+  statusText: '',
+  currentPassword: '',
+  email: '',
+  code: '',
+  hasPendingRecoveryEmail: false,
+  canOpenTwoFactor: false,
+})
+
+const batchProfile = reactive({
+  visible: false,
+  running: false,
+  mode: 'nickname' as 'nickname' | 'bio' | 'username' | 'avatar',
+  title: '',
+  value: '',
+  appendPhoneLast4WhenDuplicate: true,
+  avatarSource: 'fixed' as 'fixed' | 'dictionary',
+  avatarFile: null as File | null,
+  avatarFiles: [] as UploadFile[],
+  dictionaryName: '',
+})
+
+const listDialog = reactive({
+  visible: false,
+  loading: false,
+  title: '',
+  type: 'memberships' as 'memberships' | 'devices' | 'messages',
+  accountId: 0,
+  memberships: [] as AccountChatMembership[],
+  devices: [] as TelegramAuthorization[],
+  messages: [] as TelegramSystemMessage[],
+})
+
+const resultDialog = reactive({
+  visible: false,
+  title: '',
+  summary: '',
+  items: [] as AccountOperationItem[],
+})
+
+const exportDialog = reactive({
+  visible: false,
+  ids: [] as number[],
+  scopeLabel: '',
+})
+
+function openBatchRecoveryEmail() {
+  if (!ensureSelected()) return
+  batchRecoveryEmailRef.value?.open(selectedIds.value)
+}
+
+function onBatchRecoveryEmailCompleted(result: AccountBatchOperationResult) {
+  showBatchResult('批量换绑邮箱完成', result)
+  load()
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const data = await panelApi.accounts({
+      page: page.value,
+      pageSize: pageSize.value,
+      categoryId: filters.categoryId,
+      search: filters.search,
+      onlyWaste: filters.onlyWaste,
+    })
+    rows.value = data.items
+    total.value = data.total
+    selectedRows.value = []
+    tableRef.value?.clearSelection()
+    selectionMode.value = 'select'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function reload() {
+  selectedRows.value = []
+  tableRef.value?.clearSelection()
+  await load()
+}
+
+async function loadCategories() {
+  categories.value = await panelApi.accountCategories()
+}
+
+async function loadDictionaries() {
+  dictionaries.value = await panelApi.dictionaries()
+}
+
+function onSelectionChange(selection: Row[]) {
+  selectedRows.value = selection
+}
+
+function cycleSelection() {
+  if (!tableRef.value) return
+  if (selectionMode.value === 'select') {
+    rows.value.forEach((row) => tableRef.value?.toggleRowSelection(row, true))
+    selectionMode.value = 'invert'
+    return
+  }
+  if (selectionMode.value === 'invert') {
+    rows.value.forEach((row) => tableRef.value?.toggleRowSelection(row, !selectedIds.value.includes(row.id)))
+    selectionMode.value = 'clear'
+    return
+  }
+  tableRef.value.clearSelection()
+  selectionMode.value = 'select'
+}
+
+function buildStatusTitle(row: Row) {
+  const detailsText = row.telegramStatusDetails || row.telegramStatusSummary || ''
+  const checkedAt = formatTime(row.telegramStatusCheckedAtUtc, '-')
+  return `${detailsText}（检测时间：${checkedAt}）`
+}
+
+async function openDetails(row: Row) {
+  details.visible = true
+  details.loading = true
+  details.account = null
+  try {
+    const account = await panelApi.account(row.id)
+    details.account = account
+    details.form.remark = account.remark || ''
+    details.form.twoFactorPassword = account.twoFactorPassword || ''
+  } finally {
+    details.loading = false
+  }
+}
+
+async function saveDetails() {
+  if (!details.account) return
+  details.saving = true
+  try {
+    await panelApi.updateAccount(details.account.id, {
+      remark: details.form.remark,
+      twoFactorPassword: details.form.twoFactorPassword,
+      categoryId: details.account.categoryId ?? null,
+    })
+    ElMessage.success('账号详情已保存')
+    details.visible = false
+    await load()
+  } finally {
+    details.saving = false
+  }
+}
+
+function openProfile(row: Row) {
+  profile.row = row
+  profile.avatarFile = null
+  profile.form.editNickname = false
+  profile.form.nickname = row.nickname || ''
+  profile.form.editBio = false
+  profile.form.bio = ''
+  profile.form.editUsername = false
+  profile.form.username = row.username || ''
+  profile.form.editAvatar = false
+  profile.visible = true
+}
+
+function onAvatarChange(file: UploadFile) {
+  profile.avatarFile = file.raw || null
+}
+
+function onAvatarRemove() {
+  profile.avatarFile = null
+}
+
+function onBatchAvatarChange(file: UploadFile) {
+  batchProfile.avatarFile = file.raw || null
+}
+
+function onBatchAvatarRemove() {
+  batchProfile.avatarFile = null
+}
+
+async function saveProfile() {
+  if (!profile.row) return
+  const form = profile.form
+  if (!form.editNickname && !form.editBio && !form.editUsername && !form.editAvatar) {
+    ElMessage.warning('请选择要修改的资料项')
+    return
+  }
+  if (form.editNickname && !form.nickname.trim()) {
+    ElMessage.warning('请填写昵称')
+    return
+  }
+  if (form.editAvatar && !profile.avatarFile) {
+    ElMessage.warning('请先选择头像图片')
+    return
+  }
+
+  await ElMessageBox.confirm('将修改该账号 Telegram 资料（昵称/Bio/用户名/头像）。是否继续？', '确认保存', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+  const safeIds = await confirmChatMembershipRisk([profile.row.id], '风控警告')
+  if (!safeIds) return
+
+  const data = new FormData()
+  data.append('editNickname', String(form.editNickname))
+  data.append('nickname', form.nickname)
+  data.append('editBio', String(form.editBio))
+  data.append('bio', form.bio)
+  data.append('editUsername', String(form.editUsername))
+  data.append('username', form.username)
+  data.append('editAvatar', String(form.editAvatar))
+  if (profile.avatarFile) data.append('avatar', profile.avatarFile)
+
+  profile.saving = true
+  try {
+    await panelApi.updateAccountProfile(profile.row.id, data)
+    ElMessage.success('保存成功')
+    profile.visible = false
+    await load()
+  } finally {
+    profile.saving = false
+  }
+}
+
+async function refreshStatus(row: Row) {
+  const probe = await chooseProbe(
+    '刷新 Telegram 状态',
+    '是否进行深度探测（将创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？',
+  )
+  row.busy = true
+  loading.value = true
+  try {
+    const status = await panelApi.refreshTelegramStatusWithProbe(row.id, probe)
+    row.telegramStatusOk = status.ok
+    row.telegramStatusSummary = status.summary
+    row.telegramStatusDetails = status.details
+    row.telegramStatusCheckedAtUtc = status.checkedAtUtc
+    ElMessage.success(`账号 ${row.displayPhone} 状态：${status.summary}`)
+  } finally {
+    row.busy = false
+    loading.value = false
+  }
+}
+
+async function batchRefreshStatus() {
+  if (!ensureSelected()) return
+  const probe = await chooseProbe(
+    '刷新已选 Telegram 状态',
+    `将刷新已选 ${selectedIds.value.length} 个账号的 Telegram 状态。\n\n是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？`,
+  )
+  loading.value = true
+  try {
+    const result = await panelApi.batchRefreshTelegramStatus(selectedIds.value, probe)
+    showBatchResult('批量刷新完成', result)
+    await load()
+  } finally {
+    loading.value = false
+  }
+}
+
+async function chooseProbe(title: string, message: string) {
+  try {
+    await ElMessageBox.confirm(message, title, {
+      type: 'warning',
+      confirmButtonText: '深度探测',
+      cancelButtonText: '普通刷新',
+      distinguishCancelAndClose: true,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function toggleActive(row: Row) {
+  const next = !row.isActive
+  await panelApi.setAccountActive(row.id, next)
+  row.isActive = next
+  ElMessage.success(next ? '账号已启用' : '账号已停用')
+}
+
+async function deleteOne(row: Row) {
+  await ElMessageBox.confirm(`确定要删除账号 ${row.displayPhone} 吗？此操作不可撤销！`, '确认删除', {
+    type: 'warning',
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+  })
+  await panelApi.deleteAccount(row.id)
+  ElMessage.success('账号已删除')
+  await load()
+}
+
+async function deleteSelected() {
+  if (!ensureSelected()) return
+  await ElMessageBox.confirm(
+    `确定要删除已选账号（${selectedIds.value.length} 个）吗？将同时清理 sessions 文件，且不可恢复。`,
+    '确认删除',
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+  )
+  loading.value = true
+  try {
+    const result = await panelApi.batchDeleteAccounts(selectedIds.value)
+    showBatchResult('删除完成', result)
+    await load()
+  } finally {
+    loading.value = false
+  }
+}
+
+async function batchKickDevices() {
+  if (!ensureSelected()) return
+  await ElMessageBox.confirm(`将对 ${selectedIds.value.length} 个账号执行【踢出所有其他设备】（会保留面板当前会话）。是否继续？`, '确认踢出', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+  loading.value = true
+  try {
+    const result = await panelApi.batchKickAllOtherDevices(selectedIds.value)
+    showBatchResult('批量踢出完成', result)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function cleanupWaste(scope: 'selected' | 'filtered' | 'all') {
+  if (scope === 'selected' && !ensureSelected()) return
+  if (scope === 'filtered' && rows.value.length === 0) {
+    ElMessage.info('当前筛选条件下没有可清理的废号')
+    return
+  }
+
+  const countText = scope === 'selected' ? `已选 ${selectedIds.value.length} 个账号` : scope === 'filtered' ? '当前筛选结果' : `系统全部账号（共 ${total.value} 个）`
+  const probe = await chooseProbe(
+    scope === 'all' ? '清理所有废号' : scope === 'filtered' ? '清理筛选废号' : '清理已选废号',
+    `将对${countText}执行 Telegram 状态检测，并删除判定为废号的账号与 session 文件。\n\n是否进行深度探测？`,
+  )
+
+  if (scope === 'all' && probe) {
+    await ElMessageBox.confirm('你选择了【深度探测】并且范围是【全部账号】。这会对每个账号创建并删除测试频道，属于高频敏感操作。确定继续吗？', '二次确认（高风险）', {
+      type: 'warning',
+      confirmButtonText: '继续',
+      cancelButtonText: '取消',
+    })
+  }
+
+  loading.value = true
+  try {
+    const result = await panelApi.cleanupWasteAccounts({
+      scope,
+      accountIds: scope === 'selected' ? selectedIds.value : undefined,
+      categoryId: filters.categoryId,
+      search: filters.search,
+      probeCreateChannel: probe,
+    })
+    resultDialog.title = '清理完成'
+    resultDialog.summary = `删除 ${result.deleted}，跳过 ${result.skipped}，失败 ${result.failed}`
+    resultDialog.items = result.items
+    resultDialog.visible = true
+    await load()
+  } finally {
+    loading.value = false
+  }
+}
+
+function openChatDialog(operation: 'join' | 'leave', accountIds: number[]) {
+  batchChatMembershipRef.value?.open(operation, accountIds)
+}
+
+async function onChatMembershipCompleted(title: string, task: BatchTask) {
+  ElMessage.success(`${title}：#${task.id}，请到任务中心查看进度`)
+  await load()
+}
+
+function openBatchCategory() {
+  if (!ensureSelected()) return
+  categoryDialog.categoryId = null
+  categoryDialog.visible = true
+}
+
+async function saveBatchCategory() {
+  categoryDialog.saving = true
+  try {
+    await panelApi.batchSetAccountCategory(selectedIds.value, categoryDialog.categoryId)
+    ElMessage.success(`分类已更新：${selectedIds.value.length} 个账号`)
+    categoryDialog.visible = false
+    await load()
+  } finally {
+    categoryDialog.saving = false
+  }
+}
+
+async function openTwoFactor(accountIds: number[]) {
+  twoFactor.accountIds = accountIds
+  twoFactor.form.currentPassword = ''
+  twoFactor.form.newPassword = ''
+  twoFactor.form.confirmPassword = ''
+  twoFactor.form.hint = ''
+  twoFactor.form.useStoredPasswords = accountIds.length > 1
+  twoFactor.form.saveNewPasswordToDb = true
+  twoFactor.visible = true
+
+  if (accountIds.length === 1) {
+    try {
+      const account = await panelApi.account(accountIds[0])
+      twoFactor.form.currentPassword = account.twoFactorPassword || ''
+    } catch {
+      // 失败时保持空密码，后续提交仍按用户输入处理。
+    }
+  }
+}
+
+async function submitTwoFactor() {
+  if (!twoFactor.form.newPassword.trim()) {
+    ElMessage.warning('新二级密码不能为空')
+    return
+  }
+  if (twoFactor.form.newPassword !== twoFactor.form.confirmPassword) {
+    ElMessage.warning('两次输入的新二级密码不一致')
+    return
+  }
+  await ElMessageBox.confirm(`将对 ${twoFactor.accountIds.length} 个账号修改二级密码。是否继续？`, '确认修改', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+  twoFactor.running = true
+  try {
+    const result = await panelApi.changeTwoFactorPassword({
+      accountIds: twoFactor.accountIds,
+      currentPassword: twoFactor.form.currentPassword,
+      newPassword: twoFactor.form.newPassword,
+      hint: twoFactor.form.hint,
+      useStoredPasswords: twoFactor.form.useStoredPasswords,
+      saveNewPasswordToDb: twoFactor.form.saveNewPasswordToDb,
+    })
+    twoFactor.visible = false
+    showBatchResult('二级密码修改完成', result)
+  } finally {
+    twoFactor.running = false
+  }
+}
+
+async function requestTwoFactorReset() {
+  await ElMessageBox.confirm(
+    `将对 ${twoFactor.accountIds.length} 个账号向 Telegram 发起重置二级密码申请，通常需要等待 7 天。是否继续？`,
+    '确认申请重置',
+    { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' },
+  )
+  twoFactor.running = true
+  try {
+    const result = await panelApi.requestTwoFactorPasswordReset(twoFactor.accountIds)
+    showBatchResult('二级密码重置申请结果', result)
+  } finally {
+    twoFactor.running = false
+  }
+}
+
+async function openEmailDialog(kind: 'recovery' | 'login', row: Row) {
+  emailDialog.kind = kind
+  emailDialog.row = row
+  emailDialog.title = kind === 'recovery' ? '绑定/换绑找回邮箱' : '绑定/换绑登录邮箱'
+  emailDialog.currentPassword = ''
+  emailDialog.email = ''
+  emailDialog.code = ''
+  emailDialog.statusText = ''
+  emailDialog.hasPendingRecoveryEmail = false
+  emailDialog.canOpenTwoFactor = false
+  emailDialog.visible = true
+  try {
+    if (kind === 'recovery') {
+      const status = await panelApi.twoFactorRecoveryEmailStatus(row.id)
+      emailDialog.hasPendingRecoveryEmail = !!status.unconfirmedEmailPattern
+      emailDialog.canOpenTwoFactor = status.success && !status.hasTwoFactorPassword
+      emailDialog.statusText = status.success
+        ? `二级密码：${status.hasTwoFactorPassword ? '已开启' : '未开启'}；找回邮箱：${status.hasRecoveryEmail ? '已绑定' : '未绑定'}${status.unconfirmedEmailPattern ? `；待确认：${status.unconfirmedEmailPattern}` : ''}`
+        : status.error || ''
+    } else {
+      const status = await panelApi.loginEmailStatus(row.id)
+      emailDialog.statusText = status.success
+        ? `${status.hasLoginEmail ? '已启用登录邮箱' : '未启用登录邮箱'}${status.loginEmailPattern ? `：${status.loginEmailPattern}` : ''}`
+        : status.error || ''
+    }
+  } catch {
+    // 错误已由拦截器提示
+  }
+}
+
+async function resendRecoveryEmailCode() {
+  if (!emailDialog.row) return
+  emailDialog.sending = true
+  try {
+    const result = await panelApi.resendTwoFactorRecoveryEmail(emailDialog.row.id)
+    emailDialog.statusText = result.emailPattern ? `验证码已重发：${result.emailPattern}` : '验证码已重发'
+    emailDialog.hasPendingRecoveryEmail = true
+    ElMessage.success('验证码已重发')
+  } finally {
+    emailDialog.sending = false
+  }
+}
+
+async function resendLoginEmailCode() {
+  if (!emailDialog.row) return
+  await sendEmailCode()
+}
+
+async function cancelRecoveryEmail() {
+  if (!emailDialog.row) return
+  await ElMessageBox.confirm('将取消当前待确认的找回邮箱。是否继续？', '确认取消验证', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+  emailDialog.sending = true
+  try {
+    await panelApi.cancelTwoFactorRecoveryEmail(emailDialog.row.id)
+    emailDialog.statusText = '已取消待确认找回邮箱'
+    emailDialog.hasPendingRecoveryEmail = false
+    ElMessage.success('已取消验证')
+  } finally {
+    emailDialog.sending = false
+  }
+}
+
+function openTwoFactorFromEmail() {
+  if (!emailDialog.row) return
+  emailDialog.visible = false
+  openTwoFactor([emailDialog.row.id])
+}
+
+async function sendEmailCode() {
+  if (!emailDialog.row) return
+  if (!emailDialog.email.trim()) {
+    ElMessage.warning('请填写邮箱')
+    return
+  }
+  emailDialog.sending = true
+  try {
+    const result =
+      emailDialog.kind === 'recovery'
+        ? await panelApi.setTwoFactorRecoveryEmail(emailDialog.row.id, {
+            currentPassword: emailDialog.currentPassword,
+            email: emailDialog.email,
+          })
+        : await panelApi.setLoginEmail(emailDialog.row.id, emailDialog.email)
+    emailDialog.statusText = result.emailPattern ? `验证码已发送：${result.emailPattern}` : '验证码已发送'
+    ElMessage.success('验证码已发送')
+  } finally {
+    emailDialog.sending = false
+  }
+}
+
+async function confirmEmailCode() {
+  if (!emailDialog.row) return
+  if (!emailDialog.code.trim()) {
+    ElMessage.warning('请填写验证码')
+    return
+  }
+  emailDialog.confirming = true
+  try {
+    if (emailDialog.kind === 'recovery') {
+      await panelApi.confirmTwoFactorRecoveryEmail(emailDialog.row.id, emailDialog.code)
+    } else {
+      await panelApi.confirmLoginEmail(emailDialog.row.id, emailDialog.code)
+    }
+    ElMessage.success('邮箱已确认')
+    emailDialog.visible = false
+  } finally {
+    emailDialog.confirming = false
+  }
+}
+
+function openBatchProfile(mode: 'nickname' | 'bio' | 'username' | 'avatar') {
+  if (!ensureSelected()) return
+  batchProfile.mode = mode
+  batchProfile.value = ''
+  batchProfile.appendPhoneLast4WhenDuplicate = true
+  batchProfile.avatarSource = 'fixed'
+  batchProfile.avatarFile = null
+  batchProfile.avatarFiles = []
+  batchProfile.dictionaryName = imageDictionaries.value[0]?.name || ''
+  batchProfile.title =
+    mode === 'nickname'
+      ? '批量修改昵称'
+      : mode === 'bio'
+        ? '批量修改 Bio'
+        : mode === 'username'
+          ? '批量修改用户名'
+          : '批量修改头像'
+  batchProfile.visible = true
+}
+
+async function submitBatchProfile() {
+  if (batchProfile.mode === 'avatar') {
+    await submitBatchAvatar()
+    return
+  }
+
+  if (batchProfile.mode !== 'bio' && parseTemplateLines(batchProfile.value).length === 0) {
+    ElMessage.warning('请填写内容')
+    return
+  }
+  if (batchProfile.mode === 'username' && selectedIds.value.length > 1 && !/\{[a-zA-Z0-9_]+\}/.test(batchProfile.value)) {
+    ElMessage.warning('批量修改多个账号时，用户名模板至少需要包含一个变量')
+    return
+  }
+
+  const safeIds = await confirmSensitiveBatchRisk(selectedIds.value)
+  if (!safeIds) return
+
+  await ElMessageBox.confirm(`将对 ${safeIds.length} 个账号执行${batchProfile.title}。是否继续？`, '确认修改', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+
+  batchProfile.running = true
+  try {
+    const result = await panelApi.batchUpdateProfile({
+      accountIds: safeIds,
+      mode: batchProfile.mode as 'nickname' | 'bio' | 'username',
+      nickname: batchProfile.mode === 'nickname' ? batchProfile.value : null,
+      nicknameTemplates: batchProfile.mode === 'nickname' ? parseTemplateLines(batchProfile.value) : null,
+      appendPhoneLast4WhenDuplicate: batchProfile.mode === 'nickname' ? batchProfile.appendPhoneLast4WhenDuplicate : null,
+      bio: batchProfile.mode === 'bio' ? batchProfile.value : null,
+      usernameTemplate: batchProfile.mode === 'username' ? batchProfile.value : null,
+    })
+    batchProfile.visible = false
+    showBatchResult(`${batchProfile.title}完成`, result)
+    await load()
+  } finally {
+    batchProfile.running = false
+  }
+}
+
+async function submitBatchAvatar() {
+  if (batchProfile.avatarSource === 'fixed' && !batchProfile.avatarFile) {
+    ElMessage.warning('请先选择头像图片')
+    return
+  }
+  if (batchProfile.avatarSource === 'dictionary' && !batchProfile.dictionaryName.trim()) {
+    ElMessage.warning('请选择图片字典')
+    return
+  }
+
+  const safeIds = await confirmSensitiveBatchRisk(selectedIds.value)
+  if (!safeIds) return
+
+  await ElMessageBox.confirm(
+    `将对 ${safeIds.length} 个账号批量修改头像。是否继续？`,
+    '确认修改头像',
+    {
+      type: 'warning',
+      confirmButtonText: '继续',
+      cancelButtonText: '取消',
+    },
+  )
+
+  const form = new FormData()
+  form.append('accountIds', safeIds.join(','))
+  form.append('source', batchProfile.avatarSource)
+  if (batchProfile.avatarSource === 'fixed') {
+    form.append('avatar', batchProfile.avatarFile!)
+  } else {
+    form.append('dictionaryName', batchProfile.dictionaryName)
+  }
+
+  batchProfile.running = true
+  try {
+    const result = await panelApi.batchUpdateAvatar(form)
+    batchProfile.visible = false
+    showBatchResult('批量修改头像完成', result)
+    await load()
+  } finally {
+    batchProfile.running = false
+  }
+}
+
+async function openMemberships(row: Row, type: 'channels' | 'groups') {
+  listDialog.visible = true
+  listDialog.loading = true
+  listDialog.type = 'memberships'
+  listDialog.accountId = row.id
+  listDialog.title = type === 'channels' ? '加入的频道' : '加入的群组'
+  listDialog.memberships = []
+  try {
+    listDialog.memberships = type === 'channels' ? await panelApi.accountChannels(row.id) : await panelApi.accountGroups(row.id)
+  } finally {
+    listDialog.loading = false
+  }
+}
+
+async function openInbox(row: Row) {
+  listDialog.visible = true
+  listDialog.loading = true
+  listDialog.type = 'messages'
+  listDialog.accountId = row.id
+  listDialog.title = `系统通知（验证码） - ${row.displayPhone}`
+  listDialog.messages = []
+  try {
+    listDialog.messages = await panelApi.systemMessages(row.id, 30)
+  } finally {
+    listDialog.loading = false
+  }
+}
+
+async function openDevices(row: Row) {
+  listDialog.visible = true
+  listDialog.loading = true
+  listDialog.type = 'devices'
+  listDialog.accountId = row.id
+  listDialog.title = `在线设备 - ${row.displayPhone}`
+  listDialog.devices = []
+  try {
+    listDialog.devices = await panelApi.devices(row.id)
+  } finally {
+    listDialog.loading = false
+  }
+}
+
+async function kickDevice(device: TelegramAuthorization) {
+  if (device.current) return
+  await ElMessageBox.confirm(`确定要踢出该设备登录吗？\n${device.title}\nIP：${device.ip || '-'}`, '确认踢出', {
+    type: 'warning',
+    confirmButtonText: '踢出',
+    cancelButtonText: '取消',
+  })
+  await panelApi.kickDevice(listDialog.accountId, device.hash)
+  ElMessage.success('已踢出该设备')
+  listDialog.devices = await panelApi.devices(listDialog.accountId)
+}
+
+async function kickAllDevicesForDialog() {
+  await ElMessageBox.confirm('确定要踢出所有其他设备吗？（当前设备会保留）', '确认踢出', {
+    type: 'warning',
+    confirmButtonText: '踢出',
+    cancelButtonText: '取消',
+  })
+  await panelApi.kickAllOtherDevices(listDialog.accountId)
+  ElMessage.success('已踢出所有其他设备')
+  listDialog.devices = await panelApi.devices(listDialog.accountId)
+}
+
+function handleBatchCommand(command: string) {
+  if (command !== 'export-page' && command !== 'export-selected' && !ensureSelected()) return
+  const ids = selectedIds.value
+  switch (command) {
+    case 'batch-join':
+      openChatDialog('join', ids)
+      break
+    case 'batch-leave':
+      openChatDialog('leave', ids)
+      break
+    case 'two-factor':
+      openTwoFactor(ids)
+      break
+    case 'recovery-email':
+      openBatchRecoveryEmail()
+      break
+    case 'kick-devices':
+      batchKickDevices()
+      break
+    case 'category':
+      openBatchCategory()
+      break
+    case 'nickname':
+      openBatchProfile('nickname')
+      break
+    case 'avatar':
+      openBatchProfile('avatar')
+      break
+    case 'username':
+      openBatchProfile('username')
+      break
+    case 'bio':
+      openBatchProfile('bio')
+      break
+    case 'delete':
+      deleteSelected()
+      break
+    case 'export-selected':
+      openExport(selectedIds.value, '已选账号')
+      break
+    case 'export-page':
+      openExport(rows.value.map((x) => x.id), '当前页账号')
+      break
+  }
+}
+
+function handleRowCommand(command: string, row: Row) {
+  switch (command) {
+    case 'join':
+      openChatDialog('join', [row.id])
+      break
+    case 'leave':
+      openChatDialog('leave', [row.id])
+      break
+    case 'channels':
+      openMemberships(row, 'channels')
+      break
+    case 'groups':
+      openMemberships(row, 'groups')
+      break
+    case 'inbox':
+      openInbox(row)
+      break
+    case 'devices':
+      openDevices(row)
+      break
+    case 'two-factor':
+      openTwoFactor([row.id])
+      break
+    case 'recovery-email':
+      openEmailDialog('recovery', row)
+      break
+    case 'login-email':
+      openEmailDialog('login', row)
+      break
+    case 'toggle':
+      toggleActive(row)
+      break
+    case 'delete':
+      deleteOne(row)
+      break
+  }
+}
+
+function openExport(ids: number[], scopeLabel: string) {
+  if (ids.length === 0) {
+    ElMessage.info(scopeLabel === '已选账号' ? '请先勾选要导出的账号' : '当前页没有账号可导出')
+    return
+  }
+  exportDialog.ids = ids
+  exportDialog.scopeLabel = scopeLabel
+  exportDialog.visible = true
+}
+
+function exportAccounts(format: 'telethon' | 'tdata') {
+  const qs = exportDialog.ids.join(',')
+  const ts = Date.now()
+  window.location.href = `/downloads/accounts.zip?ids=${encodeURIComponent(qs)}&format=${format}&ts=${ts}`
+  exportDialog.visible = false
+}
+
+function parseTemplateLines(text: string) {
+  return text
+    .split(/\r\n|\n|\r/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+async function confirmSensitiveBatchRisk(ids: number[]) {
+  return confirmChatMembershipRisk(ids)
+}
+
+function ensureSelected() {
+  if (selectedIds.value.length === 0) {
+    ElMessage.info('请先选择账号')
+    return false
+  }
+  return true
+}
+
+function showBatchResult(title: string, result: AccountBatchOperationResult) {
+  resultDialog.title = title
+  resultDialog.summary = `成功 ${result.success}，失败 ${result.failed}`
+  resultDialog.items = result.items
+  resultDialog.visible = true
+  if (result.failed === 0) ElMessage.success(resultDialog.summary)
+  else ElMessage.warning(resultDialog.summary)
+}
+
+watch(filters, () => {
+  window.clearTimeout(filterTimer)
+  filterTimer = window.setTimeout(() => {
+    page.value = 1
+    load()
+  }, 300)
+})
+
+onMounted(async () => {
+  await Promise.all([loadCategories(), loadDictionaries(), load()])
+})
+</script>
+
+<style scoped>
+.accounts-page {
+  min-width: 0;
+}
+
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.action-bar :deep(.el-button) {
+  margin-left: 0;
+  flex: 0 0 auto;
+}
+
+.accounts-table {
+  width: 100%;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ellipsis {
+  display: inline-block;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.dialog-account {
+  margin: 12px 0;
+  color: var(--tp-muted);
+}
+
+.message-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--tp-border);
+}
+
+.message-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.result-summary {
+  margin-bottom: 12px;
+  color: var(--tp-muted);
+}
+
+.export-options {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 14px;
+}
+</style>

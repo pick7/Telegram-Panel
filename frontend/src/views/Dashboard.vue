@@ -1,0 +1,256 @@
+<template>
+  <div>
+    <div class="stat-grid">
+      <el-card v-for="item in stats" :key="item.label" shadow="never" class="stat-card">
+        <div class="stat-card-inner">
+          <el-icon :size="34" :class="['stat-icon', item.iconClass]">
+            <component :is="item.icon" />
+          </el-icon>
+          <div>
+            <div class="stat-label">{{ item.label }}</div>
+            <div class="stat-value">{{ item.value }}</div>
+          </div>
+        </div>
+      </el-card>
+    </div>
+
+    <el-row :gutter="16" class="mt-4">
+      <el-col :xs="24" :md="12">
+        <el-card class="page-card dashboard-panel" shadow="never">
+          <template #header>
+            <span>快速操作</span>
+          </template>
+          <div class="quick-actions">
+            <el-button type="primary" :icon="Upload" @click="router.push('/accounts/import')">导入账号</el-button>
+            <el-button type="primary" :icon="Plus" @click="router.push('/channels/create')">创建频道</el-button>
+            <el-button type="primary" :icon="Refresh" :loading="syncing" @click="syncAll">同步频道/群组数据</el-button>
+          </div>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :md="12">
+        <el-card class="page-card dashboard-panel" shadow="never">
+          <template #header>
+            <span>系统状态</span>
+          </template>
+          <div class="status-list">
+            <div class="status-row">
+              <span class="status-dot ok" />
+              <span>在线账号: {{ summary?.onlineAccountCount ?? '-' }}</span>
+            </div>
+            <div class="status-row">
+              <span class="status-dot warn" />
+              <span>受限账号: {{ summary?.limitedAccountCount ?? '-' }}</span>
+            </div>
+            <div class="status-row">
+              <span class="status-dot danger" />
+              <span>封禁账号: {{ summary?.bannedAccountCount ?? '-' }}</span>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-card class="page-card mt-4" shadow="never">
+      <template #header>
+        <span>最近任务</span>
+      </template>
+      <el-table v-loading="loading && !summary" :data="recentTaskRows" stripe row-key="id">
+        <el-table-column label="任务名称" min-width="230">
+          <template #default="{ row }">{{ taskName(row) }}</template>
+        </el-table-column>
+        <el-table-column label="类型" min-width="220">
+          <template #default="{ row }">{{ fallbackTaskName(row.taskType) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <StatusTag :status="displayStatus(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" min-width="180">
+          <template #default="{ row }">
+            <el-progress :percentage="taskProgress(row)" :stroke-width="8" />
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="160">
+          <template #default="{ row }">{{ formatRecentTime(row.createdAt) }}</template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="暂无最近任务" />
+        </template>
+      </el-table>
+    </el-card>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { CircleCheck, Promotion, Refresh, Upload, User, Plus } from '@element-plus/icons-vue'
+import { panelApi } from '@/api/panel'
+import type { BatchTask, DashboardSummary } from '@/api/types'
+import StatusTag from '@/components/StatusTag.vue'
+import { taskProgress } from '@/utils/format'
+
+const router = useRouter()
+const loading = ref(false)
+const syncing = ref(false)
+const summary = ref<DashboardSummary | null>(null)
+let timer: number | undefined
+let loadPromise: Promise<void> | null = null
+
+const stats = computed(() => [
+  { label: '账号总数', value: summary.value?.accountCount ?? '-', icon: User, iconClass: 'primary' },
+  { label: '频道总数', value: summary.value?.channelCount ?? '-', icon: Promotion, iconClass: 'secondary' },
+  { label: '群组总数', value: summary.value?.groupCount ?? '-', icon: User, iconClass: 'tertiary' },
+  { label: '活跃任务', value: summary.value?.activeTaskCount ?? '-', icon: CircleCheck, iconClass: 'success' },
+])
+
+const recentTaskRows = computed(() =>
+  (summary.value?.recentTasks || [])
+    .sort((a, b) => new Date(b.completedAt || b.createdAt).getTime() - new Date(a.completedAt || a.createdAt).getTime()),
+)
+const needsAutoRefresh = computed(() =>
+  (summary.value?.activeTaskCount || 0) > 0
+  || (summary.value?.enabledScheduledTaskCount || 0) > 0,
+)
+
+async function load(options: { silent?: boolean } = {}) {
+  const showLoading = !options.silent
+  if (showLoading) loading.value = true
+  if (!loadPromise) {
+    loadPromise = (async () => {
+      summary.value = await panelApi.summary()
+    })().finally(() => {
+      loadPromise = null
+    })
+  }
+  try {
+    await loadPromise
+  } finally {
+    if (showLoading) loading.value = false
+  }
+}
+
+async function syncAll() {
+  if (syncing.value) {
+    ElMessage.warning('正在同步中，请稍候...')
+    return
+  }
+  syncing.value = true
+  try {
+    const result = await panelApi.startSyncNow()
+    ElMessage.success(result.message || '同步完成')
+    await load()
+  } finally {
+    syncing.value = false
+  }
+}
+
+function displayStatus(task: BatchTask) {
+  if (task.status === 'failed' && task.completedAt && task.total > 0 && task.completed >= task.total) return 'completed'
+  return task.status
+}
+
+function taskName(task: BatchTask) {
+  return `${fallbackTaskName(task.taskType)} #${task.id}`
+}
+
+function fallbackTaskName(type: string) {
+  if (type === 'user_join_subscribe') return '批量加群/订阅/启用Bot'
+  if (type === 'bot_channel_set_admins_by_account') return 'Bot频道批量设置管理员（账号执行）'
+  if (type === 'bot_set_admins') return 'Bot频道批量设置管理员（机器人执行）'
+  if (type === 'user_chat_active') return '账号持续活跃（群组/频道）'
+  if (type === 'account_auto_sync') return '账号数据同步'
+  if (type === 'channel_group_private_create') return '批量创建私密频道/群组'
+  if (type === 'channel_group_publicize') return '批量公开频道/群组'
+  return type
+}
+
+function formatRecentTime(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  const hour = `${date.getHours()}`.padStart(2, '0')
+  const minute = `${date.getMinutes()}`.padStart(2, '0')
+  return `${month}-${day} ${hour}:${minute}`
+}
+
+onMounted(() => {
+  load()
+  timer = window.setInterval(() => {
+    if (document.visibilityState === 'visible' && needsAutoRefresh.value) {
+      void load({ silent: true }).catch(() => undefined)
+    }
+  }, 12000)
+})
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer)
+})
+</script>
+
+<style scoped>
+.stat-card-inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.stat-icon.primary {
+  color: var(--el-color-primary);
+}
+
+.stat-icon.secondary {
+  color: #80deea;
+}
+
+.stat-icon.tertiary {
+  color: #ce93d8;
+}
+
+.stat-icon.success {
+  color: #81c784;
+}
+
+.dashboard-panel {
+  min-height: 158px;
+}
+
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.status-list {
+  display: grid;
+  gap: 12px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.status-dot.ok {
+  background: #67c23a;
+}
+
+.status-dot.warn {
+  background: #e6a23c;
+}
+
+.status-dot.danger {
+  background: #f56c6c;
+}
+</style>

@@ -9,9 +9,12 @@
 **/bin
 **/obj
 artifacts
+frontend/node_modules
+src/TelegramPanel.Web/wwwroot/panel-spa
 
 # Docker runtime data
 docker-data
+.env
 
 # Temporary & logs
 .tmp
@@ -21,6 +24,8 @@ todolist
 
 # Database & cache
 *.db
+*.db-shm
+*.db-wal
 *.log
 *.user
 *.suo

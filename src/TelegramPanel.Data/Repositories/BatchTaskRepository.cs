@@ -41,12 +41,78 @@ public class BatchTaskRepository : Repository<BatchTask>, IBatchTaskRepository
             .ToListAsync();
     }
 
+    public async Task<IReadOnlyList<BatchTask>> GetActiveTasksAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .AsNoTracking()
+            .Where(t => t.Status == "pending" || t.Status == "running" || t.Status == "paused")
+            .OrderBy(t => t.CreatedAt)
+            .ThenBy(t => t.Id)
+            .Select(t => ToListItem(t))
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IEnumerable<BatchTask>> GetRecentTasksAsync(int count = 20)
     {
         return await _dbSet
+            .AsNoTracking()
+            .Where(t => t.Status == "completed" || t.Status == "failed" || t.Status == "canceled")
             .OrderByDescending(t => t.CreatedAt)
             .Take(count)
+            .Select(t => ToListItem(t))
             .ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<BatchTask>> GetTaskCenterItemsAsync(int historyCount = 100, CancellationToken cancellationToken = default)
+    {
+        if (historyCount <= 0)
+            historyCount = 100;
+        if (historyCount > 500)
+            historyCount = 500;
+
+        var activeTasks = await _dbSet
+            .AsNoTracking()
+            .Where(t => t.Status == "pending" || t.Status == "running" || t.Status == "paused")
+            .OrderByDescending(t => t.CreatedAt)
+            .Select(t => ToListItem(t))
+            .ToListAsync(cancellationToken);
+
+        var historyTasks = await _dbSet
+            .AsNoTracking()
+            .Where(t => t.Status == "completed" || t.Status == "failed" || t.Status == "canceled")
+            .OrderByDescending(t => t.CompletedAt ?? t.CreatedAt)
+            .ThenByDescending(t => t.Id)
+            .Take(historyCount)
+            .Select(t => ToListItem(t))
+            .ToListAsync(cancellationToken);
+
+        return activeTasks
+            .Concat(historyTasks)
+            .GroupBy(t => t.Id)
+            .Select(g => g.First())
+            .OrderByDescending(t => t.CreatedAt)
+            .ToList();
+    }
+
+    private static BatchTask ToListItem(BatchTask task) => new()
+    {
+        Id = task.Id,
+        TaskType = task.TaskType,
+        Status = task.Status,
+        Total = task.Total,
+        Completed = task.Completed,
+        Failed = task.Failed,
+        Config = null,
+        CreatedAt = task.CreatedAt,
+        StartedAt = task.StartedAt,
+        CompletedAt = task.CompletedAt
+    };
+
+    public async Task<int> CountActiveTasksAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .AsNoTracking()
+            .CountAsync(t => t.Status == "pending" || t.Status == "running" || t.Status == "paused", cancellationToken);
     }
 
     public async Task<int> TrimHistoryTasksAsync(int keepCount, CancellationToken cancellationToken = default)

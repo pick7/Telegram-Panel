@@ -77,7 +77,6 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
         var channelManagement = host.Services.GetRequiredService<ChannelManagementService>();
         var taskManagement = host.Services.GetRequiredService<BatchTaskManagementService>();
 
-        var assignedUsernames = new HashSet<string>(config.AssignedUsernames, StringComparer.OrdinalIgnoreCase);
         var random = new Random();
 
         config.StartedAtUtc ??= DateTime.UtcNow;
@@ -112,19 +111,37 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
                 }
             }
 
+            var targetChannels = await GetTargetChannelsAsync(
+                channelManagement,
+                config.TargetGroupIds,
+                cancellationToken);
+
+            var assignedUsernames = ReconcileAssignedUsernames(config.Usernames, targetChannels, config, logger);
             var pendingUsernames = config.Usernames
                 .Where(x => !assignedUsernames.Contains(x))
                 .ToList();
             if (pendingUsernames.Count == 0)
             {
-                logger.LogInformation("所有用户名已分配完成");
-                break;
+                config.Error = null;
+                await UpdateProgressAsync(host, assignedUsernames.Count, cancellationToken);
+                await SaveConfigAsync(taskManagement, host.TaskId, config);
+
+                if (!IsContinuousMonitor(config))
+                {
+                    logger.LogInformation("所有用户名已分配完成");
+                    break;
+                }
+
+                logger.LogInformation("当前所有用户名都已绑定，持续监控模式将在下一轮继续校验");
+                if (!await DelayWithPauseCheckAsync(host, TimeSpan.FromSeconds(config.CheckIntervalSeconds), cancellationToken))
+                    return;
+                continue;
             }
 
-            var availableChannels = await GetAvailablePrivateChannelsAsync(
-                channelManagement,
-                config.TargetGroupIds,
-                cancellationToken);
+            var availableChannels = targetChannels
+                .Where(x => x.CreatorAccountId.HasValue && x.CreatorAccountId.Value > 0)
+                .Where(x => string.IsNullOrWhiteSpace(x.Username))
+                .ToList();
             if (availableChannels.Count == 0)
             {
                 config.Error = "没有可用私密频道";
@@ -178,21 +195,18 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
 
                 if (selectedChannel is not null)
                 {
-                    assignedUsernames.Add(username);
-                    config.AssignedUsernames = assignedUsernames
-                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
                     config.Error = null;
                     roundCompleted++;
                     availableChannels.RemoveAll(x => x.Id == selectedChannel.Id);
-                    await SaveConfigAsync(taskManagement, host.TaskId, config);
                 }
                 else
                 {
                     logger.LogWarning("用户名 {Username} 未注册，但没有找到可成功切换的私密频道", username);
                 }
 
-                await UpdateProgressAsync(host, assignedUsernames.Count, cancellationToken);
+                var refreshedAssignedUsernames = ReconcileAssignedUsernames(config.Usernames, targetChannels, config, logger);
+                await UpdateProgressAsync(host, refreshedAssignedUsernames.Count, cancellationToken);
+                await SaveConfigAsync(taskManagement, host.TaskId, config);
 
                 if (!await DelayWithPauseCheckAsync(host, TimeSpan.FromMilliseconds(config.QueryDelayMs), cancellationToken))
                     return;
@@ -214,7 +228,7 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
             }
         }
 
-        logger.LogInformation("监控任务结束：共成功分配 {Count} 个用户名", assignedUsernames.Count);
+        logger.LogInformation("监控任务结束：当前已绑定 {Count} 个用户名", config.AssignedUsernames.Count);
     }
 
     private static bool IsContinuousMonitor(FragmentUsernameTaskConfig config)
@@ -247,7 +261,7 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
         return config;
     }
 
-    private async Task<List<Channel>> GetAvailablePrivateChannelsAsync(
+    private async Task<List<Channel>> GetTargetChannelsAsync(
         ChannelManagementService channelManagement,
         IReadOnlyCollection<int> groupIds,
         CancellationToken cancellationToken)
@@ -263,9 +277,41 @@ public sealed class FragmentUsernameTaskHandler : IModuleTaskHandler
         return channels
             .GroupBy(x => x.Id)
             .Select(g => g.First())
-            .Where(x => x.CreatorAccountId.HasValue && x.CreatorAccountId.Value > 0)
-            .Where(x => string.IsNullOrWhiteSpace(x.Username))
             .ToList();
+    }
+
+    private static HashSet<string> ReconcileAssignedUsernames(
+        IReadOnlyCollection<string> monitoredUsernames,
+        IReadOnlyCollection<Channel> targetChannels,
+        FragmentUsernameTaskConfig config,
+        ILogger logger)
+    {
+        var monitoredSet = new HashSet<string>(monitoredUsernames, StringComparer.OrdinalIgnoreCase);
+        var currentAssigned = targetChannels
+            .Where(x => !string.IsNullOrWhiteSpace(x.Username))
+            .Select(x => NormalizeUsername(x.Username!))
+            .Where(monitoredSet.Contains)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var previousAssigned = new HashSet<string>(config.AssignedUsernames ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        var removed = previousAssigned.Except(currentAssigned, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+        var added = currentAssigned.Except(previousAssigned, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+
+        if (removed.Count > 0)
+        {
+            logger.LogInformation("检测到 {Count} 个用户名已不再绑定到目标频道，将恢复监控：{Usernames}", removed.Count, string.Join(", ", removed));
+        }
+
+        if (added.Count > 0)
+        {
+            logger.LogInformation("检测到 {Count} 个用户名当前已绑定到目标频道：{Usernames}", added.Count, string.Join(", ", added));
+        }
+
+        config.AssignedUsernames = currentAssigned
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return currentAssigned;
     }
 
     private static async Task<Channel?> TryAssignUsernameToPrivateChannelAsync(

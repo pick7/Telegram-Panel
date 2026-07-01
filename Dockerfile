@@ -3,6 +3,10 @@ WORKDIR /src
 
 COPY . .
 
+RUN corepack enable \
+    && cd frontend \
+    && pnpm install --frozen-lockfile=false \
+    && pnpm run build
 RUN dotnet restore "TelegramPanel.sln"
 RUN dotnet publish "src/TelegramPanel.Web/TelegramPanel.Web.csproj" -c Release -o /app/publish --no-restore
 

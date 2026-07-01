@@ -12,6 +12,7 @@ using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data;
 using TelegramPanel.Modules;
 using TelegramPanel.Web.Modules;
+using TelegramPanel.Web.Api;
 using TelegramPanel.Web.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.DataProtection;
@@ -427,12 +428,14 @@ builder.Services.AddSingleton<TelegramPanelAiService>();
 builder.Services.AddSingleton<TelegramPanel.Modules.ITelegramPanelAiService>(sp => sp.GetRequiredService<TelegramPanelAiService>());
 builder.Services.AddScoped<IModuleTaskHandler, BotChannelSetAdminsByAccountTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, BotSetAdminsTaskHandler>();
+builder.Services.AddScoped<IModuleTaskHandler, UserJoinSubscribeTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, UserChatActiveTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, ChannelGroupPrivateCreateTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, ChannelGroupPublicizeTaskHandler>();
 builder.Services.AddHostedService<BatchTaskBackgroundService>();
 builder.Services.AddHostedService<ScheduledTaskBackgroundService>();
 builder.Services.AddHostedService<AccountDataAutoSyncBackgroundService>();
+builder.Services.AddHostedService<AccountStatusAutoRefreshBackgroundService>();
 builder.Services.AddHostedService<BotAutoSyncBackgroundService>();
 builder.Services.AddHostedService<TelegramPanel.Web.Services.WebhookRegistrationService>();
 builder.Services.AddHttpClient<TelegramBotApiClient>();
@@ -727,6 +730,32 @@ if (hasHttpsEndpoint)
 
 // 静态文件（包括 MudBlazor 等 NuGet 包的静态 Web 资源）
 app.UseStaticFiles();
+var spaRoot = Path.Combine(app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot"), "panel-spa");
+if (Directory.Exists(spaRoot))
+{
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(spaRoot),
+        RequestPath = "/ui",
+        OnPrepareResponse = context =>
+        {
+            var fileName = context.File.Name;
+            var requestPath = context.Context.Request.Path.Value ?? string.Empty;
+            var headers = context.Context.Response.Headers;
+
+            if (string.Equals(fileName, "index.html", StringComparison.OrdinalIgnoreCase))
+            {
+                headers.CacheControl = "no-cache, no-store, must-revalidate";
+                headers.Pragma = "no-cache";
+                headers.Expires = "0";
+                return;
+            }
+
+            if (requestPath.StartsWith("/ui/assets/", StringComparison.OrdinalIgnoreCase))
+                headers.CacheControl = "public, max-age=31536000, immutable";
+        }
+    });
+}
 if (Directory.Exists("/data"))
 {
     var uploadsRoot = "/data/uploads";
@@ -737,6 +766,60 @@ if (Directory.Exists("/data"))
         RequestPath = "/uploads"
     });
 }
+
+var legacyUiRedirects = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["/"] = "/ui/dashboard",
+    ["/dashboard"] = "/ui/dashboard",
+    ["/admin/password"] = "/ui/admin/password",
+    ["/tasks"] = "/ui/tasks",
+    ["/accounts"] = "/ui/accounts",
+    ["/accounts/import"] = "/ui/accounts/import",
+    ["/accounts/login"] = "/ui/accounts/login",
+    ["/accounts/categories"] = "/ui/accounts/categories",
+    ["/channels"] = "/ui/channels",
+    ["/channels/create"] = "/ui/channels/create",
+    ["/channels/groups"] = "/ui/channels/groups",
+    ["/groups"] = "/ui/groups",
+    ["/groups/create"] = "/ui/groups/create",
+    ["/groups/categories"] = "/ui/groups/categories",
+    ["/bots"] = "/ui/bots",
+    ["/bots/channels"] = "/ui/bots/channels",
+    ["/data-dictionaries"] = "/ui/data-dictionaries",
+    ["/dictionaries"] = "/ui/data-dictionaries",
+    ["/modules"] = "/ui/modules",
+    ["/apis"] = "/ui/apis",
+    ["/settings"] = "/ui/settings"
+};
+var redirectLegacyToVue = string.Equals(
+    app.Configuration["PanelSpa:RedirectLegacy"] ?? "true",
+    "true",
+    StringComparison.OrdinalIgnoreCase);
+
+// 已复刻的后台页面默认交给 Vue；保留 ?legacy=1 便于排障时临时打开 Razor 页面。
+app.Use(async (context, next) =>
+{
+    var requestPath = context.Request.Path.Value ?? string.Empty;
+    var legacyExtTarget = requestPath.StartsWith("/ext/", StringComparison.OrdinalIgnoreCase)
+        ? "/ui" + requestPath
+        : null;
+    var hasLegacyTarget = legacyUiRedirects.TryGetValue(requestPath, out var legacyTarget);
+    var vueTarget = legacyExtTarget ?? (hasLegacyTarget ? legacyTarget : null);
+
+    if (redirectLegacyToVue
+        && Directory.Exists(spaRoot)
+        && (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method))
+        && !context.Request.Query.ContainsKey("legacy")
+        && vueTarget != null)
+    {
+        context.Response.Redirect(vueTarget + context.Request.QueryString, permanent: false);
+        return;
+    }
+
+    await next();
+});
+
+app.UseRouting();
 
 app.UseAntiforgery();
 
@@ -859,6 +942,32 @@ app.MapGet("/logout", async (HttpContext http) =>
 }).AllowAnonymous();
 
 var adminAuthEnabled = adminCredentials.Enabled;
+
+app.MapPanelAdminApi(adminAuthEnabled);
+
+if (Directory.Exists(spaRoot))
+{
+    app.MapMethods("/ui/assets/{**path}", new[] { HttpMethods.Get, HttpMethods.Head }, (HttpContext http) =>
+    {
+        http.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        http.Response.Headers.Pragma = "no-cache";
+        http.Response.Headers.Expires = "0";
+        return Results.NotFound();
+    }).AllowAnonymous();
+
+    app.MapMethods("/ui/{**path}", new[] { HttpMethods.Get, HttpMethods.Head }, async (HttpContext http) =>
+    {
+        var indexPath = Path.Combine(spaRoot, "index.html");
+        if (!File.Exists(indexPath))
+            return Results.NotFound();
+
+        http.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        http.Response.Headers.Pragma = "no-cache";
+        http.Response.Headers.Expires = "0";
+        var html = await File.ReadAllTextAsync(indexPath, http.RequestAborted);
+        return Results.Content(html, "text/html; charset=utf-8");
+    }).AllowAnonymous();
+}
 
 var razor = app.MapRazorComponents<TelegramPanel.Web.Components.App>()
     .AddInteractiveServerRenderMode();

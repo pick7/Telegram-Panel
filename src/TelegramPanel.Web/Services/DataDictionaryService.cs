@@ -33,6 +33,11 @@ public sealed class DataDictionaryService
         return await _dictionaryRepository.GetAllWithItemsAsync(cancellationToken);
     }
 
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dictionaryRepository.CountDictionariesAsync(cancellationToken);
+    }
+
     public async Task<DataDictionary?> GetAsync(int id, CancellationToken cancellationToken = default)
     {
         return await _dictionaryRepository.GetWithItemsAsync(id, cancellationToken);
@@ -71,6 +76,8 @@ public sealed class DataDictionaryService
 
         if (values.Count == 0)
             throw new InvalidOperationException("文本字典至少需要一条内容");
+
+        await EnsureUniqueNameAsync(id, name, cancellationToken);
 
         var entity = await LoadOrCreateAsync(id, DataDictionaryTypes.Text, cancellationToken);
         entity.Name = name;
@@ -124,7 +131,16 @@ public sealed class DataDictionaryService
         if (displayName.Length == 0)
             throw new InvalidOperationException("显示名称不能为空");
 
+        await EnsureUniqueNameAsync(id, name, cancellationToken);
+
+        var keepSet = (keepItemIds ?? Array.Empty<int>()).ToHashSet();
         var entity = await LoadOrCreateAsync(id, DataDictionaryTypes.Image, cancellationToken);
+        var oldItems = await _itemRepository.GetByDictionaryIdAsync(entity.Id, cancellationToken);
+        var retainedCount = oldItems.Count(x => keepSet.Contains(x.Id));
+        var incomingCount = newImages?.Count ?? 0;
+        if (retainedCount + incomingCount == 0)
+            throw new InvalidOperationException("图片字典至少需要一张图片");
+
         entity.Name = name;
         entity.DisplayName = displayName;
         entity.Description = description;
@@ -137,8 +153,6 @@ public sealed class DataDictionaryService
         else
             await _dictionaryRepository.UpdateAsync(entity);
 
-        var keepSet = (keepItemIds ?? Array.Empty<int>()).ToHashSet();
-        var oldItems = await _itemRepository.GetByDictionaryIdAsync(entity.Id, cancellationToken);
         foreach (var item in oldItems.Where(x => !keepSet.Contains(x.Id)))
         {
             await _assetStorage.DeleteAssetAsync(item.AssetPath, cancellationToken);
@@ -158,10 +172,6 @@ public sealed class DataDictionaryService
                 IsEnabled = true
             });
         }
-
-        var finalItems = await _itemRepository.GetByDictionaryIdAsync(entity.Id, cancellationToken);
-        if (finalItems.Count == 0)
-            throw new InvalidOperationException("图片字典至少需要一张图片");
 
         return (await _dictionaryRepository.GetWithItemsAsync(entity.Id, cancellationToken))!;
     }
@@ -314,6 +324,13 @@ public sealed class DataDictionaryService
         if (!string.Equals(entity.Type, type, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("字典类型不匹配，不能跨类型修改");
         return entity;
+    }
+
+    private async Task EnsureUniqueNameAsync(int? id, string name, CancellationToken cancellationToken)
+    {
+        var existing = await _dictionaryRepository.GetByNameAsync(name, cancellationToken);
+        if (existing != null && (!id.HasValue || existing.Id != id.Value))
+            throw new InvalidOperationException("字典名称已存在");
     }
 
     private static string NormalizeName(string? value)

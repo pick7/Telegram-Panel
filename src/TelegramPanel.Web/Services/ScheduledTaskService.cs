@@ -91,6 +91,11 @@ public sealed class ScheduledTaskService
         return await _scheduledTaskRepository.GetEnabledAsync(cancellationToken);
     }
 
+    public async Task<int> CountEnabledAsync(CancellationToken cancellationToken = default)
+    {
+        return await _scheduledTaskRepository.CountEnabledAsync(cancellationToken);
+    }
+
     public async Task MarkTriggeredAsync(int id, DateTime triggeredAtUtc, int batchTaskId, CancellationToken cancellationToken = default)
     {
         var task = await _scheduledTaskRepository.GetByIdAsync(id);

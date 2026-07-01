@@ -10,4 +10,5 @@ public interface IDataDictionaryRepository : IRepository<DataDictionary>
     Task<DataDictionary?> GetByNameAsync(string name, CancellationToken cancellationToken = default);
     Task<DataDictionary?> GetWithItemsAsync(int id, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<DataDictionary>> GetAllWithItemsAsync(CancellationToken cancellationToken = default);
+    Task<int> CountDictionariesAsync(CancellationToken cancellationToken = default);
 }

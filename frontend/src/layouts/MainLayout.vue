@@ -1,0 +1,539 @@
+<template>
+  <el-container :class="['layout', { 'embed-layout': isEmbedMode }]">
+    <el-header v-if="!isEmbedMode" class="appbar">
+      <el-button link class="appbar-icon" @click="toggleMenu">
+        <el-icon :size="22"><Menu /></el-icon>
+      </el-button>
+      <div class="app-title">Telegram Panel</div>
+      <el-tag
+        v-if="version"
+        size="small"
+        effect="plain"
+        class="version-chip clickable"
+        title="点击查看版本信息"
+        @click="openVersionDialog"
+      >
+        v{{ version }}
+      </el-tag>
+      <el-tag
+        v-if="versionInfo?.success && versionInfo.updateAvailable && versionInfo.latestVersion"
+        size="small"
+        type="warning"
+        effect="dark"
+        class="version-chip clickable"
+        title="发现新版本，点击查看更新说明"
+        @click="openVersionDialog"
+      >
+        新版本 v{{ versionInfo.latestVersion }}
+      </el-tag>
+      <div class="appbar-spacer" />
+      <el-button link class="appbar-icon" title="系统设置" @click="router.push('/settings')">
+        <el-icon :size="22"><Setting /></el-icon>
+      </el-button>
+      <el-button link class="appbar-icon" title="GitHub" @click="openGithub">
+        <el-icon :size="22"><Link /></el-icon>
+      </el-button>
+      <el-button link class="appbar-icon" title="切换主题" @click="toggleTheme">
+        <el-icon :size="22"><Moon /></el-icon>
+      </el-button>
+      <el-dropdown @command="onCommand">
+        <span class="user-menu">
+          <el-avatar :size="28">{{ auth.me?.username?.[0]?.toUpperCase() || 'A' }}</el-avatar>
+          <span v-if="!isMobile">{{ auth.me?.username || 'admin' }}</span>
+          <el-icon><ArrowDown /></el-icon>
+        </span>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </el-header>
+
+    <el-container class="shell">
+      <el-aside v-if="!isEmbedMode && !isMobile" :width="collapsed ? '64px' : '256px'" class="aside">
+      <el-menu
+        :collapse="collapsed"
+        :default-active="activeIndex"
+        :default-openeds="defaultOpeneds"
+        background-color="transparent"
+        text-color="#c6cad4"
+        active-text-color="#90caf9"
+        class="menu"
+        @select="handleSelect"
+      >
+        <template v-for="item in menuItems" :key="item.index">
+          <el-menu-item v-if="!item.children" :index="item.index">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <template #title>{{ item.label }}</template>
+          </el-menu-item>
+          <el-sub-menu v-else :index="item.index">
+            <template #title>
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
+            </template>
+            <el-menu-item v-for="child in item.children" :key="child.index" :index="child.index">
+              <el-icon><component :is="child.icon" /></el-icon>
+              <template #title>{{ child.label }}</template>
+            </el-menu-item>
+          </el-sub-menu>
+        </template>
+      </el-menu>
+    </el-aside>
+
+    <el-drawer v-if="!isEmbedMode && isMobile" v-model="drawerOpen" direction="ltr" :with-header="false" size="240px">
+      <div class="mobile-title">Telegram Panel</div>
+      <el-menu
+        :default-active="activeIndex"
+        :default-openeds="defaultOpeneds"
+        background-color="transparent"
+        text-color="#c6cad4"
+        active-text-color="#90caf9"
+        @select="handleMobileSelect"
+      >
+        <template v-for="item in menuItems" :key="item.index">
+          <el-menu-item v-if="!item.children" :index="item.index">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <template #title>{{ item.label }}</template>
+          </el-menu-item>
+          <el-sub-menu v-else :index="item.index">
+            <template #title>
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
+            </template>
+            <el-menu-item v-for="child in item.children" :key="child.index" :index="child.index">
+              <el-icon><component :is="child.icon" /></el-icon>
+              <template #title>{{ child.label }}</template>
+            </el-menu-item>
+          </el-sub-menu>
+        </template>
+      </el-menu>
+    </el-drawer>
+
+    <el-container>
+      <el-main class="main">
+        <div v-if="!isEmbedMode" class="page-title">{{ pageTitle }}</div>
+        <router-view />
+      </el-main>
+    </el-container>
+    </el-container>
+  </el-container>
+
+  <el-dialog v-model="versionDialog.visible" title="版本信息" width="680px" class="version-dialog">
+    <div v-loading="versionDialog.loading" class="version-dialog-body">
+      <div class="version-title">Telegram Panel</div>
+      <el-descriptions :column="1" border size="small">
+        <el-descriptions-item label="版本">v{{ versionInfo?.currentVersion || version || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="运行环境">{{ versionInfo?.isDocker ? 'Docker' : '非 Docker' }}</el-descriptions-item>
+      </el-descriptions>
+
+      <el-link class="mt-3" type="primary" href="https://github.com/moeacgx/Telegram-Panel" target="_blank">
+        GitHub 仓库
+      </el-link>
+
+      <el-divider />
+
+      <div class="version-actions">
+        <div class="section-title">检查更新</div>
+        <div class="action-buttons">
+          <el-button :loading="versionDialog.checking" @click="refreshVersionInfo(true)">立即检查</el-button>
+          <el-button
+            type="warning"
+            :disabled="!canApplyVersionUpdate"
+            :loading="versionDialog.updating"
+            @click="applyVersionUpdate"
+          >
+            一键更新并重启
+          </el-button>
+        </div>
+      </div>
+
+      <el-alert
+        v-if="versionInfo && !versionInfo.success"
+        class="mt-3"
+        type="warning"
+        :title="`检查失败：${versionInfo.error || '-'}`"
+        :closable="false"
+        show-icon
+      />
+      <div v-else-if="versionInfo && !versionInfo.enabled" class="muted mt-3">已禁用自动更新</div>
+      <el-alert
+        v-else-if="versionInfo?.updateAvailable"
+        class="mt-3"
+        type="info"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          发现新版本：v{{ versionInfo.latestVersion }}（当前 v{{ versionInfo.currentVersion }}）
+        </template>
+        <el-link v-if="versionInfo.url" type="primary" :href="versionInfo.url" target="_blank">查看发布页</el-link>
+      </el-alert>
+      <div v-else-if="versionInfo" class="muted mt-3">当前已是最新版本（v{{ versionInfo.currentVersion }}）</div>
+
+      <div v-if="versionInfo?.assetName" class="muted mt-3">
+        匹配更新包：{{ versionInfo.assetName }}<span v-if="versionInfo.assetSizeBytes">（{{ formatBytes(versionInfo.assetSizeBytes) }}）</span>
+      </div>
+
+      <el-alert
+        v-if="versionInfo?.blockedReason"
+        class="mt-3"
+        type="warning"
+        :title="`无法一键更新：${versionInfo.blockedReason}`"
+        :closable="false"
+        show-icon
+      />
+
+      <template v-if="versionInfo?.notes">
+        <div class="section-title mt-4">Latest Release Notes</div>
+        <pre class="release-notes">{{ versionInfo.notes }}</pre>
+      </template>
+
+      <div v-if="versionInfo" class="muted mt-3">最近检查：{{ formatTime(versionInfo.checkedAtUtc) }}</div>
+    </div>
+    <template #footer>
+      <el-button @click="versionDialog.visible = false">关闭</el-button>
+    </template>
+  </el-dialog>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import { panelApi } from '@/api/panel'
+import type { ModuleNavItem, VersionInfo } from '@/api/types'
+import { formatTime } from '@/utils/format'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  ArrowDown,
+  CollectionTag,
+  Connection,
+  DocumentAdd,
+  Folder,
+  Grid,
+  Link,
+  List,
+  Menu,
+  Moon,
+  Notebook,
+  Odometer,
+  Plus,
+  Promotion,
+  Setting,
+  SwitchButton,
+  Tickets,
+  Tools,
+  Upload,
+  User,
+} from '@element-plus/icons-vue'
+import type { Component } from 'vue'
+
+const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
+const collapsed = ref(false)
+const drawerOpen = ref(false)
+const isMobile = ref(window.innerWidth < 780)
+const moduleNavItems = ref<ModuleNavItem[]>([])
+const versionInfo = ref<VersionInfo | null>(null)
+const version = computed(() => versionInfo.value?.currentVersion || auth.me?.version || '')
+const isDark = ref(true)
+const versionDialog = ref({
+  visible: false,
+  loading: false,
+  checking: false,
+  updating: false,
+})
+
+const pageTitle = computed(() => (route.meta.title as string) || '')
+const activeIndex = computed(() => (route.path === '/dictionaries' ? '/data-dictionaries' : route.path))
+const isEmbedMode = computed(() => route.query.embed === '1')
+const defaultOpeneds = ['accounts-group', 'channels-group', 'groups-group', 'bots-group', 'extensions-group']
+const canApplyVersionUpdate = computed(() =>
+  versionInfo.value?.success === true
+  && versionInfo.value.enabled
+  && versionInfo.value.updateAvailable
+  && versionInfo.value.canApply,
+)
+
+interface MenuItem {
+  index: string
+  label: string
+  icon: Component
+  children?: MenuItem[]
+}
+
+const staticMenuItems: MenuItem[] = [
+  { index: '/dashboard', label: '仪表盘', icon: Odometer },
+  {
+    index: 'accounts-group',
+    label: '账号管理',
+    icon: User,
+    children: [
+      { index: '/accounts', label: '账号列表', icon: User },
+      { index: '/accounts/import', label: '导入账号', icon: Upload },
+      { index: '/accounts/login', label: '手机号登录', icon: SwitchButton },
+      { index: '/accounts/categories', label: '账号分类', icon: CollectionTag },
+    ],
+  },
+  {
+    index: 'channels-group',
+    label: '频道管理',
+    icon: Promotion,
+    children: [
+      { index: '/channels', label: '频道列表', icon: List },
+      { index: '/channels/create', label: '创建频道', icon: Plus },
+      { index: '/channels/groups', label: '频道分类', icon: Folder },
+    ],
+  },
+  {
+    index: 'groups-group',
+    label: '群组管理',
+    icon: Connection,
+    children: [
+      { index: '/groups', label: '群组列表', icon: List },
+      { index: '/groups/create', label: '创建群组', icon: Plus },
+      { index: '/groups/categories', label: '群组分类', icon: Folder },
+    ],
+  },
+  {
+    index: 'bots-group',
+    label: '机器人管理',
+    icon: Connection,
+    children: [
+      { index: '/bots', label: '机器人列表', icon: Connection },
+      { index: '/bots/channels', label: 'Bot 频道', icon: List },
+    ],
+  },
+  { index: '/tasks', label: '任务中心', icon: Tickets },
+  { index: '/data-dictionaries', label: '数据字典', icon: Notebook },
+  { index: '/modules', label: '模块管理', icon: DocumentAdd },
+  { index: '/apis', label: 'API 管理', icon: Link },
+  { index: '/settings', label: '系统设置', icon: Tools },
+  { index: 'logout', label: '退出登录', icon: SwitchButton },
+]
+
+const fallbackModuleNavItems: ModuleNavItem[] = [
+  {
+    title: '踢人/封禁',
+    href: '/ext/builtin.kick-api/kick',
+    icon: null,
+    group: '外部 API',
+    order: 10,
+    moduleId: 'builtin.kick-api',
+    pageKey: 'kick',
+  },
+  {
+    title: '监控频道更新通知',
+    href: '/ext/pro.bot-monitor-notify/settings',
+    icon: null,
+    group: '用户模块',
+    order: 100,
+    moduleId: 'pro.bot-monitor-notify',
+    pageKey: 'settings',
+  },
+  {
+    title: '频道同步转发',
+    href: '/ext/pro.sync-forward/settings',
+    icon: null,
+    group: '用户模块',
+    order: 120,
+    moduleId: 'pro.sync-forward',
+    pageKey: 'settings',
+  },
+  {
+    title: '频道成员准入与联动踢出',
+    href: '/ext/pro.channel-member-gate/settings',
+    icon: null,
+    group: '用户模块',
+    order: 130,
+    moduleId: 'pro.channel-member-gate',
+    pageKey: 'settings',
+  },
+  {
+    title: '频道广告推送',
+    href: '/ext/pro.channel-push/settings',
+    icon: null,
+    group: '扩展模块',
+    order: 200,
+    moduleId: 'pro.channel-push',
+    pageKey: 'settings',
+  },
+  {
+    title: '协议号转API',
+    href: '/ext/pro.external-otp/protocol-api',
+    icon: null,
+    group: '协议号转API',
+    order: 110,
+    moduleId: 'pro.external-otp',
+    pageKey: 'protocol-api',
+  },
+  {
+    title: 'Fragment 用户名',
+    href: '/ext/fragment-username-checker/main',
+    icon: null,
+    group: '工具',
+    order: 100,
+    moduleId: 'fragment-username-checker',
+    pageKey: 'main',
+  },
+]
+
+const menuItems = computed<MenuItem[]>(() => {
+  const items = [...staticMenuItems]
+  const mergedModuleItems = new Map<string, ModuleNavItem>()
+
+  for (const item of fallbackModuleNavItems) {
+    mergedModuleItems.set(normalizeModuleHref(item.href), item)
+  }
+
+  for (const item of moduleNavItems.value) {
+    const href = normalizeModuleHref(item.href)
+    if (!href || href === '/modules') continue
+    mergedModuleItems.set(href, item)
+  }
+
+  const extensionChildren = Array.from(mergedModuleItems.values())
+    .sort((a, b) => (a.group || '').localeCompare(b.group || '', 'zh-Hans-CN') || a.order - b.order || a.title.localeCompare(b.title, 'zh-Hans-CN'))
+    .map((item) => ({
+      index: normalizeModuleHref(item.href),
+      label: item.title,
+      icon: Grid,
+    }))
+
+  if (extensionChildren.length > 0) {
+    const moduleIndex = items.findIndex((x) => x.index === '/modules')
+    items.splice(moduleIndex + 1, 0, {
+      index: 'extensions-group',
+      label: '扩展模块',
+      icon: Grid,
+      children: extensionChildren,
+    })
+  }
+
+  return items
+})
+
+function onResize() {
+  isMobile.value = window.innerWidth < 780
+}
+
+function toggleMenu() {
+  if (isMobile.value) drawerOpen.value = true
+  else collapsed.value = !collapsed.value
+}
+
+function openGithub() {
+  window.open('https://github.com/moeacgx/Telegram-Panel', '_blank', 'noopener,noreferrer')
+}
+
+function loadStoredTheme() {
+  return localStorage.getItem('telegram-panel-theme') !== 'light'
+}
+
+function applyTheme(dark: boolean) {
+  isDark.value = dark
+  document.documentElement.classList.toggle('dark', dark)
+}
+
+function toggleTheme() {
+  applyTheme(!isDark.value)
+  localStorage.setItem('telegram-panel-theme', isDark.value ? 'dark' : 'light')
+}
+
+function handleSelect(index: string) {
+  if (index === 'logout') {
+    auth.logout()
+    return
+  }
+
+  router.push(index)
+}
+
+function handleMobileSelect(index: string) {
+  drawerOpen.value = false
+  handleSelect(index)
+}
+
+function onCommand(command: string) {
+  if (command === 'logout') auth.logout()
+}
+
+onMounted(() => {
+  applyTheme(loadStoredTheme())
+  window.addEventListener('resize', onResize)
+  void loadModuleNav()
+})
+onUnmounted(() => window.removeEventListener('resize', onResize))
+
+function normalizeModuleHref(href: string) {
+  if (!href) return '/modules'
+  if (href.startsWith('/ui/')) return href.slice(3) || '/'
+  if (href.startsWith('/')) return href
+  return `/${href}`
+}
+
+async function loadModuleNav() {
+  try {
+    moduleNavItems.value = await panelApi.moduleNav()
+  } catch {
+    moduleNavItems.value = []
+  }
+}
+
+async function openVersionDialog() {
+  versionDialog.value.visible = true
+  if (!versionInfo.value) await refreshVersionInfo(false)
+}
+
+async function refreshVersionInfo(forceRefresh: boolean) {
+  if (forceRefresh) versionDialog.value.checking = true
+  else if (versionDialog.value.visible) versionDialog.value.loading = true
+
+  try {
+    versionInfo.value = forceRefresh ? await panelApi.checkVersionInfo() : await panelApi.versionInfo()
+  } catch {
+    if (forceRefresh || versionDialog.value.visible) ElMessage.warning('检查版本信息失败')
+  } finally {
+    versionDialog.value.checking = false
+    versionDialog.value.loading = false
+  }
+}
+
+async function applyVersionUpdate() {
+  if (!canApplyVersionUpdate.value) {
+    ElMessage.warning(versionInfo.value?.blockedReason || '当前条件不满足一键更新')
+    return
+  }
+
+  const target = versionInfo.value?.latestTag || versionInfo.value?.latestVersion || '最新版本'
+  await ElMessageBox.confirm(`将升级到 ${target}，并在部署后自动重启服务。是否继续？`, '确认一键更新', {
+    type: 'warning',
+    confirmButtonText: '继续',
+    cancelButtonText: '取消',
+  })
+
+  versionDialog.value.updating = true
+  try {
+    const result = await panelApi.applyVersionUpdate()
+    ElMessage.success(result.message || '更新已提交')
+    versionDialog.value.visible = false
+    await refreshVersionInfo(true)
+  } finally {
+    versionDialog.value.updating = false
+  }
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+</script>

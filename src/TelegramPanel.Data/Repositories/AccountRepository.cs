@@ -157,6 +157,98 @@ public class AccountRepository : Repository<Account>, IAccountRepository
             .ToListAsync();
     }
 
+    public async Task<int> CountActiveOperationAccountsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .AsNoTracking()
+            .CountAsync(a => a.IsActive && (a.Category == null || !a.Category.ExcludeFromOperations), cancellationToken);
+    }
+
+    public async Task<(int Total, int Active, int Limited, int Banned)> CountDashboardAsync(CancellationToken cancellationToken = default)
+    {
+        var counts = await _dbSet
+            .AsNoTracking()
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Total = g.Count(),
+                Active = g.Count(a => a.IsActive && (a.Category == null || !a.Category.ExcludeFromOperations)),
+                Limited = g.Count(a =>
+                    a.TelegramStatusSummary != null
+                    && a.TelegramStatusSummary != ""
+                    && (
+                        EF.Functions.Like(a.TelegramStatusSummary!, "%受限%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%冻结%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%Restricted%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%FROZEN_METHOD_INVALID%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%创建频道接口被冻结%")
+                    )),
+                Banned = g.Count(a =>
+                    a.TelegramStatusSummary != null
+                    && a.TelegramStatusSummary != ""
+                    && (
+                        EF.Functions.Like(a.TelegramStatusSummary!, "%封禁%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%注销%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%停用%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%USER_DEACTIVATED%")
+                        || EF.Functions.Like(a.TelegramStatusSummary!, "%PHONE_NUMBER_BANNED%")
+                    ))
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return counts == null
+            ? (0, 0, 0, 0)
+            : (counts.Total, counts.Active, counts.Limited, counts.Banned);
+    }
+
+    public async Task<(int Limited, int Banned)> CountTelegramStatusBucketsAsync(CancellationToken cancellationToken = default)
+    {
+        var summaries = _dbSet
+            .AsNoTracking()
+            .Where(a => a.TelegramStatusSummary != null && a.TelegramStatusSummary != "");
+
+        var limited = await summaries.CountAsync(a =>
+            EF.Functions.Like(a.TelegramStatusSummary!, "%受限%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%冻结%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%Restricted%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%FROZEN_METHOD_INVALID%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%创建频道接口被冻结%"), cancellationToken);
+
+        var banned = await summaries.CountAsync(a =>
+            EF.Functions.Like(a.TelegramStatusSummary!, "%封禁%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%注销%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%停用%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%USER_DEACTIVATED%")
+            || EF.Functions.Like(a.TelegramStatusSummary!, "%PHONE_NUMBER_BANNED%"), cancellationToken);
+
+        return (limited, banned);
+    }
+
+    public async Task<IReadOnlyList<Account>> GetTransientFailedStatusAccountsAsync(
+        int count,
+        TimeSpan minAge,
+        CancellationToken cancellationToken = default)
+    {
+        count = Math.Clamp(count, 1, 100);
+        var cutoffUtc = DateTime.UtcNow - minAge;
+
+        return await _dbSet
+            .AsNoTracking()
+            .Include(a => a.Category)
+            .Where(a => a.IsActive
+                        && a.TelegramStatusOk == false
+                        && a.TelegramStatusSummary != null
+                        && (a.TelegramStatusCheckedAtUtc == null || a.TelegramStatusCheckedAtUtc <= cutoffUtc))
+            .Where(a =>
+                EF.Functions.Like(a.TelegramStatusSummary!, "%连接失败%")
+                || EF.Functions.Like(a.TelegramStatusSummary!, "%请求超时%")
+                || EF.Functions.Like(a.TelegramStatusSummary!, "%刷新失败%"))
+            .OrderBy(a => a.TelegramStatusCheckedAtUtc ?? DateTime.MinValue)
+            .ThenBy(a => a.Id)
+            .Take(count)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<(IReadOnlyList<Account> Items, int TotalCount)> QueryPagedAsync(
         int? categoryId,
         string? search,
@@ -253,4 +345,5 @@ public class AccountRepository : Repository<Account>, IAccountRepository
             account.GroupCount = groupCountMap.TryGetValue(account.Id, out var groupCount) ? groupCount : 0;
         }
     }
+
 }

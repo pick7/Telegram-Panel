@@ -72,6 +72,37 @@ public class AccountManagementService
         return (items, total);
     }
 
+    public async Task<int> CountAccountsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _accountRepository.CountAsync();
+    }
+
+    public async Task<(int Total, int Active, int Limited, int Banned)> CountDashboardAsync(CancellationToken cancellationToken = default)
+    {
+        return await _accountRepository.CountDashboardAsync(cancellationToken);
+    }
+
+    public async Task<int> CountActiveOperationAccountsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _accountRepository.CountActiveOperationAccountsAsync(cancellationToken);
+    }
+
+    public async Task<(int Limited, int Banned)> CountTelegramStatusBucketsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _accountRepository.CountTelegramStatusBucketsAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Account>> GetTransientFailedStatusAccountsAsync(
+        int count,
+        TimeSpan minAge,
+        CancellationToken cancellationToken = default)
+    {
+        var list = await _accountRepository.GetTransientFailedStatusAccountsAsync(count, minAge, cancellationToken);
+        foreach (var account in list)
+            FormatPhoneForDisplay(account);
+        return list;
+    }
+
     public async Task<IReadOnlyList<Account>> QueryAccountsAsync(
         int? categoryId,
         string? search,

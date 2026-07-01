@@ -44,9 +44,24 @@ public class BatchTaskManagementService
         return await _batchTaskRepository.GetRunningTasksAsync();
     }
 
+    public async Task<IReadOnlyList<BatchTask>> GetActiveTasksAsync(CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.GetActiveTasksAsync(cancellationToken);
+    }
+
     public async Task<IEnumerable<BatchTask>> GetRecentTasksAsync(int count = 20)
     {
         return await _batchTaskRepository.GetRecentTasksAsync(count);
+    }
+
+    public async Task<IReadOnlyList<BatchTask>> GetTaskCenterItemsAsync(int historyCount = 100, CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.GetTaskCenterItemsAsync(historyCount, cancellationToken);
+    }
+
+    public async Task<int> CountActiveTasksAsync(CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.CountActiveTasksAsync(cancellationToken);
     }
 
     public async Task<int> TrimHistoryTasksAsync(int keepCount, CancellationToken cancellationToken = default)

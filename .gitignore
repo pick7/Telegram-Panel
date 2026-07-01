@@ -35,6 +35,9 @@ session数据/
 # Imported account packages (avoid committing phone/session dumps)
 */*.session
 */*.json
+!frontend/
+!frontend/**/*.json
+frontend/node_modules/
 
 # OS
 .DS_Store
@@ -47,6 +50,8 @@ site/
 
 # SQLite
 *.db
+*.db-shm
+*.db-wal
 
 # NuGet
 *.nupkg
@@ -75,6 +80,7 @@ docker-data/
 
 # Local build artifacts
 artifacts/
+src/TelegramPanel.Web/wwwroot/panel-spa/
 模块源码/
 src/TelegramPanel.Web/data-protection-keys/
 

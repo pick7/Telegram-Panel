@@ -12,7 +12,7 @@ namespace FragmentUsernameChecker;
 /// </summary>
 public sealed class FragmentUsernameCheckerModule : ITelegramPanelModule, IModuleUiProvider, IModuleTaskProvider
 {
-    private const string ModuleVersion = "1.2.2";
+    private const string ModuleVersion = "1.2.3";
 
     public FragmentUsernameCheckerModule()
     {

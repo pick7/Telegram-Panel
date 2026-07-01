@@ -33,7 +33,7 @@ public class AccountImportService
     }
 
     /// <summary>
-    /// 从浏览器上传的文件导入账号
+    /// 从浏览器上传的文件导入账号（Blazor 入口，委托给 Stream 通用入口）。
     /// </summary>
     public async Task<List<ImportResult>> ImportFromBrowserFilesAsync(
         IReadOnlyList<IBrowserFile> files,
@@ -45,103 +45,82 @@ public class AccountImportService
 
         foreach (var file in files)
         {
-            try
-            {
-                // 保存文件到临时目录
-                var tempPath = Path.Combine(Path.GetTempPath(), file.Name);
-                await using var fileStream = new FileStream(tempPath, FileMode.Create);
-                await file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024) // 10MB limit
-                    .CopyToAsync(fileStream);
-
-                fileStream.Close();
-
-                // 导入Session
-                var result = await _sessionImporter.ImportFromSessionFileAsync(tempPath, apiId, apiHash);
-
-                // 如果导入成功，保存到数据库
-                if (result.Success && result.UserId.HasValue)
-                {
-                    try
-                    {
-                        // 入库策略：按手机号 upsert（方便重复导入/替换 session）
-                        var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
-                        if (string.IsNullOrWhiteSpace(phone))
-                            throw new InvalidOperationException("导入结果缺少有效手机号");
-
-                        var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
-                        if (existing != null)
-                        {
-                            existing.UserId = result.UserId.Value;
-                            existing.Username = result.Username;
-                            existing.SessionPath = result.SessionPath!;
-                            existing.ApiId = apiId;
-                            existing.ApiHash = apiHash.Trim();
-                            existing.IsActive = true;
-                            existing.CategoryId = categoryId ?? existing.CategoryId;
-                            existing.LastSyncAt = DateTime.UtcNow;
-                            await _accountManagement.UpdateAccountAsync(existing);
-                        }
-                        else
-                        {
-                            var account = new Account
-                            {
-                                Phone = phone,
-                                UserId = result.UserId.Value,
-                                Username = result.Username,
-                                SessionPath = result.SessionPath!,
-                                ApiId = apiId,
-                                ApiHash = apiHash.Trim(),
-                                IsActive = true,
-                                CategoryId = categoryId,
-                                CreatedAt = DateTime.UtcNow,
-                                LastSyncAt = DateTime.UtcNow
-                            };
-
-                            await _accountManagement.CreateAccountAsync(account);
-                        }
-
-                        _logger.LogInformation("Account saved to database: {Phone}", phone);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to save account to database: {Phone}", result.Phone);
-                        result = new ImportResult(
-                            false,
-                            result.Phone,
-                            result.UserId,
-                            result.Username,
-                            result.SessionPath,
-                            $"Session 已导入，但数据库保存失败：{FormatException(ex)}"
-                        );
-                    }
-                }
-
-                results.Add(result);
-
-                // 清理临时文件
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch
-                {
-                    // 忽略临时文件删除失败
-                }
-
-                // 延迟避免频繁连接
-                await Task.Delay(500);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to process file: {FileName}", file.Name);
-                results.Add(new ImportResult(false, null, null, null, null, $"文件处理失败：{FormatException(ex)}"));
-            }
+            await using var upload = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            results.Add(await ImportFromSessionFileStreamAsync(file.Name, upload, apiId, apiHash, categoryId));
+            await Task.Delay(500);
         }
 
         var successCount = results.Count(r => r.Success);
         _logger.LogInformation("Browser file import completed: {Success}/{Total} successful", successCount, results.Count);
 
         return results;
+    }
+
+    /// <summary>
+    /// 从通用 Stream 上传导入账号（Minimal API/Vue 入口）。
+    /// </summary>
+    public async Task<List<ImportResult>> ImportFromSessionFileStreamsAsync(
+        IReadOnlyList<AccountImportFile> files,
+        int apiId,
+        string apiHash,
+        int? categoryId = null)
+    {
+        var results = new List<ImportResult>();
+
+        foreach (var file in files)
+        {
+            results.Add(await ImportFromSessionFileStreamAsync(file.FileName, file.Content, apiId, apiHash, categoryId));
+            await Task.Delay(500);
+        }
+
+        var successCount = results.Count(r => r.Success);
+        _logger.LogInformation("Stream file import completed: {Success}/{Total} successful", successCount, results.Count);
+
+        return results;
+    }
+
+    private async Task<ImportResult> ImportFromSessionFileStreamAsync(
+        string fileName,
+        Stream content,
+        int apiId,
+        string apiHash,
+        int? categoryId)
+    {
+        var safeFileName = Path.GetFileName(fileName);
+        if (string.IsNullOrWhiteSpace(safeFileName))
+            safeFileName = "upload.session";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"telegram-panel-session-{Guid.NewGuid():N}");
+        var tempPath = Path.Combine(tempDir, safeFileName);
+
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                await content.CopyToAsync(fileStream);
+            }
+
+            var result = await _sessionImporter.ImportFromSessionFileAsync(tempPath, apiId, apiHash);
+            return await PersistImportedSessionAsync(result, apiId, apiHash, categoryId, twoFactorPassword: null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process file: {FileName}", fileName);
+            return new ImportResult(false, null, null, null, null, $"文件处理失败：{FormatException(ex)}");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempDir))
+                    Directory.Delete(tempDir, recursive: true);
+            }
+            catch
+            {
+                // 忽略临时文件删除失败
+            }
+        }
     }
 
     /// <summary>
@@ -225,6 +204,21 @@ public class AccountImportService
             return results;
         }
 
+        await using var upload = zipFile.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024);
+        return await ImportFromZipStreamAsync(zipFile.Name, upload, categoryId, twoFactorPassword);
+    }
+
+    /// <summary>
+    /// 从通用 Stream 上传的 zip 压缩包导入账号。
+    /// </summary>
+    public async Task<List<ImportResult>> ImportFromZipStreamAsync(
+        string fileName,
+        Stream zipStream,
+        int? categoryId = null,
+        string? twoFactorPassword = null)
+    {
+        var results = new List<ImportResult>();
+
         var tempZipPath = Path.Combine(Path.GetTempPath(), $"telegram-panel-import-{Guid.NewGuid():N}.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), $"telegram-panel-import-{Guid.NewGuid():N}");
 
@@ -233,9 +227,8 @@ public class AccountImportService
             Directory.CreateDirectory(extractDir);
 
             await using (var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            await using (var upload = zipFile.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024))
             {
-                await upload.CopyToAsync(fs);
+                await zipStream.CopyToAsync(fs);
             }
 
             // 注意：部分第三方打包工具会生成“目录条目但包含数据”的非标准 zip，
@@ -289,7 +282,7 @@ public class AccountImportService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Zip import failed");
+            _logger.LogError(ex, "Zip import failed: {FileName}", fileName);
             results.Add(new ImportResult(false, null, null, null, null, $"压缩包导入失败: {ex.Message}"));
             return results;
         }
@@ -885,3 +878,5 @@ public class AccountImportService
         return messages.Count == 0 ? "未知错误" : string.Join(" | ", messages.Distinct());
     }
 }
+
+public sealed record AccountImportFile(string FileName, Stream Content);

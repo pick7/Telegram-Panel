@@ -51,4 +51,9 @@ public sealed class DataDictionaryRepository : Repository<DataDictionary>, IData
             .ThenByDescending(x => x.Id)
             .ToListAsync(cancellationToken);
     }
+
+    public async Task<int> CountDictionariesAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.AsNoTracking().CountAsync(cancellationToken);
+    }
 }

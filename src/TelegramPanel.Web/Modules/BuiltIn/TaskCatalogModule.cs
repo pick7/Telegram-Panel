@@ -37,6 +37,23 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
         yield return new ModuleTaskDefinition
         {
             Category = "user",
+            TaskType = BatchTaskTypes.UserJoinSubscribe,
+            DisplayName = "批量加群/订阅/启用Bot",
+            Description = "使用账号批量加入频道/群组，或启用/停用外部 Bot；从账号列表提交后在后台执行。",
+            Icon = Icons.Material.Filled.GroupAdd,
+            TaskCenter = new ModuleTaskCenterCapabilities
+            {
+                CanPause = true,
+                CanResume = true,
+                CanEdit = false,
+                CanRerun = true
+            },
+            Order = 110
+        };
+
+        yield return new ModuleTaskDefinition
+        {
+            Category = "user",
             TaskType = BatchTaskTypes.UserChatActive,
             DisplayName = "账号持续活跃（群组/频道）",
             Description = "按账号分类持续向指定目标发送词典内容，支持间隔抖动、随机/队列循环。",
@@ -92,6 +109,40 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
                 AutoPauseBeforeEdit = true
             },
             Order = 140
+        };
+
+        yield return new ModuleTaskDefinition
+        {
+            Category = "bot",
+            TaskType = BatchTaskTypes.BotChannelSetAdminsByAccount,
+            DisplayName = "Bot频道批量设置管理员（账号执行）",
+            Description = "使用指定账号进入 Bot 频道并批量设置管理员，适用于 Bot 无法直接完成授权的场景。",
+            Icon = Icons.Material.Filled.AdminPanelSettings,
+            TaskCenter = new ModuleTaskCenterCapabilities
+            {
+                CanPause = true,
+                CanResume = true,
+                CanEdit = false,
+                CanRerun = true
+            },
+            Order = 210
+        };
+
+        yield return new ModuleTaskDefinition
+        {
+            Category = "bot",
+            TaskType = BatchTaskTypes.BotSetAdmins,
+            DisplayName = "Bot频道批量设置管理员（机器人执行）",
+            Description = "由机器人对已管理的频道批量设置管理员权限。",
+            Icon = Icons.Material.Filled.SmartToy,
+            TaskCenter = new ModuleTaskCenterCapabilities
+            {
+                CanPause = false,
+                CanResume = false,
+                CanEdit = false,
+                CanRerun = true
+            },
+            Order = 220
         };
 
         yield return new ModuleTaskDefinition

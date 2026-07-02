@@ -2,7 +2,7 @@
   <el-container :class="['layout', { 'embed-layout': isEmbedMode }]">
     <el-header v-if="!isEmbedMode" class="appbar">
       <el-button link class="appbar-icon" @click="toggleMenu">
-        <el-icon :size="22"><Menu /></el-icon>
+        <span class="material-icons">menu</span>
       </el-button>
       <div class="app-title">Telegram Panel</div>
       <el-tag
@@ -28,19 +28,19 @@
       </el-tag>
       <div class="appbar-spacer" />
       <el-button link class="appbar-icon" title="系统设置" @click="router.push('/settings')">
-        <el-icon :size="22"><Setting /></el-icon>
+        <span class="material-icons">settings</span>
       </el-button>
       <el-button link class="appbar-icon" title="GitHub" @click="openGithub">
-        <el-icon :size="22"><Link /></el-icon>
+        <span class="material-icons">link</span>
       </el-button>
       <el-button link class="appbar-icon" :title="isDark ? '切换到白天模式' : '切换到黑夜模式'" @click="toggleTheme">
-        <el-icon :size="22"><component :is="isDark ? Sunny : Moon" /></el-icon>
+        <span class="material-icons">{{ isDark ? 'light_mode' : 'dark_mode' }}</span>
       </el-button>
       <el-dropdown @command="onCommand">
         <span class="user-menu">
           <el-avatar :size="28">{{ auth.me?.username?.[0]?.toUpperCase() || 'A' }}</el-avatar>
           <span v-if="!isMobile">{{ auth.me?.username || 'admin' }}</span>
-          <el-icon><ArrowDown /></el-icon>
+          <span class="material-icons user-arrow">keyboard_arrow_down</span>
         </span>
         <template #dropdown>
           <el-dropdown-menu>
@@ -51,7 +51,7 @@
     </el-header>
 
     <el-container class="shell">
-      <el-aside v-if="!isEmbedMode && !isMobile" :width="collapsed ? '64px' : '256px'" class="aside">
+      <el-aside v-if="!isEmbedMode && !isMobile" :width="collapsed ? '72px' : '256px'" class="aside">
       <el-menu
         :collapse="collapsed"
         :default-active="activeIndex"
@@ -64,16 +64,16 @@
       >
         <template v-for="item in menuItems" :key="item.index">
           <el-menu-item v-if="!item.children" :index="item.index">
-            <el-icon><component :is="item.icon" /></el-icon>
+            <span class="material-icons menu-icon">{{ item.icon }}</span>
             <template #title>{{ item.label }}</template>
           </el-menu-item>
           <el-sub-menu v-else :index="item.index">
             <template #title>
-              <el-icon><component :is="item.icon" /></el-icon>
+              <span class="material-icons menu-icon">{{ item.icon }}</span>
               <span>{{ item.label }}</span>
             </template>
             <el-menu-item v-for="child in item.children" :key="child.index" :index="child.index">
-              <el-icon><component :is="child.icon" /></el-icon>
+              <span class="material-icons menu-icon">{{ child.icon }}</span>
               <template #title>{{ child.label }}</template>
             </el-menu-item>
           </el-sub-menu>
@@ -81,7 +81,7 @@
       </el-menu>
     </el-aside>
 
-    <el-drawer v-if="!isEmbedMode && isMobile" v-model="drawerOpen" direction="ltr" :with-header="false" size="240px">
+    <el-drawer v-if="!isEmbedMode && isMobile" v-model="drawerOpen" direction="ltr" :with-header="false" size="256px">
       <div class="mobile-title">Telegram Panel</div>
       <el-menu
         :default-active="activeIndex"
@@ -93,16 +93,16 @@
       >
         <template v-for="item in menuItems" :key="item.index">
           <el-menu-item v-if="!item.children" :index="item.index">
-            <el-icon><component :is="item.icon" /></el-icon>
+            <span class="material-icons menu-icon">{{ item.icon }}</span>
             <template #title>{{ item.label }}</template>
           </el-menu-item>
           <el-sub-menu v-else :index="item.index">
             <template #title>
-              <el-icon><component :is="item.icon" /></el-icon>
+              <span class="material-icons menu-icon">{{ item.icon }}</span>
               <span>{{ item.label }}</span>
             </template>
             <el-menu-item v-for="child in item.children" :key="child.index" :index="child.index">
-              <el-icon><component :is="child.icon" /></el-icon>
+              <span class="material-icons menu-icon">{{ child.icon }}</span>
               <template #title>{{ child.label }}</template>
             </el-menu-item>
           </el-sub-menu>
@@ -205,34 +205,6 @@ import { panelApi } from '@/api/panel'
 import type { ModuleNavItem, VersionInfo } from '@/api/types'
 import { formatTime } from '@/utils/format'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import {
-  ArrowDown,
-  Avatar,
-  Box,
-  ChatDotRound,
-  CollectionTag,
-  DataBoard,
-  FolderOpened,
-  Grid,
-  Link,
-  List,
-  Management,
-  Menu,
-  Moon,
-  Plus,
-  Promotion,
-  Reading,
-  Right,
-  Setting,
-  Sunny,
-  SwitchButton,
-  Tickets,
-  Tools,
-  UploadFilled,
-  User,
-  UserFilled,
-} from '@element-plus/icons-vue'
-import type { Component } from 'vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -267,58 +239,58 @@ const canApplyVersionUpdate = computed(() =>
 interface MenuItem {
   index: string
   label: string
-  icon: Component
+  icon: string
   children?: MenuItem[]
 }
 
 const staticMenuItems: MenuItem[] = [
-  { index: '/dashboard', label: '仪表盘', icon: DataBoard },
+  { index: '/dashboard', label: '仪表盘', icon: 'dashboard' },
   {
     index: 'accounts-group',
     label: '账号管理',
-    icon: Avatar,
+    icon: 'account_circle',
     children: [
-      { index: '/accounts', label: '账号列表', icon: UserFilled },
-      { index: '/accounts/import', label: '导入账号', icon: UploadFilled },
-      { index: '/accounts/login', label: '手机号登录', icon: Right },
-      { index: '/accounts/categories', label: '账号分类', icon: CollectionTag },
+      { index: '/accounts', label: '账号列表', icon: 'people' },
+      { index: '/accounts/import', label: '导入账号', icon: 'upload' },
+      { index: '/accounts/login', label: '手机号登录', icon: 'login' },
+      { index: '/accounts/categories', label: '账号分类', icon: 'category' },
     ],
   },
   {
     index: 'channels-group',
     label: '频道管理',
-    icon: Promotion,
+    icon: 'campaign',
     children: [
-      { index: '/channels', label: '频道列表', icon: List },
-      { index: '/channels/create', label: '创建频道', icon: Plus },
-      { index: '/channels/groups', label: '频道分类', icon: FolderOpened },
+      { index: '/channels', label: '频道列表', icon: 'list' },
+      { index: '/channels/create', label: '创建频道', icon: 'add' },
+      { index: '/channels/groups', label: '频道分类', icon: 'folder' },
     ],
   },
   {
     index: 'groups-group',
     label: '群组管理',
-    icon: User,
+    icon: 'group',
     children: [
-      { index: '/groups', label: '群组列表', icon: List },
-      { index: '/groups/create', label: '创建群组', icon: Plus },
-      { index: '/groups/categories', label: '群组分类', icon: FolderOpened },
+      { index: '/groups', label: '群组列表', icon: 'list' },
+      { index: '/groups/create', label: '创建群组', icon: 'add' },
+      { index: '/groups/categories', label: '群组分类', icon: 'folder' },
     ],
   },
   {
     index: 'bots-group',
     label: '机器人管理',
-    icon: Management,
+    icon: 'smart_toy',
     children: [
-      { index: '/bots', label: '机器人列表', icon: Management },
-      { index: '/bots/channels', label: 'Bot 频道', icon: ChatDotRound },
+      { index: '/bots', label: '机器人列表', icon: 'smart_toy' },
+      { index: '/bots/channels', label: 'Bot 频道', icon: 'list' },
     ],
   },
-  { index: '/tasks', label: '任务中心', icon: Tickets },
-  { index: '/data-dictionaries', label: '数据字典', icon: Reading },
-  { index: '/modules', label: '模块管理', icon: Box },
-  { index: '/apis', label: 'API 管理', icon: Link },
-  { index: '/settings', label: '系统设置', icon: Tools },
-  { index: 'logout', label: '退出登录', icon: SwitchButton },
+  { index: '/tasks', label: '任务中心', icon: 'assignment' },
+  { index: '/data-dictionaries', label: '数据字典', icon: 'menu_book' },
+  { index: '/modules', label: '模块管理', icon: 'extension' },
+  { index: '/apis', label: 'API 管理', icon: 'link' },
+  { index: '/settings', label: '系统设置', icon: 'settings' },
+  { index: 'logout', label: '退出登录', icon: 'logout' },
 ]
 
 const fallbackModuleNavItems: ModuleNavItem[] = [
@@ -406,7 +378,7 @@ const menuItems = computed<MenuItem[]>(() => {
     .map((item) => ({
       index: normalizeModuleHref(item.href),
       label: item.title,
-      icon: Grid,
+      icon: 'extension',
     }))
 
   if (extensionChildren.length > 0) {
@@ -414,7 +386,7 @@ const menuItems = computed<MenuItem[]>(() => {
     items.splice(moduleIndex + 1, 0, {
       index: 'extensions-group',
       label: '扩展模块',
-      icon: Grid,
+      icon: 'extension',
       children: extensionChildren,
     })
   }

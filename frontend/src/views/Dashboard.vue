@@ -3,9 +3,7 @@
     <div class="stat-grid">
       <el-card v-for="item in stats" :key="item.label" shadow="never" class="stat-card">
         <div class="stat-card-inner">
-          <el-icon :size="34" :class="['stat-icon', item.iconClass]">
-            <component :is="item.icon" />
-          </el-icon>
+          <span :class="['material-icons', 'stat-icon', item.iconClass]">{{ item.icon }}</span>
           <div>
             <div class="stat-label">{{ item.label }}</div>
             <div class="stat-value">{{ item.value }}</div>
@@ -87,7 +85,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, Promotion, Refresh, Upload, User, Plus } from '@element-plus/icons-vue'
+import { Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import { panelApi } from '@/api/panel'
 import type { BatchTask, DashboardSummary } from '@/api/types'
 import StatusTag from '@/components/StatusTag.vue'
@@ -101,10 +99,10 @@ let timer: number | undefined
 let loadPromise: Promise<void> | null = null
 
 const stats = computed(() => [
-  { label: '账号总数', value: summary.value?.accountCount ?? '-', icon: User, iconClass: 'primary' },
-  { label: '频道总数', value: summary.value?.channelCount ?? '-', icon: Promotion, iconClass: 'secondary' },
-  { label: '群组总数', value: summary.value?.groupCount ?? '-', icon: User, iconClass: 'tertiary' },
-  { label: '活跃任务', value: summary.value?.activeTaskCount ?? '-', icon: CircleCheck, iconClass: 'success' },
+  { label: '账号总数', value: summary.value?.accountCount ?? '-', icon: 'account_circle', iconClass: 'primary' },
+  { label: '频道总数', value: summary.value?.channelCount ?? '-', icon: 'campaign', iconClass: 'secondary' },
+  { label: '群组总数', value: summary.value?.groupCount ?? '-', icon: 'group', iconClass: 'tertiary' },
+  { label: '活跃任务', value: summary.value?.activeTaskCount ?? '-', icon: 'playlist_add_check', iconClass: 'success' },
 ])
 
 const recentTaskRows = computed(() =>
@@ -199,24 +197,30 @@ onUnmounted(() => {
   gap: 14px;
 }
 
+.stat-icon {
+  font-size: 34px;
+  width: 38px;
+  text-align: center;
+}
+
 .stat-icon.primary {
   color: var(--el-color-primary);
 }
 
 .stat-icon.secondary {
-  color: #80deea;
+  color: #00bcd4;
 }
 
 .stat-icon.tertiary {
-  color: #ce93d8;
+  color: #26a69a;
 }
 
 .stat-icon.success {
-  color: #81c784;
+  color: #00c853;
 }
 
 .dashboard-panel {
-  min-height: 158px;
+  min-height: 154px;
 }
 
 .quick-actions {

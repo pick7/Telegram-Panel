@@ -285,10 +285,6 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             if (message.Length == 0)
                 return;
 
-            // 说明：用户通常只关心“限流/错误”等关键信息；
-            // 像 MsgsAck / GetDialogs / RpcResult 这类底层 trace 即使在 WTelegram 的低 level 下也会非常多，
-            // 因此默认全部降为 Debug，仅将关键错误/限流提升到 Warning/Error，方便在面板里用 Warning 级别过滤出重点。
-
             if (message.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("RpcError", StringComparison.OrdinalIgnoreCase))
             {
@@ -296,7 +292,9 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 return;
             }
 
-            _logger.LogDebug("WTelegram({Level}): {Message}", level, message);
+            // WTelegram 的底层收发包 trace 量非常大。生产环境开启 Debug 时如果继续写入 stdout，
+            // Docker 日志管道可能反压应用线程，表现为容器还在但 Kestrel 不再响应。
+            // 这里默认丢弃底层 trace，只保留上面的 RPC 错误/限流日志。
         };
     }
 

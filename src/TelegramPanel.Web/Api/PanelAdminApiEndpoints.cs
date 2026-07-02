@@ -1781,10 +1781,10 @@ public static class PanelAdminApiEndpoints
             BotAutoSync: new BotAutoSyncSettingsDto(configuration.GetValue("Telegram:BotAutoSyncEnabled", false), configuration.GetValue("Telegram:BotAutoSyncIntervalSeconds", 2)),
             TelegramStatus: new TelegramStatusAutoRefreshSettingsDto(
                 configuration.GetValue("TelegramStatus:AutoRefreshTransientFailures", true),
-                configuration.GetValue("TelegramStatus:AutoRefreshIntervalMinutes", 15),
-                configuration.GetValue("TelegramStatus:AutoRefreshBatchSize", 10),
+                configuration.GetValue("TelegramStatus:AutoRefreshIntervalMinutes", 30),
+                configuration.GetValue("TelegramStatus:AutoRefreshBatchSize", 3),
                 configuration.GetValue("TelegramStatus:AutoRefreshMinAgeMinutes", 10),
-                configuration.GetValue("TelegramStatus:AutoRefreshDelayMs", 2000)),
+                configuration.GetValue("TelegramStatus:AutoRefreshDelayMs", 5000)),
             Logging: new LoggingSettingsDto(configuration.GetValue("Serilog:Enabled", false), configuration["Serilog:MinimumLevel:Default"] ?? "Information", configuration.GetValue("Serilog:RetainedFileCountLimit", 30)),
             TimeZone: new TimeZoneSettingsDto(configuration["System:TimeZoneId"] ?? "", $"{tz.Id}（UTC{offset}）"),
             System: new SystemInfoSettingsDto(VersionService.Version, ".NET 8.0", "SQLite", configuration["Telegram:ApiId"] ?? ""));
@@ -1955,12 +1955,12 @@ public static class PanelAdminApiEndpoints
     {
         if (request.Enabled && (request.IntervalMinutes < 5 || request.IntervalMinutes > 1440))
             return Results.BadRequest(new OperationResultDto(false, "账号状态自动刷新间隔范围应为 5-1440 分钟"));
-        if (request.BatchSize < 1 || request.BatchSize > 50)
-            return Results.BadRequest(new OperationResultDto(false, "每轮刷新账号数范围应为 1-50"));
+        if (request.BatchSize < 1 || request.BatchSize > 20)
+            return Results.BadRequest(new OperationResultDto(false, "每轮刷新账号数范围应为 1-20"));
         if (request.MinAgeMinutes < 1 || request.MinAgeMinutes > 1440)
             return Results.BadRequest(new OperationResultDto(false, "最小状态年龄范围应为 1-1440 分钟"));
-        if (request.DelayMs < 0 || request.DelayMs > 30000)
-            return Results.BadRequest(new OperationResultDto(false, "账号间延迟范围应为 0-30000ms"));
+        if (request.DelayMs < 0 || request.DelayMs > 60000)
+            return Results.BadRequest(new OperationResultDto(false, "账号间延迟范围应为 0-60000ms"));
 
         var root = await LoadLocalConfigRootAsync(LocalConfigFile.ResolvePath(configuration, environment));
         var status = EnsureObject(root, "TelegramStatus");

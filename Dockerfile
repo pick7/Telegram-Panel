@@ -32,6 +32,10 @@ ENV ASPNETCORE_URLS=http://+:5000
 ENV TELEGRAM_PANEL_TDATA_RUNTIME_DIR=/app/tdata-runtime
 EXPOSE 5000
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # 持久化目录：/data（通过 docker-compose 挂载）
 # - 数据库：/data/telegram-panel.db
 # - session：/data/sessions/

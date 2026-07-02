@@ -41,6 +41,8 @@ jobs:
             fi
 
             cd "$APP_DIR"
+            git pull --ff-only origin dev
+
             if [ -f .env ]; then
               if grep -q '^TP_IMAGE=' .env; then
                 sed -i "s#^TP_IMAGE=.*#TP_IMAGE=$IMAGE#" .env

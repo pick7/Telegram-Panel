@@ -29,7 +29,7 @@ public sealed class AccountStatusAutoRefreshBackgroundService : BackgroundServic
         while (!stoppingToken.IsCancellationRequested)
         {
             var enabled = _configuration.GetValue("TelegramStatus:AutoRefreshTransientFailures", true);
-            var intervalMinutes = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshIntervalMinutes", 15), 5, 1440);
+            var intervalMinutes = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshIntervalMinutes", 30), 5, 1440);
 
             if (enabled)
             {
@@ -53,9 +53,9 @@ public sealed class AccountStatusAutoRefreshBackgroundService : BackgroundServic
 
     private async Task RefreshOnceAsync(CancellationToken cancellationToken)
     {
-        var batchSize = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshBatchSize", 10), 1, 50);
+        var batchSize = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshBatchSize", 3), 1, 20);
         var minAgeMinutes = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshMinAgeMinutes", 10), 1, 1440);
-        var delayMs = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshDelayMs", 2000), 0, 30000);
+        var delayMs = Math.Clamp(_configuration.GetValue("TelegramStatus:AutoRefreshDelayMs", 5000), 0, 60000);
 
         using var scope = _scopeFactory.CreateScope();
         var accounts = scope.ServiceProvider.GetRequiredService<AccountManagementService>();

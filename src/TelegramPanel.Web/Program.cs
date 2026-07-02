@@ -835,6 +835,12 @@ if (serilogEnabled)
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.MapGet("/healthz", () => Results.Json(new
+{
+    status = "ok",
+    at = DateTimeOffset.UtcNow
+})).AllowAnonymous();
+
 // Modules (built-in & installed): endpoints mapping
 app.MapInstalledModules();
 

@@ -56,14 +56,32 @@ public class AccountService : IAccountService
 
         try
         {
-            client = await _clientPool.GetOrCreateClientAsync(
-                accountId,
-                apiId,
-                apiHash,
-                sessionPath,
-                sessionKey: apiHash,
-                phoneNumber: normalizedPhone,
-                userId: null);
+            try
+            {
+                client = await _clientPool.GetOrCreateClientAsync(
+                    accountId,
+                    apiId,
+                    apiHash,
+                    sessionPath,
+                    sessionKey: apiHash,
+                    phoneNumber: normalizedPhone,
+                    userId: null);
+            }
+            catch (Exception ex) when (LooksLikeSessionApiMismatchOrCorrupted(ex))
+            {
+                // session 在创建 client 时也可能因为旧 ApiHash/密钥无法解密，这里同样自动备份后重建。
+                TryBackupCorruptedSessionIfExists(sessionPath);
+                await _clientPool.RemoveClientAsync(accountId);
+
+                client = await _clientPool.GetOrCreateClientAsync(
+                    accountId,
+                    apiId,
+                    apiHash,
+                    sessionPath,
+                    sessionKey: apiHash,
+                    phoneNumber: normalizedPhone,
+                    userId: null);
+            }
 
             string result;
             try

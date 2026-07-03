@@ -13,7 +13,7 @@ WORKDIR /src
 COPY . .
 COPY --from=frontend-build /src/src/TelegramPanel.Web/wwwroot/panel-spa ./src/TelegramPanel.Web/wwwroot/panel-spa
 
-RUN dotnet restore "TelegramPanel.sln"
+RUN dotnet restore "src/TelegramPanel.Web/TelegramPanel.Web.csproj"
 RUN dotnet publish "src/TelegramPanel.Web/TelegramPanel.Web.csproj" -c Release -o /app/publish --no-restore
 
 # tdata 运行时依赖（避免在容器内通过 apt 安装 Node）

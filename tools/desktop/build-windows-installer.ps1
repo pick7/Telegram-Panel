@@ -21,18 +21,18 @@ function Invoke-Checked {
 
     & $Command
     if ($LASTEXITCODE -ne 0) {
-        throw "命令执行失败，退出码：$LASTEXITCODE"
+        throw "Command failed with exit code: $LASTEXITCODE"
     }
 }
 
-Write-Host "清理桌面版构建目录..."
+Write-Host "Cleaning desktop build directory..."
 if (Test-Path $artifactsRoot) {
     Remove-Item -LiteralPath $artifactsRoot -Recurse -Force
 }
 
 New-Item -ItemType Directory -Force -Path $webOut, $appOut, $payloadOut, $setupOut | Out-Null
 
-Write-Host "发布 Web 服务..."
+Write-Host "Publishing web service..."
 Invoke-Checked {
     dotnet publish (Join-Path $repoRoot "src\TelegramPanel.Web\TelegramPanel.Web.csproj") `
         -c $Configuration `
@@ -42,7 +42,7 @@ Invoke-Checked {
         /p:PublishSingleFile=false
 }
 
-Write-Host "发布桌面壳..."
+Write-Host "Publishing desktop shell..."
 Invoke-Checked {
     dotnet publish (Join-Path $repoRoot "src\TelegramPanel.Desktop\TelegramPanel.Desktop.csproj") `
         -c $Configuration `
@@ -53,18 +53,18 @@ Invoke-Checked {
         /p:IncludeNativeLibrariesForSelfExtract=true
 }
 
-Write-Host "组装安装 payload..."
+Write-Host "Assembling installer payload..."
 Copy-Item -Path (Join-Path $appOut "*") -Destination $payloadOut -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $payloadOut "web") | Out-Null
 Copy-Item -Path (Join-Path $webOut "*") -Destination (Join-Path $payloadOut "web") -Recurse -Force
 
-Write-Host "压缩 payload..."
+Write-Host "Compressing payload..."
 Compress-Archive -Path (Join-Path $payloadOut "*") -DestinationPath $payloadZip -Force
 if (!(Test-Path $payloadZip)) {
-    throw "payload.zip 生成失败：$payloadZip"
+    throw "payload.zip was not created: $payloadZip"
 }
 
-Write-Host "发布安装器..."
+Write-Host "Publishing installer..."
 Invoke-Checked {
     dotnet publish (Join-Path $repoRoot "src\TelegramPanel.Setup\TelegramPanel.Setup.csproj") `
         -c $Configuration `
@@ -80,6 +80,6 @@ $finalSetup = Join-Path $artifactsRoot "TelegramPanel.Setup.exe"
 Copy-Item -LiteralPath (Join-Path $setupOut "TelegramPanel.Setup.exe") -Destination $finalSetup -Force
 
 Write-Host ""
-Write-Host "构建完成："
-Write-Host "  安装器：$finalSetup"
-Write-Host "  便携目录：$payloadOut"
+Write-Host "Build completed:"
+Write-Host "  Installer: $finalSetup"
+Write-Host "  Portable payload: $payloadOut"

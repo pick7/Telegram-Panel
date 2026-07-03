@@ -67,7 +67,7 @@ jobs:
           pnpm --dir frontend run build
 
       - name: Restore
-        run: dotnet restore TelegramPanel.sln
+        run: dotnet restore src/TelegramPanel.Web/TelegramPanel.Web.csproj
 
       - name: Publish Linux update packages
         shell: bash
@@ -140,7 +140,7 @@ jobs:
 
       - name: Build Windows installer
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File tools\desktop\build-windows-installer.ps1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tools\desktop\build-windows-installer.ps1
 
       - name: Pack Windows release asset
         shell: pwsh

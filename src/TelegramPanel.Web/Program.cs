@@ -801,15 +801,27 @@ var redirectLegacyToVue = string.Equals(
     app.Configuration["PanelSpa:RedirectLegacy"] ?? "true",
     "true",
     StringComparison.OrdinalIgnoreCase);
+var vueManagedLegacyExtRoutes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "/ext/builtin.kick-api/kick",
+    "/ext/fragment-username-checker/main",
+    "/ext/pro.sync-forward/settings",
+    "/ext/pro.bot-monitor-notify/settings",
+    "/ext/pro.channel-member-gate/settings",
+    "/ext/pro.channel-push/settings",
+    "/ext/pro.external-otp/protocol-api"
+};
 
-// 已复刻的后台页面默认交给 Vue；保留 ?legacy=1 便于排障时临时打开 Razor 页面。
+// 已复刻的后台页面默认交给 Vue；公开模块端点仍保留给模块自己处理。
+// 例如协议号转 API 的 /ext/otp/{token} 和 /ext/otp/api/wait 不能被重定向成后台 SPA。
 app.Use(async (context, next) =>
 {
     var requestPath = context.Request.Path.Value ?? string.Empty;
-    var legacyExtTarget = requestPath.StartsWith("/ext/", StringComparison.OrdinalIgnoreCase)
-        ? "/ui" + requestPath
+    var normalizedRequestPath = requestPath.Length > 1 ? requestPath.TrimEnd('/') : requestPath;
+    var legacyExtTarget = vueManagedLegacyExtRoutes.Contains(normalizedRequestPath)
+        ? "/ui" + normalizedRequestPath
         : null;
-    var hasLegacyTarget = legacyUiRedirects.TryGetValue(requestPath, out var legacyTarget);
+    var hasLegacyTarget = legacyUiRedirects.TryGetValue(normalizedRequestPath, out var legacyTarget);
     var vueTarget = legacyExtTarget ?? (hasLegacyTarget ? legacyTarget : null);
 
     if (redirectLegacyToVue

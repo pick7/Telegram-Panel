@@ -73,6 +73,10 @@ public class DataSyncService
                 var dataSync = scope.ServiceProvider.GetRequiredService<DataSyncService>();
                 await dataSync.ExecuteTrackedSyncAsync(taskId, trigger, CancellationToken.None);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Manual account sync background execution failed unexpectedly for task {TaskId}", taskId);

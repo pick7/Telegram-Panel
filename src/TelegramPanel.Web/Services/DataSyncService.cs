@@ -16,6 +16,7 @@ namespace TelegramPanel.Web.Services;
 public class DataSyncService
 {
     private static readonly SemaphoreSlim SyncGate = new(1, 1);
+    private static readonly SemaphoreSlim SyncTaskCreationGate = new(1, 1);
 
     private readonly AccountManagementService _accountManagement;
     private readonly ChannelManagementService _channelManagement;
@@ -54,14 +55,17 @@ public class DataSyncService
 
     public async Task<TrackedSyncResult> RunAllActiveAccountsTrackedAsync(string trigger, CancellationToken cancellationToken)
     {
-        var task = await CreateTrackedTaskAsync(trigger, cancellationToken);
+        var task = await CreateTrackedTaskIfNoActiveAsync(trigger, throwIfActive: true, cancellationToken);
         return await ExecuteTrackedSyncAsync(task.Id, trigger, cancellationToken);
     }
 
     public async Task<int> StartAllActiveAccountsTrackedInBackgroundAsync(string trigger, CancellationToken cancellationToken = default)
     {
-        var task = await CreateTrackedTaskAsync(trigger, cancellationToken);
+        var task = await CreateTrackedTaskIfNoActiveAsync(trigger, throwIfActive: false, cancellationToken);
         var taskId = task.Id;
+        if (task.Status != "pending")
+            return taskId;
+
         var scopeFactory = _scopeFactory;
         var logger = _logger;
 
@@ -84,6 +88,41 @@ public class DataSyncService
         }, CancellationToken.None);
 
         return taskId;
+    }
+
+    private async Task<BatchTask> CreateTrackedTaskIfNoActiveAsync(string trigger, bool throwIfActive, CancellationToken cancellationToken)
+    {
+        await SyncTaskCreationGate.WaitAsync(cancellationToken);
+        try
+        {
+            var activeTask = await FindActiveAccountSyncTaskAsync();
+            if (activeTask != null)
+            {
+                if (throwIfActive)
+                    throw new InvalidOperationException($"账号数据同步已在运行，请到任务中心查看当前进度 #{activeTask.Id}");
+
+                return activeTask;
+            }
+
+            return await CreateTrackedTaskAsync(trigger, cancellationToken);
+        }
+        finally
+        {
+            SyncTaskCreationGate.Release();
+        }
+    }
+
+    private async Task<BatchTask?> FindActiveAccountSyncTaskAsync()
+    {
+        var activeTasks = (await _taskManagement.GetTasksByStatusAsync("running"))
+            .Concat(await _taskManagement.GetTasksByStatusAsync("pending"))
+            .Concat(await _taskManagement.GetTasksByStatusAsync("paused"))
+            .Where(t => string.Equals(t.TaskType, BatchTaskTypes.AccountAutoSync, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(t => t.Status == "running" ? 0 : t.Status == "pending" ? 1 : 2)
+            .ThenBy(t => t.CreatedAt)
+            .ToList();
+
+        return activeTasks.FirstOrDefault();
     }
 
     private async Task<BatchTask> CreateTrackedTaskAsync(string trigger, CancellationToken cancellationToken)

@@ -4261,7 +4261,7 @@ public static class PanelAdminApiEndpoints
                 x.Item.Definition.Order,
                 x.Item.Module.Id,
                 null,
-                "direct")));
+                "legacy")));
 
         items.AddRange(contributions.Pages
             .OrderBy(x => x.Definition.Group ?? "", StringComparer.OrdinalIgnoreCase)

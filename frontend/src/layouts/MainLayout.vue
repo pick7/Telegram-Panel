@@ -308,10 +308,9 @@ const menuItems = computed<MenuItem[]>(() => {
   const extensionChildren = Array.from(mergedModuleItems.values())
     .sort((a, b) => (a.group || '').localeCompare(b.group || '', 'zh-Hans-CN') || a.order - b.order || a.title.localeCompare(b.title, 'zh-Hans-CN'))
     .map((item) => ({
-      index: normalizeModuleHref(item.href),
+      index: resolveModuleRoute(item),
       label: item.title,
       icon: resolveModuleIcon(item),
-      external: item.uiMode === 'direct',
     }))
 
   if (extensionChildren.length > 0) {
@@ -325,16 +324,6 @@ const menuItems = computed<MenuItem[]>(() => {
   }
 
   return items
-})
-
-const directModuleRoutes = computed(() => {
-  const routes = new Set<string>()
-  for (const item of moduleNavItems.value) {
-    if (item.uiMode !== 'direct') continue
-    const href = normalizeModuleHref(item.href)
-    if (href) routes.add(href)
-  }
-  return routes
 })
 
 function onResize() {
@@ -370,11 +359,6 @@ function handleSelect(index: string) {
     return
   }
 
-  if (isDirectModuleRoute(index)) {
-    window.location.href = index
-    return
-  }
-
   router.push(index)
 }
 
@@ -401,8 +385,19 @@ function normalizeModuleHref(href: string) {
   return `/${href}`
 }
 
-function isDirectModuleRoute(index: string) {
-  return directModuleRoutes.value.has(index)
+function resolveModuleRoute(item: ModuleNavItem) {
+  const pageKey = (item.pageKey || '').trim()
+  if (item.moduleId && pageKey) {
+    return `/ext/${encodeURIComponent(item.moduleId)}/${encodeURIComponent(pageKey)}`
+  }
+
+  const href = normalizeModuleHref(item.href)
+  const match = href.match(/^\/ext\/([^/?#]+)\/([^/?#]+)/i)
+  if (match) {
+    return `/ext/${encodeURIComponent(decodeURIComponent(match[1]))}/${encodeURIComponent(decodeURIComponent(match[2]))}`
+  }
+
+  return href
 }
 
 function resolveModuleIcon(item: ModuleNavItem) {

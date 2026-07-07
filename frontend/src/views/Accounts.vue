@@ -112,17 +112,11 @@
         <el-table-column v-if="isColumnVisible('chatCounts')" label="频道/群组" width="110">
           <template #default="{ row }">{{ row.channelCount }} / {{ row.groupCount }}</template>
         </el-table-column>
-        <el-table-column v-if="isColumnVisible('active')" label="状态" width="86">
-          <template #default="{ row }">
-            <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? '活跃' : '停用' }}</el-tag>
-          </template>
-        </el-table-column>
         <el-table-column v-if="isColumnVisible('telegramStatus')" label="Telegram 状态" min-width="180">
           <template #default="{ row }">
-            <el-tooltip v-if="row.telegramStatusSummary" :content="buildStatusTitle(row)" placement="top">
-              <el-tag :type="row.telegramStatusOk ? 'success' : 'danger'" size="small">{{ telegramStatusText(row) }}</el-tag>
+            <el-tooltip :content="buildStatusTitle(row)" placement="top">
+              <el-tag :type="telegramStatusTagType(row)" size="small">{{ telegramStatusText(row) }}</el-tag>
             </el-tooltip>
-            <el-tag v-else type="info" size="small">未检测</el-tag>
           </template>
         </el-table-column>
         <el-table-column v-if="isColumnVisible('registrationAt')" label="注册时间（估算，非百分百正确）" min-width="210">
@@ -628,7 +622,6 @@ const accountColumns: ColumnVisibilityOption[] = [
   { key: 'userId', label: '用户ID' },
   { key: 'category', label: '分类' },
   { key: 'chatCounts', label: '频道/群组' },
-  { key: 'active', label: '状态' },
   { key: 'telegramStatus', label: 'Telegram 状态' },
   { key: 'registrationAt', label: '注册时间' },
   { key: 'lastSyncAt', label: '最后数据同步' },
@@ -834,14 +827,26 @@ function cycleSelection() {
 }
 
 function buildStatusTitle(row: Row) {
+  if (!row.isActive) {
+    const lastStatus = row.telegramStatusSummary ? `；上次 Telegram 检测：${row.telegramStatusSummary}` : ''
+    return `面板已停用：该账号不会参与任务和批量操作${lastStatus}`
+  }
   const detailsText = row.telegramStatusDetails || row.telegramStatusSummary || ''
   const checkedAt = formatTime(row.telegramStatusCheckedAtUtc, '-')
+  if (!detailsText) return '尚未检测 Telegram 状态'
   return `${detailsText}（检测时间：${checkedAt}）`
 }
 
 function telegramStatusText(row: Row) {
+  if (!row.isActive) return '停用'
   if (!row.telegramStatusSummary) return '未检测'
   return row.telegramStatusOk ? row.telegramStatusSummary : '失效'
+}
+
+function telegramStatusTagType(row: Row) {
+  if (!row.isActive) return 'info'
+  if (!row.telegramStatusSummary) return 'info'
+  return row.telegramStatusOk ? 'success' : 'danger'
 }
 
 async function openDetails(row: Row) {

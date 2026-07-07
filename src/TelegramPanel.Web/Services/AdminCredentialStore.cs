@@ -131,6 +131,36 @@ public sealed class AdminCredentialStore
         }
     }
 
+    public async Task ChangeUsernameAsync(string currentPassword, string newUsername, CancellationToken cancellationToken = default)
+    {
+        if (!Enabled)
+            throw new InvalidOperationException("后台验证未启用");
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        currentPassword = (currentPassword ?? string.Empty).Trim();
+        newUsername = NormalizeUsername(newUsername);
+
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            var file = _cached ?? throw new InvalidOperationException("凭据未初始化");
+            if (!VerifyPassword(file, currentPassword))
+                throw new InvalidOperationException("当前密码错误");
+
+            file.Username = newUsername;
+            file.MustChangePassword = false;
+            file.UpdatedAtUtc = DateTime.UtcNow;
+
+            await SaveAsync(file, cancellationToken);
+            _cached = file;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     private async Task SaveAsync(AdminCredentialFile file, CancellationToken cancellationToken)
     {
         var path = CredentialsFilePath;
@@ -144,6 +174,7 @@ public sealed class AdminCredentialStore
 
     private static AdminCredentialFile CreateCredentialFile(string username, string password, bool mustChangePassword, DateTime nowUtc)
     {
+        username = NormalizeUsername(username);
         var salt = RandomNumberGenerator.GetBytes(16);
         var iterations = 150_000;
         var hash = HashPassword(password, salt, iterations);
@@ -159,6 +190,21 @@ public sealed class AdminCredentialStore
             CreatedAtUtc = nowUtc,
             UpdatedAtUtc = nowUtc
         };
+    }
+
+    private static string NormalizeUsername(string? username)
+    {
+        username = (username ?? string.Empty).Trim();
+        if (username.Length < 4 || username.Length > 32)
+            throw new InvalidOperationException("后台用户名长度应为 4-32 位");
+        if (!username.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.'))
+            throw new InvalidOperationException("后台用户名只能包含字母、数字、下划线、短横线或点");
+        if (string.Equals(username, "admin", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(username, "administrator", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(username, "root", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("请不要使用常见后台用户名");
+
+        return username;
     }
 
     private static byte[] HashPassword(string password, byte[] salt, int iterations)

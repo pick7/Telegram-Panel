@@ -133,6 +133,7 @@ public static class PanelAdminApiEndpoints
         secured.MapPost("/settings/telegram-status", SaveTelegramStatusSettingsAsync);
         secured.MapPost("/settings/logging", SaveLoggingSettingsAsync);
         secured.MapPost("/settings/cache/clear", ClearCacheAsync);
+        secured.MapPost("/settings/username", ChangeAdminUsernameAsync);
         secured.MapPost("/settings/password", ChangeAdminPasswordAsync);
         secured.MapPost("/settings/password/verify", VerifyAdminPasswordAsync);
 
@@ -2059,6 +2060,28 @@ public static class PanelAdminApiEndpoints
     {
         await credentialStore.ChangePasswordAsync(request.CurrentPassword ?? "", request.NewPassword ?? "", cancellationToken);
         return Results.Ok(new OperationResultDto(true, "密码已修改"));
+    }
+
+    private static async Task<IResult> ChangeAdminUsernameAsync(
+        ChangeAdminUsernameRequestDto request,
+        HttpContext http,
+        AdminCredentialStore credentialStore,
+        CancellationToken cancellationToken)
+    {
+        await credentialStore.ChangeUsernameAsync(request.CurrentPassword ?? "", request.NewUsername ?? "", cancellationToken);
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.Name, credentialStore.Username),
+            new(ClaimTypes.Role, "Admin")
+        };
+        var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+        await http.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            new ClaimsPrincipal(identity),
+            new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30) });
+
+        return Results.Ok(new OperationResultDto(true, "后台用户名已修改"));
     }
 
     private static async Task<IResult> VerifyAdminPasswordAsync(VerifyAdminPasswordRequestDto request, AdminCredentialStore credentialStore, CancellationToken cancellationToken)
@@ -6261,6 +6284,7 @@ public sealed record LoggingSettingsDto(bool Enabled, string Level, int Retentio
 public sealed record TimeZoneSettingsDto(string TimeZoneId, string? EffectiveHint = null);
 public sealed record SystemInfoSettingsDto(string Version, string Runtime, string Database, string? EffectiveApiId);
 public sealed record ChangeAdminPasswordRequestDto(string? CurrentPassword, string? NewPassword);
+public sealed record ChangeAdminUsernameRequestDto(string? CurrentPassword, string? NewUsername);
 public sealed record VerifyAdminPasswordRequestDto(string? Password);
 
 public sealed record SaveExternalApiRequestDto(

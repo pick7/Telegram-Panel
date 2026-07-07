@@ -185,6 +185,7 @@ public sealed class AppSelfUpdateService
                     return AppSelfUpdateApplyResult.Failed("更新包结构无效：缺少 TelegramPanel.Web.dll");
 
                 PromoteCurrentDirectory(stageDir, currentDir, backupDir);
+                WriteSelfUpdateMarker(currentDir, check);
                 stageDir = string.Empty;
 
                 var restartDelaySeconds = options.RestartDelaySeconds;
@@ -308,6 +309,21 @@ public sealed class AppSelfUpdateService
 
             throw;
         }
+    }
+
+    private static void WriteSelfUpdateMarker(string currentDir, AppSelfUpdateInfo check)
+    {
+        var markerPath = Path.Combine(currentDir, ".telegram-panel-self-update");
+        var payload = new
+        {
+            version = check.LatestVersion,
+            tag = check.LatestTag,
+            asset = check.AssetName,
+            appliedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        File.WriteAllText(markerPath, json);
     }
 
     private static void TryDeleteDirectory(string path)

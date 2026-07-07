@@ -4,6 +4,7 @@ set -eu
 APP_ENTRY="TelegramPanel.Web.dll"
 DEFAULT_APP_DIR="/app"
 UPDATED_APP_DIR="/data/app-current"
+UPDATED_APP_MARKER="$UPDATED_APP_DIR/.telegram-panel-self-update"
 
 mkdir -p /data /data/sessions /data/logs
 if [ ! -f /data/appsettings.local.json ]; then
@@ -11,7 +12,7 @@ if [ ! -f /data/appsettings.local.json ]; then
 fi
 
 APP_DIR="$DEFAULT_APP_DIR"
-if [ -f "$UPDATED_APP_DIR/$APP_ENTRY" ]; then
+if [ -f "$UPDATED_APP_MARKER" ] && [ -f "$UPDATED_APP_DIR/$APP_ENTRY" ]; then
   APP_DIR="$UPDATED_APP_DIR"
 fi
 

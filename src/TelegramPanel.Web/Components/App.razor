@@ -1,4 +1,5 @@
 @inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment WebHostEnvironment
+@inject NavigationManager Navigation
 
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -33,8 +34,11 @@
         <button type="button" class="dismiss" onclick="this.parentElement.style.display='none'">关闭</button>
     </div>
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
-    <script src="_framework/blazor.web.js"></script>
     <script src="@VersionedAsset("app.js")"></script>
+    <script src="_framework/blazor.web.js" autostart="false"></script>
+    <script>
+        window.telegramPanel && window.telegramPanel.startBlazor && window.telegramPanel.startBlazor();
+    </script>
 </body>
 
 </html>
@@ -43,7 +47,19 @@
     private static readonly IComponentRenderMode PrerenderedServerRenderMode =
         new InteractiveServerRenderMode(prerender: true);
 
-    private IComponentRenderMode CurrentRenderMode => PrerenderedServerRenderMode;
+    private static readonly IComponentRenderMode NonPrerenderedServerRenderMode =
+        new InteractiveServerRenderMode(prerender: false);
+
+    private IComponentRenderMode CurrentRenderMode
+        => IsLegacyModulePage()
+            ? NonPrerenderedServerRenderMode
+            : PrerenderedServerRenderMode;
+
+    private bool IsLegacyModulePage()
+    {
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        return uri.AbsolutePath.StartsWith("/ext/", StringComparison.OrdinalIgnoreCase);
+    }
 
     private string VersionedAsset(string path)
     {

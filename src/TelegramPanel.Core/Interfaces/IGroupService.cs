@@ -28,6 +28,36 @@ public interface IGroupService
     Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId);
 
     /// <summary>
+    /// 邀请用户到群组。
+    /// </summary>
+    Task<InviteResult> InviteUserAsync(int accountId, long groupId, string username);
+
+    /// <summary>
+    /// 批量邀请用户到群组。
+    /// </summary>
+    Task<List<InviteResult>> BatchInviteUsersAsync(int accountId, long groupId, List<string> usernames, int delayMs = 2000);
+
+    /// <summary>
+    /// 设置群组管理员（超级群支持完整权限；基础群只支持是否管理员）。
+    /// </summary>
+    Task<bool> SetAdminAsync(int accountId, long groupId, string username, AdminRights rights, string title = "Admin");
+
+    /// <summary>
+    /// 批量设置群组管理员。
+    /// </summary>
+    Task<List<SetAdminResult>> BatchSetAdminsAsync(int accountId, long groupId, List<AdminRequest> requests);
+
+    /// <summary>
+    /// 从群组踢出用户（通过 username），可选是否永久封禁。
+    /// </summary>
+    Task<bool> KickUserAsync(int accountId, long groupId, string username, bool permanentBan = false);
+
+    /// <summary>
+    /// 从群组踢出用户（通过 userId），可选是否永久封禁。
+    /// </summary>
+    Task<bool> KickUserByUserIdAsync(int accountId, long groupId, long userId, bool permanentBan = false);
+
+    /// <summary>
     /// 退出群组。
     /// </summary>
     Task<bool> LeaveGroupAsync(int accountId, long groupId);

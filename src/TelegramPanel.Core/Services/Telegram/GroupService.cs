@@ -526,6 +526,269 @@ public class GroupService : IGroupService
         throw new InvalidOperationException($"群组 {groupId} not found");
     }
 
+    private async Task<ChatBase> GetGroupChatAsync(int accountId, Client client, long groupId, CancellationToken cancellationToken)
+    {
+        var dialogs = await ExecuteTelegramRequestAsync(
+            accountId,
+            "拉取频道/群组对话列表",
+            () => client.Messages_GetAllDialogs(),
+            cancellationToken,
+            resetClientOnTimeout: true);
+
+        var normalizedId = NormalizeGroupId(groupId);
+        var chat = dialogs.chats.Values.FirstOrDefault(x =>
+            x switch
+            {
+                Chat basicChat => basicChat.IsActive && basicChat.id == normalizedId,
+                Channel channel => channel.IsActive && !channel.IsChannel && channel.id == normalizedId,
+                _ => false
+            });
+
+        return chat ?? throw new InvalidOperationException($"群组 {groupId} not found");
+    }
+
+    private static long NormalizeGroupId(long groupId)
+    {
+        if (groupId <= -1000000000000L)
+            return (-groupId) - 1000000000000L;
+
+        return groupId > 0 ? groupId : Math.Abs(groupId);
+    }
+
+    private static AdminRights SanitizeGroupAdminRights(AdminRights rights)
+    {
+        var sanitized = rights & ~AdminRights.PostMessages & ~AdminRights.EditMessages;
+        return sanitized == AdminRights.None ? AdminRights.BasicAdmin & ~AdminRights.PostMessages & ~AdminRights.EditMessages : sanitized;
+    }
+
+    private static ChatBannedRights BuildKickRights(bool permanentBan)
+    {
+        var until = permanentBan ? DateTime.UtcNow.AddYears(100) : DateTime.UtcNow.AddSeconds(60);
+        return new ChatBannedRights
+        {
+            flags = ChatBannedRights.Flags.view_messages,
+            until_date = until
+        };
+    }
+
+    private static ChatAdminRights ConvertAdminRights(AdminRights rights)
+    {
+        ChatAdminRights.Flags flags = 0;
+
+        if (rights.HasFlag(AdminRights.ChangeInfo))
+            flags |= ChatAdminRights.Flags.change_info;
+        if (rights.HasFlag(AdminRights.PostMessages))
+            flags |= ChatAdminRights.Flags.post_messages;
+        if (rights.HasFlag(AdminRights.EditMessages))
+            flags |= ChatAdminRights.Flags.edit_messages;
+        if (rights.HasFlag(AdminRights.DeleteMessages))
+            flags |= ChatAdminRights.Flags.delete_messages;
+        if (rights.HasFlag(AdminRights.BanUsers))
+            flags |= ChatAdminRights.Flags.ban_users;
+        if (rights.HasFlag(AdminRights.InviteUsers))
+            flags |= ChatAdminRights.Flags.invite_users;
+        if (rights.HasFlag(AdminRights.PinMessages))
+            flags |= ChatAdminRights.Flags.pin_messages;
+        if (rights.HasFlag(AdminRights.ManageCall))
+            flags |= ChatAdminRights.Flags.manage_call;
+        if (rights.HasFlag(AdminRights.AddAdmins))
+            flags |= ChatAdminRights.Flags.add_admins;
+        if (rights.HasFlag(AdminRights.Anonymous))
+            flags |= ChatAdminRights.Flags.anonymous;
+        if (rights.HasFlag(AdminRights.ManageTopics))
+            flags |= ChatAdminRights.Flags.manage_topics;
+
+        return new ChatAdminRights { flags = flags };
+    }
+
+    public async Task<InviteResult> InviteUserAsync(int accountId, long groupId, string username)
+    {
+        username = (username ?? string.Empty).Trim().TrimStart('@');
+        if (string.IsNullOrWhiteSpace(username))
+            return new InviteResult(username, false, "请输入要邀请的用户名");
+
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        try
+        {
+            var chat = await GetGroupChatAsync(accountId, client, groupId, CancellationToken.None);
+            var resolved = await client.Contacts_ResolveUsername(username);
+            var inputUser = new InputUser(resolved.User.id, resolved.User.access_hash);
+
+            if (chat is Channel megaGroup)
+                await client.Channels_InviteToChannel(megaGroup, inputUser);
+            else if (chat is Chat basicGroup)
+                await client.Messages_AddChatUser(basicGroup.id, inputUser, fwd_limit: 0);
+            else
+                throw new InvalidOperationException("群组类型无效");
+
+            _logger.LogInformation("Successfully invited @{Username} to group {GroupId}", username, groupId);
+            return new InviteResult(username, true);
+        }
+        catch (RpcException ex)
+        {
+            _logger.LogWarning("Failed to invite @{Username} to group {GroupId}: {Error}", username, groupId, ex.Message);
+            if (ex.Message.Contains("USER_ALREADY_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+                return new InviteResult(username, true);
+            if (ex.Message.Contains("USER_BOT", StringComparison.OrdinalIgnoreCase))
+                return new InviteResult(username, false, "目标是 Bot：请用“设置管理员”把 Bot 加为管理员（不能用邀请成员）");
+            if (ex.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
+                return new InviteResult(username, false, "RIGHT_FORBIDDEN：执行账号缺少邀请权限，或该群组限制邀请");
+
+            return new InviteResult(username, false, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error inviting @{Username} to group {GroupId}", username, groupId);
+            return new InviteResult(username, false, ex.Message);
+        }
+    }
+
+    public async Task<List<InviteResult>> BatchInviteUsersAsync(int accountId, long groupId, List<string> usernames, int delayMs = 2000)
+    {
+        var results = new List<InviteResult>();
+        foreach (var username in usernames)
+        {
+            var result = await InviteUserAsync(accountId, groupId, username);
+            results.Add(result);
+
+            if (usernames.IndexOf(username) < usernames.Count - 1 && delayMs > 0)
+                await Task.Delay(delayMs + Random.Shared.Next(500, 1500));
+        }
+
+        return results;
+    }
+
+    public async Task<bool> SetAdminAsync(int accountId, long groupId, string username, AdminRights rights, string title = "Admin")
+    {
+        username = (username ?? string.Empty).Trim().TrimStart('@');
+        if (string.IsNullOrWhiteSpace(username))
+            throw new ArgumentException("请输入管理员用户名", nameof(username));
+
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var chat = await GetGroupChatAsync(accountId, client, groupId, CancellationToken.None);
+        var resolved = await client.Contacts_ResolveUsername(username);
+
+        if (chat is Chat basicGroup)
+        {
+            await client.Messages_EditChatAdmin(basicGroup.id, resolved.User, is_admin: true);
+            return true;
+        }
+
+        if (chat is not Channel megaGroup)
+            throw new InvalidOperationException("群组类型无效");
+
+        var effectiveRights = SanitizeGroupAdminRights(rights);
+        try
+        {
+            await client.Channels_EditAdmin(megaGroup, resolved.User, ConvertAdminRights(effectiveRights), string.IsNullOrWhiteSpace(title) ? "Admin" : title.Trim());
+        }
+        catch (RpcException ex) when (ex.Message.Contains("USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await client.Channels_InviteToChannel(megaGroup, new InputUser(resolved.User.id, resolved.User.access_hash));
+            }
+            catch (RpcException inviteEx) when (inviteEx.Message.Contains("USER_ALREADY_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+            {
+                // ignore
+            }
+            catch (RpcException inviteEx) when (inviteEx.Message.Contains("USER_BOT", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug(inviteEx, "Invite bot as member is not allowed for group {GroupId}, continue promoting", groupId);
+            }
+            catch (RpcException inviteEx) when (inviteEx.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("目标用户不在群组，且执行账号缺少“邀请用户”权限，无法先邀请再设置管理员。", inviteEx);
+            }
+
+            await client.Channels_EditAdmin(megaGroup, resolved.User, ConvertAdminRights(effectiveRights), string.IsNullOrWhiteSpace(title) ? "Admin" : title.Trim());
+        }
+        catch (RpcException ex) when (ex.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("RIGHT_FORBIDDEN：执行账号无权设置管理员，或请求授予的权限超出可授予范围。", ex);
+        }
+
+        _logger.LogInformation("Set @{Username} as admin in group {GroupId}", username, groupId);
+        return true;
+    }
+
+    public async Task<List<SetAdminResult>> BatchSetAdminsAsync(int accountId, long groupId, List<AdminRequest> requests)
+    {
+        var results = new List<SetAdminResult>();
+        foreach (var request in requests)
+        {
+            try
+            {
+                var ok = await SetAdminAsync(accountId, groupId, request.Username, request.Rights, request.Title);
+                results.Add(new SetAdminResult(request.Username, ok, ok ? null : "失败"));
+            }
+            catch (Exception ex)
+            {
+                results.Add(new SetAdminResult(request.Username, false, ex.Message));
+            }
+        }
+
+        return results;
+    }
+
+    public async Task<bool> KickUserAsync(int accountId, long groupId, string username, bool permanentBan = false)
+    {
+        username = (username ?? string.Empty).Trim().TrimStart('@');
+        if (string.IsNullOrWhiteSpace(username))
+            throw new ArgumentException("请输入要踢出的用户名", nameof(username));
+
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var chat = await GetGroupChatAsync(accountId, client, groupId, CancellationToken.None);
+        var resolved = await client.Contacts_ResolveUsername(username);
+        var inputUser = new InputUser(resolved.User.id, resolved.User.access_hash);
+
+        if (chat is Channel megaGroup)
+        {
+            await client.Channels_EditBanned(megaGroup, new InputPeerUser(resolved.User.id, resolved.User.access_hash), BuildKickRights(permanentBan));
+            return true;
+        }
+
+        if (chat is Chat basicGroup)
+        {
+            await client.Messages_DeleteChatUser(basicGroup.id, inputUser, revoke_history: permanentBan);
+            return true;
+        }
+
+        throw new InvalidOperationException("群组类型无效");
+    }
+
+    public async Task<bool> KickUserByUserIdAsync(int accountId, long groupId, long userId, bool permanentBan = false)
+    {
+        if (userId <= 0)
+            throw new ArgumentException("请输入要踢出的用户 ID", nameof(userId));
+
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var chat = await GetGroupChatAsync(accountId, client, groupId, CancellationToken.None);
+
+        try
+        {
+            if (chat is Channel megaGroup)
+            {
+                await client.Channels_EditBanned(megaGroup, new InputPeerUser(userId, 0), BuildKickRights(permanentBan));
+                return true;
+            }
+
+            if (chat is Chat basicGroup)
+            {
+                await client.Messages_DeleteChatUser(basicGroup.id, new InputUser(userId, 0), revoke_history: permanentBan);
+                return true;
+            }
+        }
+        catch (RpcException ex) when (
+            ex.Message.Contains("USER_ID_INVALID", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("该用户 ID 无法直接解析，请改用 @username 执行群组踢人。", ex);
+        }
+
+        throw new InvalidOperationException("群组类型无效");
+    }
+
     public async Task<bool> LeaveGroupAsync(int accountId, long groupId)
     {
         try

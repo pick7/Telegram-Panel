@@ -39,10 +39,10 @@
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item v-if="kind === 'channel'" :disabled="selectedIds.length === 0" @click="openChannelInvite(selectedIds)">批量邀请（已选）</el-dropdown-item>
+              <el-dropdown-item :disabled="selectedIds.length === 0" @click="openChatInvite(selectedIds)">批量邀请（已选）</el-dropdown-item>
               <el-dropdown-item :disabled="selectedIds.length === 0" @click="batchCopyLinks">批量复制{{ linkName }}（已选）</el-dropdown-item>
               <el-dropdown-item :disabled="selectedIds.length === 0" @click="batchExportInvites">批量导出{{ linkName }}（已选）</el-dropdown-item>
-              <el-dropdown-item v-if="kind === 'channel'" :disabled="selectedIds.length === 0" @click="openChannelAdmins(selectedIds)">批量设置管理员（已选）</el-dropdown-item>
+              <el-dropdown-item :disabled="selectedIds.length === 0" @click="openChatAdmins(selectedIds)">批量设置管理员（已选）</el-dropdown-item>
               <el-dropdown-item :disabled="selectedIds.length === 0" @click="openBatchCategory">批量修改分类（已选）</el-dropdown-item>
               <el-dropdown-item divided :disabled="selectedIds.length === 0" @click="batchLeave">批量退出{{ kindName }}（已选）</el-dropdown-item>
               <el-dropdown-item :disabled="selectedIds.length === 0" @click="batchDisband">批量解散{{ kindName }}（已选）</el-dropdown-item>
@@ -103,7 +103,7 @@
               <el-tooltip v-if="!isCompactList" content="查看详情" placement="top">
                 <el-button link type="primary" :icon="View" @click="showDetails(row)" />
               </el-tooltip>
-              <el-tooltip v-if="!isCompactList && kind === 'channel'" content="编辑频道" placement="top">
+              <el-tooltip v-if="!isCompactList" :content="`编辑${kindName}`" placement="top">
                 <el-button link type="primary" :icon="Edit" @click="openEdit(row)" />
               </el-tooltip>
               <el-dropdown>
@@ -111,10 +111,11 @@
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item v-if="isCompactList" :icon="View" @click="showDetails(row)">查看详情</el-dropdown-item>
-                    <el-dropdown-item v-if="isCompactList && kind === 'channel'" :icon="Edit" @click="openEdit(row)">编辑频道</el-dropdown-item>
-                    <el-dropdown-item v-if="kind === 'channel'" @click="openChannelInvite([row.id])">邀请成员</el-dropdown-item>
-                    <el-dropdown-item v-if="kind === 'channel'" @click="openChannelAdmins([row.id])">设置管理员</el-dropdown-item>
-                    <el-dropdown-item v-if="kind === 'channel'" @click="openChannelKick([row.id])">踢人</el-dropdown-item>
+                    <el-dropdown-item v-if="isCompactList" :icon="Edit" @click="openEdit(row)">编辑{{ kindName }}</el-dropdown-item>
+                    <el-dropdown-item @click="openChatInvite([row.id])">邀请成员</el-dropdown-item>
+                    <el-dropdown-item @click="openChatAdmins([row.id])">设置管理员</el-dropdown-item>
+                    <el-dropdown-item @click="openChatKick([row.id])">踢人</el-dropdown-item>
+                    <el-dropdown-item @click="openSingleCategory(row)">修改分类</el-dropdown-item>
                     <el-dropdown-item @click="showSystemAccounts(row)">本系统账号</el-dropdown-item>
                     <el-dropdown-item @click="copyLink(row)">复制链接</el-dropdown-item>
                     <el-dropdown-item divided @click="openTransferOwner(row)">转让所有权</el-dropdown-item>
@@ -197,7 +198,7 @@
         </el-table-column>
       </el-table>
 
-      <template v-if="kind === 'channel'">
+      <template>
         <el-divider content-position="left">踢出成员</el-divider>
         <el-alert class="mb-3" type="info" :closable="false" show-icon>
           <template #title>输入 @用户名 或用户 ID 执行踢出；非永久会用短时间封禁达到踢出效果，随后自动解除。</template>
@@ -205,7 +206,7 @@
         <el-form label-position="top">
           <el-form-item label="执行账号">
             <el-select v-model="detail.kickAccountId" class="full">
-              <el-option label="自动选择（按频道）" :value="0" />
+              <el-option :label="`自动选择（按${kindName}）`" :value="0" />
               <el-option v-for="account in accounts" :key="account.id" :label="accountLabel(account)" :value="account.id" />
             </el-select>
           </el-form-item>
@@ -219,7 +220,7 @@
       </template>
       <template #footer>
         <el-button v-if="detail.row" @click="copyLink(detail.row)">复制链接</el-button>
-        <el-button v-if="detail.row && kind === 'channel'" type="primary" plain @click="openEditFromDetail">编辑{{ kindName }}</el-button>
+        <el-button v-if="detail.row" type="primary" plain @click="openEditFromDetail">编辑{{ kindName }}</el-button>
         <el-button @click="detail.visible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -365,7 +366,7 @@
     <el-dialog v-model="channelInvite.visible" title="邀请成员" width="560px">
       <el-form label-position="top">
         <el-alert
-          title="将使用执行账号邀请用户加入所选频道；自动选择时按频道创建账号执行。"
+          :title="`将使用执行账号邀请用户加入所选${kindName}；自动选择时按${kindName}创建账号执行。`"
           type="warning"
           :closable="false"
           show-icon
@@ -380,7 +381,7 @@
         </div>
         <el-form-item label="执行账号">
           <el-select v-model="channelInvite.accountId" class="full">
-            <el-option label="每个频道创建账号（默认）" :value="0" />
+            <el-option :label="`每个${kindName}创建账号（默认）`" :value="0" />
             <el-option v-for="account in accounts" :key="account.id" :label="accountLabel(account)" :value="account.id" />
           </el-select>
         </el-form-item>
@@ -394,7 +395,7 @@
         <el-form-item label="邀请间隔（毫秒）">
           <el-input-number v-model="channelInvite.delayMs" :min="0" :max="30000" :step="500" />
         </el-form-item>
-        <div class="muted">目标频道：{{ channelInvite.ids.length }} 个</div>
+        <div class="muted">目标{{ kindName }}：{{ channelInvite.ids.length }} 个</div>
       </el-form>
       <template #footer>
         <el-button :disabled="channelInvite.running" @click="channelInvite.visible = false">取消</el-button>
@@ -405,7 +406,7 @@
     <el-dialog v-model="channelAdmins.visible" title="设置管理员" width="640px">
       <el-form label-position="top">
         <el-alert
-          title="将使用执行账号为所选频道批量设置管理员；自动选择时按频道创建账号执行。"
+          :title="`将使用执行账号为所选${kindName}批量设置管理员；自动选择时按${kindName}创建账号执行。`"
           type="warning"
           :closable="false"
           show-icon
@@ -420,7 +421,7 @@
         </div>
         <el-form-item label="执行账号">
           <el-select v-model="channelAdmins.accountId" class="full">
-            <el-option label="每个频道创建账号（默认）" :value="0" />
+            <el-option :label="`每个${kindName}创建账号（默认）`" :value="0" />
             <el-option v-for="account in accounts" :key="account.id" :label="accountLabel(account)" :value="account.id" />
           </el-select>
         </el-form-item>
@@ -456,7 +457,7 @@
         <el-form-item label="操作间隔（毫秒）">
           <el-input-number v-model="channelAdmins.delayMs" :min="0" :max="30000" :step="500" />
         </el-form-item>
-        <div class="muted">目标频道：{{ channelAdmins.ids.length }} 个</div>
+        <div class="muted">目标{{ kindName }}：{{ channelAdmins.ids.length }} 个</div>
       </el-form>
       <template #footer>
         <el-button :disabled="channelAdmins.running" @click="channelAdmins.visible = false">取消</el-button>
@@ -468,7 +469,7 @@
       <el-form label-position="top">
         <el-form-item label="执行账号">
           <el-select v-model="channelKick.accountId" class="full">
-            <el-option label="自动选择（按频道）" :value="0" />
+            <el-option :label="`自动选择（按${kindName}）`" :value="0" />
             <el-option v-for="account in accounts" :key="account.id" :label="accountLabel(account)" :value="account.id" />
           </el-select>
         </el-form-item>
@@ -476,7 +477,7 @@
           <el-input v-model="channelKick.target" placeholder="@username、username 或数字用户 ID" />
         </el-form-item>
         <el-checkbox v-model="channelKick.permanentBan">封禁（不只是踢出）</el-checkbox>
-        <div class="muted mt-2">目标频道：{{ channelKick.ids.length }} 个</div>
+        <div class="muted mt-2">目标{{ kindName }}：{{ channelKick.ids.length }} 个</div>
       </el-form>
       <template #footer>
         <el-button :disabled="channelKick.running" @click="channelKick.visible = false">取消</el-button>
@@ -640,9 +641,7 @@ const transferExecutorLabel = computed(() => {
 async function loadMeta() {
   accounts.value = await panelApi.operationAccounts()
   categories.value = props.kind === 'channel' ? await panelApi.channelGroups() : await panelApi.groupCategories()
-  if (props.kind === 'channel') {
-    await Promise.all([loadChannelPresets(), loadChannelAdminDefaults()])
-  }
+  await Promise.all([loadChannelPresets(), loadChannelAdminDefaults()])
 }
 
 async function load() {
@@ -901,19 +900,22 @@ function openEditFromDetail() {
 }
 
 async function kickFromDetail() {
-  if (!detail.row || props.kind !== 'channel') return
+  if (!detail.row) return
   if (!detail.kickTarget.trim()) {
     ElMessage.warning('请填写用户名或用户 ID')
     return
   }
   detail.kickLoading = true
   try {
-    const result = await panelApi.batchKickChannelUsers({
+    const payload = {
       ids: [detail.row.id],
       target: detail.kickTarget.trim(),
       accountId: detail.kickAccountId || null,
       permanentBan: detail.kickPermanent,
-    })
+    }
+    const result = props.kind === 'channel'
+      ? await panelApi.batchKickChannelUsers(payload)
+      : await panelApi.batchKickGroupUsers(payload)
     detail.kickTarget = ''
     showBatchResult(detail.kickPermanent ? '封禁完成' : '踢出完成', result)
   } finally {
@@ -1220,7 +1222,7 @@ async function deleteAdminPreset() {
   ElMessage.success('已删除预设')
 }
 
-function openChannelInvite(ids: number[]) {
+function openChatInvite(ids: number[]) {
   channelInvite.ids = ids
   channelInvite.accountId = filters.accountId > 0 ? filters.accountId : 0
   channelInvite.presetName = ''
@@ -1238,12 +1240,15 @@ async function submitChannelInvite() {
   }
   channelInvite.running = true
   try {
-    const result = await panelApi.batchInviteChannels({
+    const payload = {
       ids: channelInvite.ids,
       usernames,
       accountId: channelInvite.accountId || null,
       delayMs: channelInvite.delayMs,
-    })
+    }
+    const result = props.kind === 'channel'
+      ? await panelApi.batchInviteChannels(payload)
+      : await panelApi.batchInviteGroups(payload)
     channelInvite.visible = false
     showBatchResult('邀请完成', result)
   } finally {
@@ -1251,7 +1256,7 @@ async function submitChannelInvite() {
   }
 }
 
-function openChannelAdmins(ids: number[]) {
+function openChatAdmins(ids: number[]) {
   channelAdmins.ids = ids
   channelAdmins.accountId = filters.accountId > 0 ? filters.accountId : 0
   channelAdmins.presetName = ''
@@ -1320,14 +1325,17 @@ async function submitChannelAdmins() {
   }
   channelAdmins.running = true
   try {
-    const result = await panelApi.batchSetChannelAdmins({
+    const payload = {
       ids: channelAdmins.ids,
       usernames,
       accountId: channelAdmins.accountId || null,
       rights: channelAdminRightsValue(),
       adminTitle: channelAdmins.adminTitle.trim() || 'Admin',
       delayMs: channelAdmins.delayMs,
-    })
+    }
+    const result = props.kind === 'channel'
+      ? await panelApi.batchSetChannelAdmins(payload)
+      : await panelApi.batchSetGroupAdmins(payload)
     channelAdmins.visible = false
     showBatchResult('设置管理员完成', result)
   } finally {
@@ -1335,7 +1343,7 @@ async function submitChannelAdmins() {
   }
 }
 
-function openChannelKick(ids: number[]) {
+function openChatKick(ids: number[]) {
   channelKick.ids = ids
   channelKick.accountId = filters.accountId > 0 ? filters.accountId : 0
   channelKick.target = ''
@@ -1350,12 +1358,15 @@ async function submitChannelKick() {
   }
   channelKick.running = true
   try {
-    const result = await panelApi.batchKickChannelUsers({
+    const payload = {
       ids: channelKick.ids,
       target: channelKick.target.trim(),
       accountId: channelKick.accountId || null,
       permanentBan: channelKick.permanentBan,
-    })
+    }
+    const result = props.kind === 'channel'
+      ? await panelApi.batchKickChannelUsers(payload)
+      : await panelApi.batchKickGroupUsers(payload)
     channelKick.visible = false
     showBatchResult(channelKick.permanentBan ? '封禁完成' : '踢出完成', result)
   } finally {

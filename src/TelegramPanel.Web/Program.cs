@@ -822,15 +822,21 @@ var redirectLegacyToVue = string.Equals(
     app.Configuration["PanelSpa:RedirectLegacy"] ?? "true",
     "true",
     StringComparison.OrdinalIgnoreCase);
+var moduleContributions = app.Services.GetRequiredService<ModuleContributionRegistry>();
 
-// 已复刻的后台页面默认交给 Vue；扩展模块页面由模块系统动态贡献，不在宿主硬编码。
-// 公开模块端点仍保留给模块自己处理，例如 /ext/otp/{token} 和 /ext/otp/api/wait。
+// 已复刻的后台页面默认交给 Vue；后台模块页面也默认进入 Vue 宿主。
+// 只有显式 legacy=1 才打开旧 Razor/Blazor 兼容页，公开模块端点仍由模块自己处理。
 app.Use(async (context, next) =>
 {
     var requestPath = context.Request.Path.Value ?? string.Empty;
     var normalizedRequestPath = requestPath.Length > 1 ? requestPath.TrimEnd('/') : requestPath;
     var hasLegacyTarget = legacyUiRedirects.TryGetValue(normalizedRequestPath, out var legacyTarget);
     var vueTarget = hasLegacyTarget ? legacyTarget : null;
+    if (vueTarget == null
+        && TryResolveExtensionModuleVueRoute(normalizedRequestPath, moduleContributions, out var extensionVueTarget))
+    {
+        vueTarget = extensionVueTarget;
+    }
 
     if (redirectLegacyToVue
         && Directory.Exists(spaRoot)
@@ -844,6 +850,29 @@ app.Use(async (context, next) =>
 
     await next();
 });
+
+static bool TryResolveExtensionModuleVueRoute(
+    string normalizedRequestPath,
+    ModuleContributionRegistry contributions,
+    out string vueTarget)
+{
+    vueTarget = string.Empty;
+    var parts = normalizedRequestPath
+        .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length != 3 || !string.Equals(parts[0], "ext", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    var moduleId = Uri.UnescapeDataString(parts[1]);
+    var pageKey = Uri.UnescapeDataString(parts[2]);
+    var matched = contributions.Pages.Any(page =>
+        string.Equals(page.Module.Id, moduleId, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(page.Definition.Key, pageKey, StringComparison.OrdinalIgnoreCase));
+    if (!matched)
+        return false;
+
+    vueTarget = $"/ui/ext/{Uri.EscapeDataString(moduleId)}/{Uri.EscapeDataString(pageKey)}";
+    return true;
+}
 
 app.UseRouting();
 

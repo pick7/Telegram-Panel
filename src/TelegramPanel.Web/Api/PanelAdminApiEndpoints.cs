@@ -170,6 +170,9 @@ public static class PanelAdminApiEndpoints
         secured.MapDelete("/groups/{id:int}", DeleteGroupAsync);
         secured.MapPost("/groups/batch/category", BatchSetGroupCategoryAsync);
         secured.MapPost("/groups/batch/delete", BatchDeleteGroupsAsync);
+        secured.MapPost("/groups/batch/invite", BatchInviteGroupsAsync);
+        secured.MapPost("/groups/batch/admins", BatchSetGroupAdminsAsync);
+        secured.MapPost("/groups/batch/kick", BatchKickGroupUsersAsync);
         secured.MapPost("/groups/sync", SyncGroupsAsync);
         secured.MapPost("/groups/{id:int}/export-link", ExportGroupLinkAsync);
         secured.MapPost("/groups/{id:int}/leave", LeaveGroupAsync);
@@ -2657,6 +2660,185 @@ public static class PanelAdminApiEndpoints
             catch (Exception ex)
             {
                 results.Add(new AccountOperationItemDto(id, channel.Title, false, "踢出失败", ex.Message));
+            }
+        }
+
+        return Results.Ok(new AccountBatchOperationResultDto(results.Count(x => x.Success), results.Count(x => !x.Success), results));
+    }
+
+    private static async Task<IResult> BatchInviteGroupsAsync(
+        ChannelUserBatchRequestDto request,
+        GroupManagementService groupManagement,
+        IGroupService groupService,
+        CancellationToken cancellationToken)
+    {
+        var ids = NormalizeIds(request.Ids);
+        var usernames = NormalizeUsernames(request.Usernames);
+        if (ids.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "请先选择群组"));
+        if (usernames.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "请填写用户名"));
+
+        var delayMs = Math.Clamp(request.DelayMs ?? 2000, 0, 30000);
+        var results = new List<AccountOperationItemDto>();
+        foreach (var id in ids)
+        {
+            var group = await groupManagement.GetGroupAsync(id);
+            if (group == null)
+            {
+                results.Add(new AccountOperationItemDto(id, null, false, "邀请失败", "群组不存在"));
+                continue;
+            }
+
+            var accountId = request.AccountId is > 0 ? request.AccountId : await groupManagement.ResolveExecuteAccountIdAsync(group);
+            if (accountId is not > 0)
+            {
+                results.Add(new AccountOperationItemDto(id, group.Title, false, "邀请失败", "该群组暂无可用执行账号"));
+                continue;
+            }
+
+            var success = 0;
+            var failures = new List<string>();
+            foreach (var username in usernames)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var result = await groupService.InviteUserAsync(accountId.Value, group.TelegramId, username);
+                    if (result.Success)
+                        success++;
+                    else
+                        failures.Add($"{username}: {result.Error ?? "失败"}");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{username}: {ex.Message}");
+                }
+
+                if (delayMs > 0)
+                    await Task.Delay(delayMs, cancellationToken);
+            }
+
+            var ok = failures.Count == 0;
+            results.Add(new AccountOperationItemDto(
+                id,
+                group.Title,
+                ok,
+                $"邀请成功 {success}/{usernames.Count}",
+                ok ? null : string.Join("；", failures.Take(10))));
+        }
+
+        return Results.Ok(new AccountBatchOperationResultDto(results.Count(x => x.Success), results.Count(x => !x.Success), results));
+    }
+
+    private static async Task<IResult> BatchSetGroupAdminsAsync(
+        ChannelAdminBatchRequestDto request,
+        GroupManagementService groupManagement,
+        IGroupService groupService,
+        CancellationToken cancellationToken)
+    {
+        var ids = NormalizeIds(request.Ids);
+        var usernames = NormalizeUsernames(request.Usernames);
+        if (ids.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "请先选择群组"));
+        if (usernames.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "请填写用户名"));
+
+        var rights = request.Rights > 0 ? (AdminRights)request.Rights : AdminRights.BasicAdmin;
+        var title = string.IsNullOrWhiteSpace(request.AdminTitle) ? "Admin" : request.AdminTitle.Trim();
+        var delayMs = Math.Clamp(request.DelayMs ?? 1500, 0, 30000);
+        var results = new List<AccountOperationItemDto>();
+        foreach (var id in ids)
+        {
+            var group = await groupManagement.GetGroupAsync(id);
+            if (group == null)
+            {
+                results.Add(new AccountOperationItemDto(id, null, false, "设置失败", "群组不存在"));
+                continue;
+            }
+
+            var accountId = request.AccountId is > 0 ? request.AccountId : await groupManagement.ResolveExecuteAccountIdAsync(group);
+            if (accountId is not > 0)
+            {
+                results.Add(new AccountOperationItemDto(id, group.Title, false, "设置失败", "该群组暂无可用执行账号"));
+                continue;
+            }
+
+            var success = 0;
+            var failures = new List<string>();
+            foreach (var username in usernames)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var ok = await groupService.SetAdminAsync(accountId.Value, group.TelegramId, username, rights, title);
+                    if (ok)
+                        success++;
+                    else
+                        failures.Add($"{username}: 失败");
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{username}: {ex.Message}");
+                }
+
+                if (delayMs > 0)
+                    await Task.Delay(delayMs, cancellationToken);
+            }
+
+            var okAll = failures.Count == 0;
+            results.Add(new AccountOperationItemDto(
+                id,
+                group.Title,
+                okAll,
+                $"设置成功 {success}/{usernames.Count}",
+                okAll ? null : string.Join("；", failures.Take(10))));
+        }
+
+        return Results.Ok(new AccountBatchOperationResultDto(results.Count(x => x.Success), results.Count(x => !x.Success), results));
+    }
+
+    private static async Task<IResult> BatchKickGroupUsersAsync(
+        ChannelKickBatchRequestDto request,
+        GroupManagementService groupManagement,
+        IGroupService groupService,
+        CancellationToken cancellationToken)
+    {
+        var ids = NormalizeIds(request.Ids);
+        var (userId, username) = ParseUserTarget(request.Target);
+        if (ids.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "请先选择群组"));
+        if (userId == null && string.IsNullOrWhiteSpace(username))
+            return Results.BadRequest(new OperationResultDto(false, "请填写用户名或用户 ID"));
+
+        var results = new List<AccountOperationItemDto>();
+        foreach (var id in ids)
+        {
+            var group = await groupManagement.GetGroupAsync(id);
+            if (group == null)
+            {
+                results.Add(new AccountOperationItemDto(id, null, false, "踢出失败", "群组不存在"));
+                continue;
+            }
+
+            var accountId = request.AccountId is > 0 ? request.AccountId : await groupManagement.ResolveExecuteAccountIdAsync(group);
+            if (accountId is not > 0)
+            {
+                results.Add(new AccountOperationItemDto(id, group.Title, false, "踢出失败", "该群组暂无可用执行账号"));
+                continue;
+            }
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var ok = userId.HasValue
+                    ? await groupService.KickUserByUserIdAsync(accountId.Value, group.TelegramId, userId.Value, request.PermanentBan)
+                    : await groupService.KickUserAsync(accountId.Value, group.TelegramId, username!, request.PermanentBan);
+                results.Add(new AccountOperationItemDto(id, group.Title, ok, ok ? "已踢出" : "踢出失败", ok ? null : "操作返回失败"));
+            }
+            catch (Exception ex)
+            {
+                results.Add(new AccountOperationItemDto(id, group.Title, false, "踢出失败", ex.Message));
             }
         }
 

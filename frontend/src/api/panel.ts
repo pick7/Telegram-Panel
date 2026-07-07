@@ -417,6 +417,18 @@ export const panelApi = {
     api.post<OperationResult>('/groups/batch/category', { ids, categoryId }).then((r) => r.data),
   batchDeleteGroups: (ids: number[]) =>
     api.post<OperationResult>('/groups/batch/delete', { ids }).then((r) => r.data),
+  batchInviteGroups: (payload: { ids: number[]; usernames: string[]; accountId?: number | null; delayMs?: number | null }) =>
+    api.post<AccountBatchOperationResult>('/groups/batch/invite', payload, { timeout: 300_000 }).then((r) => r.data),
+  batchSetGroupAdmins: (payload: {
+    ids: number[]
+    usernames: string[]
+    accountId?: number | null
+    rights: number
+    adminTitle?: string | null
+    delayMs?: number | null
+  }) => api.post<AccountBatchOperationResult>('/groups/batch/admins', payload, { timeout: 300_000 }).then((r) => r.data),
+  batchKickGroupUsers: (payload: { ids: number[]; target: string; accountId?: number | null; permanentBan: boolean }) =>
+    api.post<AccountBatchOperationResult>('/groups/batch/kick', payload, { timeout: 300_000 }).then((r) => r.data),
   syncGroups: (accountId?: number | null) =>
     api.post<SyncResult>('/groups/sync', { accountId: accountId || null }, { timeout: 120_000 }).then((r) => r.data),
   exportGroupLink: (id: number) =>

@@ -30,6 +30,9 @@ public class GroupCategoryManagementService
         return await _categoryRepository.GetByNameAsync(name);
     }
 
+    public Task<bool> IsNameTakenAsync(string name, int? excludingId = null, CancellationToken cancellationToken = default) =>
+        _categoryRepository.NameExistsAsync(name, excludingId, cancellationToken);
+
     public async Task<GroupCategory> CreateCategoryAsync(GroupCategory category)
     {
         return await _categoryRepository.AddAsync(category);

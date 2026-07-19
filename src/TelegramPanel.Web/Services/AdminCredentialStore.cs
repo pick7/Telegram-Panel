@@ -52,8 +52,8 @@ public sealed class AdminCredentialStore
             }
 
             var opt = _options.CurrentValue;
-            var initialUsername = (opt.InitialUsername ?? "admin").Trim();
-            var initialPassword = (opt.InitialPassword ?? "admin123").Trim();
+            var initialUsername = (opt.InitialUsername ?? "tgpanel").Trim();
+            var initialPassword = (opt.InitialPassword ?? "tgpanel123").Trim();
             if (string.IsNullOrWhiteSpace(initialUsername) || string.IsNullOrWhiteSpace(initialPassword))
                 throw new InvalidOperationException("AdminAuth 初始账号/密码未配置");
 
@@ -119,11 +119,12 @@ public sealed class AdminCredentialStore
                 throw new InvalidOperationException("当前密码错误");
 
             var now = DateTime.UtcNow;
-            var updated = CreateCredentialFile(file.Username, newPassword, mustChangePassword: false, now);
-            updated.CreatedAtUtc = file.CreatedAtUtc;
+            ApplyPassword(file, newPassword);
+            file.MustChangePassword = false;
+            file.UpdatedAtUtc = now;
 
-            await SaveAsync(updated, cancellationToken);
-            _cached = updated;
+            await SaveAsync(file, cancellationToken);
+            _cached = file;
         }
         finally
         {
@@ -175,21 +176,25 @@ public sealed class AdminCredentialStore
     private static AdminCredentialFile CreateCredentialFile(string username, string password, bool mustChangePassword, DateTime nowUtc)
     {
         username = NormalizeUsername(username);
-        var salt = RandomNumberGenerator.GetBytes(16);
-        var iterations = 150_000;
-        var hash = HashPassword(password, salt, iterations);
-
-        return new AdminCredentialFile
+        var file = new AdminCredentialFile
         {
             Version = 1,
             Username = username,
-            SaltBase64 = Convert.ToBase64String(salt),
-            HashBase64 = Convert.ToBase64String(hash),
-            Iterations = iterations,
             MustChangePassword = mustChangePassword,
             CreatedAtUtc = nowUtc,
             UpdatedAtUtc = nowUtc
         };
+        ApplyPassword(file, password);
+        return file;
+    }
+
+    private static void ApplyPassword(AdminCredentialFile file, string password)
+    {
+        var salt = RandomNumberGenerator.GetBytes(16);
+        const int iterations = 150_000;
+        file.SaltBase64 = Convert.ToBase64String(salt);
+        file.HashBase64 = Convert.ToBase64String(HashPassword(password, salt, iterations));
+        file.Iterations = iterations;
     }
 
     private static string NormalizeUsername(string? username)

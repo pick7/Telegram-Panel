@@ -8,4 +8,5 @@ namespace TelegramPanel.Data.Repositories;
 public interface IChannelGroupRepository : IRepository<ChannelGroup>
 {
     Task<ChannelGroup?> GetByNameAsync(string name);
+    Task<bool> NameExistsAsync(string name, int? excludingId = null, CancellationToken cancellationToken = default);
 }

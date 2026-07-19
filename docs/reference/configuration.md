@@ -48,6 +48,9 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 
 - `ConnectionStrings__DefaultConnection`：SQLite 路径（默认 `/data/telegram-panel.db`）
 - `Telegram__SessionsPath`：session 目录（默认 `/data/sessions`）
+- `Telegram__Proxy__Server` / `Telegram__Proxy__Port`：Telegram 全局代理地址和端口
+- `Telegram__Proxy__Username` / `Telegram__Proxy__Password`：SOCKS5 代理认证（可选）
+- `Telegram__Proxy__Secret`：MTProxy Secret（可选；与用户名/密码二选一）
 - `AdminAuth__CredentialsPath`：后台密码文件（默认 `/data/admin_auth.json`）
 - `Sync__AutoSyncEnabled`：账号创建的频道/群组自动同步（默认关闭）
 - `Telegram__BotAutoSyncEnabled`：Bot 频道自动同步（默认关闭）
@@ -63,6 +66,29 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `ChannelAdminDefaults:Rights`：批量设置管理员的“默认权限”
 - `ChannelAdminPresets:Presets`：批量设置管理员的“用户名列表预设”（名称 -> usernames）
 - `ChannelInvitePresets:Presets`：批量邀请成员的“用户名列表预设”（名称 -> usernames）
+
+## Telegram 全局代理
+
+在 `appsettings.local.json` 中配置后重启主程序，所有新建或重新连接的 Telegram 客户端都会使用该代理：
+
+```json
+{
+  "Telegram": {
+    "Proxy": {
+      "Server": "127.0.0.1",
+      "Port": 40000,
+      "Username": "",
+      "Password": "",
+      "Secret": ""
+    }
+  }
+}
+```
+
+- 普通 SOCKS5 代理按需填写 `Username`、`Password`。
+- MTProxy 填写 `Secret`，不需要用户名和密码。
+- Docker 部署的配置文件位于宿主机 `docker-data/appsettings.local.json`。容器内的 `127.0.0.1` 指向容器自身；访问宿主机代理时应使用容器可访问的宿主机地址（Docker Desktop 通常可用 `host.docker.internal`），并确保代理监听地址和防火墙允许容器连接。
+- 修改配置后必须重启主程序，以释放已缓存的 Telegram 客户端并按新代理重新连接。
 
 ## Bot 启用/停用（每个 Bot）
 

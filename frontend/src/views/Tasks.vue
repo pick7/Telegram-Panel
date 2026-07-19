@@ -722,7 +722,8 @@ function goCreateTarget() {
   createDialog.value.visible = false
   moduleWindow.value.visible = false
   if (isModuleEndpointRoute(currentCreateTarget.value)) {
-    window.location.href = currentCreateTarget.value
+    // “前往页面”是显式打开模块原生页，必须绕过宿主的默认 Vue 重定向。
+    window.location.href = withModulePageMode(currentCreateTarget.value, false)
     return
   }
   router.push(currentCreateTarget.value)
@@ -732,7 +733,7 @@ function openCreateTargetWindow() {
   if (!currentCreateTarget.value) return
   const separator = currentCreateTarget.value.includes('?') ? '&' : '?'
   const src = isModuleEndpointRoute(currentCreateTarget.value)
-    ? `${currentCreateTarget.value}${separator}embed=1`
+    ? withModulePageMode(currentCreateTarget.value, true)
     : router.resolve(`${currentCreateTarget.value}${separator}embed=1`).href
   moduleWindow.value = {
     visible: true,
@@ -743,6 +744,11 @@ function openCreateTargetWindow() {
 
 function isModuleEndpointRoute(route: string) {
   return route.startsWith('/ext/')
+}
+
+function withModulePageMode(route: string, embedded: boolean) {
+  const separator = route.includes('?') ? '&' : '?'
+  return `${route}${separator}legacy=1${embedded ? '&embed=1' : ''}`
 }
 
 function defaultTotalForTask(taskType: string) {

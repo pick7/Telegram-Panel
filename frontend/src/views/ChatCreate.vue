@@ -50,6 +50,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { panelApi } from '@/api/panel'
+import { extractApiErrorMessage } from '@/api/client'
 import { showRiskWarning } from '@/utils/riskWarning'
 import type { OperationAccount, SimpleCategory } from '@/api/types'
 
@@ -106,29 +107,29 @@ async function submit(ignoreRiskWarning = false) {
       ignoreRiskWarning,
     }
     if (kind.value === 'channel') {
-      await panelApi.createChannel({
+      const result = await panelApi.createChannel({
         ...payload,
         groupId: form.categoryId || null,
         allowForwarding: form.allowForwarding,
       })
-      ElMessage.success('频道创建成功')
+      if (result.warning) ElMessage.warning(result.warning)
+      else ElMessage.success('频道创建成功')
       router.push('/channels')
     } else {
-      await panelApi.createGroup({
+      const result = await panelApi.createGroup({
         ...payload,
         categoryId: form.categoryId || null,
       })
-      ElMessage.success('群组创建成功')
+      if (result.warning) ElMessage.warning(result.warning)
+      else ElMessage.success('群组创建成功')
       router.push('/groups')
     }
   } catch (error: any) {
-    const message = error?.response?.data?.message || ''
+    const message = extractApiErrorMessage(error?.response?.data)
     if (!ignoreRiskWarning && message.includes('24 小时')) {
       const action = await showRiskWarning({ title: '风控警告', message })
       if (action === 'continue') await submit(true)
-    } else if (message) {
-      ElMessage.error(message)
-    } else {
+    } else if (!message) {
       ElMessage.error(error?.message || `创建${kindName.value}失败`)
     }
   } finally {

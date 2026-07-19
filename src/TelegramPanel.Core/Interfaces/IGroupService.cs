@@ -18,6 +18,11 @@ public interface IGroupService
     Task<GroupInfo> CreateGroupAsync(int accountId, string title, string about, bool isPublic = false, string? username = null);
 
     /// <summary>
+    /// 仅创建私密超级群组，不执行公开用户名等附加配置。
+    /// </summary>
+    Task<GroupInfo> CreatePrivateGroupAsync(int accountId, string title, string about);
+
+    /// <summary>
     /// 获取账号当前可见的全部群组（创建者/管理员/普通成员）
     /// </summary>
     Task<List<GroupInfo>> GetVisibleGroupsAsync(int accountId, CancellationToken cancellationToken = default);

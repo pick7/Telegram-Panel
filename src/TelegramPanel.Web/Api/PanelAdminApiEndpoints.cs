@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using TelegramPanel.Web.ExternalApi;
@@ -2230,7 +2231,9 @@ public static class PanelAdminApiEndpoints
         IChannelService channelService,
         AccountManagementService accountManagement,
         AccountRiskService riskService,
-        ChannelManagementService channelManagement)
+        ChannelManagementService channelManagement,
+        ChannelGroupManagementService channelGroupManagement,
+        ILoggerFactory loggerFactory)
     {
         var title = (request.Title ?? string.Empty).Trim();
         if (request.AccountId <= 0)
@@ -2244,6 +2247,9 @@ public static class PanelAdminApiEndpoints
         if (account == null)
             return Results.NotFound(new OperationResultDto(false, "账号不存在"));
 
+        if (request.GroupId is > 0 && await channelGroupManagement.GetGroupAsync(request.GroupId.Value) == null)
+            return Results.BadRequest(new OperationResultDto(false, "所选频道分组不存在，请刷新页面后重试"));
+
         if (!request.IgnoreRiskWarning)
         {
             var risk = riskService.CheckLoginDuration(account);
@@ -2253,31 +2259,82 @@ public static class PanelAdminApiEndpoints
 
         var about = (request.About ?? string.Empty).Trim();
         var username = NormalizeUsername(request.Username);
-        var channelInfo = await channelService.CreateChannelAsync(request.AccountId, title, about, request.IsPublic);
-        if (request.IsPublic && !string.IsNullOrWhiteSpace(username))
-            await channelService.SetChannelVisibilityAsync(request.AccountId, channelInfo.TelegramId, true, username);
-        if (!request.AllowForwarding)
-            await channelService.SetForwardingAllowedAsync(request.AccountId, channelInfo.TelegramId, allowed: false);
-
-        var now = DateTime.UtcNow;
-        var saved = await channelManagement.CreateOrUpdateChannelAsync(new Channel
+        try
         {
-            TelegramId = channelInfo.TelegramId,
-            AccessHash = channelInfo.AccessHash,
-            Title = title,
-            Username = request.IsPublic ? username : null,
-            IsBroadcast = channelInfo.IsBroadcast,
-            MemberCount = channelInfo.MemberCount,
-            About = about,
-            CreatorAccountId = request.AccountId,
-            GroupId = request.GroupId is > 0 ? request.GroupId : null,
-            CreatedAt = now,
-            SystemCreatedAtUtc = now,
-            SyncedAt = now
-        });
+            var channelInfo = await channelService.CreateChannelAsync(request.AccountId, title, about, request.IsPublic);
+            var now = DateTime.UtcNow;
+            var saved = await channelManagement.CreateOrUpdateChannelAsync(new Channel
+            {
+                TelegramId = channelInfo.TelegramId,
+                AccessHash = channelInfo.AccessHash,
+                Title = title,
+                Username = channelInfo.Username,
+                IsBroadcast = channelInfo.IsBroadcast,
+                MemberCount = channelInfo.MemberCount,
+                About = about,
+                CreatorAccountId = request.AccountId,
+                GroupId = request.GroupId is > 0 ? request.GroupId : null,
+                CreatedAt = now,
+                SystemCreatedAtUtc = now,
+                SyncedAt = now
+            });
 
-        await channelManagement.UpsertAccountChannelAsync(request.AccountId, saved.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
-        return Results.Ok(ToDto(saved));
+            await channelManagement.UpsertAccountChannelAsync(request.AccountId, saved.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
+            var warnings = new List<string>();
+
+            if (request.IsPublic && !string.IsNullOrWhiteSpace(username))
+            {
+                try
+                {
+                    var configured = await channelService.SetChannelVisibilityAsync(request.AccountId, channelInfo.TelegramId, true, username);
+                    if (!configured)
+                    {
+                        warnings.Add("公开用户名未设置成功");
+                    }
+                    else
+                    {
+                        saved.Username = username;
+                        await channelManagement.UpdateChannelAsync(saved);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    loggerFactory.CreateLogger("TelegramPanel.Web.Api.ChatCreation")
+                        .LogWarning(ex, "频道 {TelegramId} 已创建，但设置公开用户名失败", channelInfo.TelegramId);
+                    warnings.Add(BuildChatOperationError("设置公开用户名", ex));
+                }
+            }
+
+            if (!request.AllowForwarding)
+            {
+                try
+                {
+                    if (!await channelService.SetForwardingAllowedAsync(request.AccountId, channelInfo.TelegramId, allowed: false))
+                        warnings.Add("禁止转发未设置成功");
+                }
+                catch (Exception ex)
+                {
+                    loggerFactory.CreateLogger("TelegramPanel.Web.Api.ChatCreation")
+                        .LogWarning(ex, "频道 {TelegramId} 已创建，但设置禁止转发失败", channelInfo.TelegramId);
+                    warnings.Add(BuildChatOperationError("设置禁止转发", ex));
+                }
+            }
+
+            var warning = warnings.Count == 0
+                ? null
+                : $"频道已创建并保存，但部分附加设置未完成：{string.Join("；", warnings)}。请在频道列表中检查后重试设置。";
+            return Results.Ok(ToDto(saved) with { Warning = warning });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            loggerFactory.CreateLogger("TelegramPanel.Web.Api.ChatCreation")
+                .LogWarning(ex, "创建频道失败，账号 {AccountId}", request.AccountId);
+            return Results.BadRequest(new OperationResultDto(false, BuildChatOperationError("创建频道", ex)));
+        }
     }
 
     private static async Task<IResult> CreateGroupAsync(
@@ -2285,7 +2342,9 @@ public static class PanelAdminApiEndpoints
         IGroupService groupService,
         AccountManagementService accountManagement,
         AccountRiskService riskService,
-        GroupManagementService groupManagement)
+        GroupManagementService groupManagement,
+        GroupCategoryManagementService categoryManagement,
+        ILoggerFactory loggerFactory)
     {
         var title = (request.Title ?? string.Empty).Trim();
         if (request.AccountId <= 0)
@@ -2299,6 +2358,9 @@ public static class PanelAdminApiEndpoints
         if (account == null)
             return Results.NotFound(new OperationResultDto(false, "账号不存在"));
 
+        if (request.CategoryId is > 0 && await categoryManagement.GetCategoryAsync(request.CategoryId.Value) == null)
+            return Results.BadRequest(new OperationResultDto(false, "所选群组分类不存在，请刷新页面后重试"));
+
         if (!request.IgnoreRiskWarning)
         {
             var risk = riskService.CheckLoginDuration(account);
@@ -2306,37 +2368,74 @@ public static class PanelAdminApiEndpoints
                 return Results.BadRequest(new OperationResultDto(false, $"{risk.Message}。{risk.DetailedMessage}"));
         }
 
-        var info = await groupService.CreateGroupAsync(
-            request.AccountId,
-            title,
-            (request.About ?? string.Empty).Trim(),
-            request.IsPublic,
-            NormalizeUsername(request.Username));
-        var now = DateTime.UtcNow;
-        var saved = await groupManagement.CreateOrUpdateGroupAsync(new Group
+        try
         {
-            TelegramId = info.TelegramId,
-            AccessHash = info.AccessHash,
-            Title = info.Title,
-            Username = info.Username,
-            MemberCount = Math.Max(info.MemberCount, 1),
-            About = info.About,
-            CreatorAccountId = request.AccountId,
-            CategoryId = request.CategoryId is > 0 ? request.CategoryId : null,
-            CreatedAt = info.CreatedAt ?? now,
-            SystemCreatedAtUtc = now,
-            SyncedAt = now
-        });
+            var username = NormalizeUsername(request.Username);
+            var info = await groupService.CreatePrivateGroupAsync(
+                request.AccountId,
+                title,
+                (request.About ?? string.Empty).Trim());
+            var now = DateTime.UtcNow;
+            var saved = await groupManagement.CreateOrUpdateGroupAsync(new Group
+            {
+                TelegramId = info.TelegramId,
+                AccessHash = info.AccessHash,
+                Title = info.Title,
+                Username = info.Username,
+                MemberCount = Math.Max(info.MemberCount, 1),
+                About = info.About,
+                CreatorAccountId = request.AccountId,
+                CategoryId = request.CategoryId is > 0 ? request.CategoryId : null,
+                CreatedAt = info.CreatedAt ?? now,
+                SystemCreatedAtUtc = now,
+                SyncedAt = now
+            });
 
-        await groupManagement.UpsertAccountGroupAsync(request.AccountId, saved.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
-        return Results.Ok(ToDto(saved));
+            await groupManagement.UpsertAccountGroupAsync(request.AccountId, saved.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
+            string? warning = null;
+            if (request.IsPublic && !string.IsNullOrWhiteSpace(username))
+            {
+                try
+                {
+                    var configured = await groupService.SetGroupVisibilityAsync(request.AccountId, info.TelegramId, true, username);
+                    if (!configured)
+                    {
+                        warning = "群组已创建并保存，但公开用户名未设置成功。请在群组列表中检查后重试设置。";
+                    }
+                    else
+                    {
+                        saved.Username = username;
+                        await groupManagement.UpdateGroupAsync(saved);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    loggerFactory.CreateLogger("TelegramPanel.Web.Api.ChatCreation")
+                        .LogWarning(ex, "群组 {TelegramId} 已创建，但设置公开用户名失败", info.TelegramId);
+                    warning = $"群组已创建并保存，但公开用户名未设置成功：{BuildChatOperationError("设置公开用户名", ex)}。请在群组列表中检查后重试设置。";
+                }
+            }
+
+            return Results.Ok(ToDto(saved) with { Warning = warning });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            loggerFactory.CreateLogger("TelegramPanel.Web.Api.ChatCreation")
+                .LogWarning(ex, "创建群组失败，账号 {AccountId}", request.AccountId);
+            return Results.BadRequest(new OperationResultDto(false, BuildChatOperationError("创建群组", ex)));
+        }
     }
 
     private static async Task<IResult> UpdateChannelAsync(
         int id,
         HttpRequest httpRequest,
         IChannelService channelService,
-        ChannelManagementService channelManagement)
+        ChannelManagementService channelManagement,
+        ChannelGroupManagementService channelGroupManagement)
     {
         var channel = await channelManagement.GetChannelAsync(id);
         if (channel == null)
@@ -2346,6 +2445,8 @@ public static class PanelAdminApiEndpoints
         var title = (request.Title ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(title))
             return Results.BadRequest(new OperationResultDto(false, "频道名称不能为空"));
+        if (request.CategoryId is > 0 && await channelGroupManagement.GetGroupAsync(request.CategoryId.Value) == null)
+            return Results.BadRequest(new OperationResultDto(false, "所选频道分组不存在，请刷新页面后重试"));
 
         var accountId = await channelManagement.ResolveExecuteAccountIdAsync(channel);
         if (accountId is not > 0)
@@ -2374,7 +2475,8 @@ public static class PanelAdminApiEndpoints
         int id,
         HttpRequest httpRequest,
         IGroupService groupService,
-        GroupManagementService groupManagement)
+        GroupManagementService groupManagement,
+        GroupCategoryManagementService categoryManagement)
     {
         var group = await groupManagement.GetGroupAsync(id);
         if (group == null)
@@ -2384,6 +2486,8 @@ public static class PanelAdminApiEndpoints
         var title = (request.Title ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(title))
             return Results.BadRequest(new OperationResultDto(false, "群组名称不能为空"));
+        if (request.CategoryId is > 0 && await categoryManagement.GetCategoryAsync(request.CategoryId.Value) == null)
+            return Results.BadRequest(new OperationResultDto(false, "所选群组分类不存在，请刷新页面后重试"));
 
         var accountId = await groupManagement.ResolveExecuteAccountIdAsync(group);
         if (accountId is not > 0)
@@ -2424,15 +2528,39 @@ public static class PanelAdminApiEndpoints
         return Results.Ok(new SyncResultDto(taskId, 0, 0, 0, 0, Array.Empty<SyncFailureDto>(), "同步任务已提交，请在任务中心查看进度"));
     }
 
-    private static async Task<IResult> SetChannelGroupAsync(int id, SetCategoryRequestDto request, ChannelManagementService channelManagement)
+    private static async Task<IResult> SetChannelGroupAsync(
+        int id,
+        SetCategoryRequestDto request,
+        ChannelManagementService channelManagement,
+        ChannelGroupManagementService groupManagement,
+        CancellationToken cancellationToken)
     {
-        await channelManagement.UpdateChannelGroupAsync(id, request.CategoryId);
+        if (request.CategoryId is > 0 && await groupManagement.GetGroupAsync(request.CategoryId.Value) == null)
+            return Results.NotFound(new OperationResultDto(false, "频道分组不存在，请刷新页面后重试"));
+
+        await channelManagement.UpdateChannelGroupAssignmentsAsync(
+            new[] { id },
+            new[] { id },
+            request.CategoryId is > 0 ? request.CategoryId : null,
+            cancellationToken);
         return Results.Ok(new OperationResultDto(true, "频道分类已更新"));
     }
 
-    private static async Task<IResult> SetGroupCategoryAsync(int id, SetCategoryRequestDto request, GroupManagementService groupManagement)
+    private static async Task<IResult> SetGroupCategoryAsync(
+        int id,
+        SetCategoryRequestDto request,
+        GroupManagementService groupManagement,
+        GroupCategoryManagementService categoryManagement,
+        CancellationToken cancellationToken)
     {
-        await groupManagement.UpdateGroupCategoryAsync(id, request.CategoryId);
+        if (request.CategoryId is > 0 && await categoryManagement.GetCategoryAsync(request.CategoryId.Value) == null)
+            return Results.NotFound(new OperationResultDto(false, "群组分类不存在，请刷新页面后重试"));
+
+        await groupManagement.UpdateGroupCategoryAssignmentsAsync(
+            new[] { id },
+            new[] { id },
+            request.CategoryId is > 0 ? request.CategoryId : null,
+            cancellationToken);
         return Results.Ok(new OperationResultDto(true, "群组分类已更新"));
     }
 
@@ -2448,23 +2576,35 @@ public static class PanelAdminApiEndpoints
         return Results.Ok(new OperationResultDto(true, "群组已删除"));
     }
 
-    private static async Task<IResult> BatchSetChannelGroupAsync(BatchSetCategoryRequestDto request, ChannelManagementService channelManagement)
+    private static async Task<IResult> BatchSetChannelGroupAsync(
+        BatchSetCategoryRequestDto request,
+        ChannelManagementService channelManagement,
+        ChannelGroupManagementService groupManagement,
+        CancellationToken cancellationToken)
     {
         var ids = NormalizeIds(request.Ids);
         if (ids.Count == 0)
             return Results.BadRequest(new OperationResultDto(false, "请先选择频道"));
-        foreach (var id in ids)
-            await channelManagement.UpdateChannelGroupAsync(id, request.CategoryId);
+        if (request.CategoryId is > 0 && await groupManagement.GetGroupAsync(request.CategoryId.Value) == null)
+            return Results.NotFound(new OperationResultDto(false, "频道分组不存在，请刷新页面后重试"));
+
+        await channelManagement.UpdateChannelGroupAssignmentsAsync(ids, ids, request.CategoryId is > 0 ? request.CategoryId : null, cancellationToken);
         return Results.Ok(new OperationResultDto(true, $"分类已更新：{ids.Count} 个频道"));
     }
 
-    private static async Task<IResult> BatchSetGroupCategoryAsync(BatchSetCategoryRequestDto request, GroupManagementService groupManagement)
+    private static async Task<IResult> BatchSetGroupCategoryAsync(
+        BatchSetCategoryRequestDto request,
+        GroupManagementService groupManagement,
+        GroupCategoryManagementService categoryManagement,
+        CancellationToken cancellationToken)
     {
         var ids = NormalizeIds(request.Ids);
         if (ids.Count == 0)
             return Results.BadRequest(new OperationResultDto(false, "请先选择群组"));
-        foreach (var id in ids)
-            await groupManagement.UpdateGroupCategoryAsync(id, request.CategoryId);
+        if (request.CategoryId is > 0 && await categoryManagement.GetCategoryAsync(request.CategoryId.Value) == null)
+            return Results.NotFound(new OperationResultDto(false, "群组分类不存在，请刷新页面后重试"));
+
+        await groupManagement.UpdateGroupCategoryAssignmentsAsync(ids, ids, request.CategoryId is > 0 ? request.CategoryId : null, cancellationToken);
         return Results.Ok(new OperationResultDto(true, $"分类已更新：{ids.Count} 个群组"));
     }
 
@@ -3028,13 +3168,26 @@ public static class PanelAdminApiEndpoints
         var name = (request.Name ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(name))
             return Results.BadRequest(new OperationResultDto(false, "分类名称不能为空"));
-        var group = await groupManagement.CreateGroupAsync(new ChannelGroup
+        if (name.Length > 100)
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能超过 100 个字符"));
+
+        if (await groupManagement.IsNameTakenAsync(name))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在"));
+
+        try
         {
-            Name = name,
-            Description = NormalizeNullable(request.Description),
-            CreatedAt = DateTime.UtcNow
-        });
-        return Results.Ok(ToDto(group));
+            var group = await groupManagement.CreateGroupAsync(new ChannelGroup
+            {
+                Name = name,
+                Description = NormalizeNullable(request.Description),
+                CreatedAt = DateTime.UtcNow
+            });
+            return Results.Ok(ToDto(group));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在或数据库暂时不可写，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> UpdateChannelGroupAsync(int id, SaveSimpleCategoryRequestDto request, ChannelGroupManagementService groupManagement)
@@ -3042,10 +3195,26 @@ public static class PanelAdminApiEndpoints
         var group = await groupManagement.GetGroupAsync(id);
         if (group == null)
             return Results.NotFound(new OperationResultDto(false, "分类不存在"));
-        group.Name = (request.Name ?? string.Empty).Trim();
+        var name = (request.Name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能为空"));
+        if (name.Length > 100)
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能超过 100 个字符"));
+
+        if (await groupManagement.IsNameTakenAsync(name, id))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在"));
+
+        group.Name = name;
         group.Description = NormalizeNullable(request.Description);
-        await groupManagement.UpdateGroupAsync(group);
-        return Results.Ok(ToDto(group));
+        try
+        {
+            await groupManagement.UpdateGroupAsync(group);
+            return Results.Ok(ToDto(group));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在或数据库暂时不可写，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> DeleteChannelGroupAsync(int id, ChannelGroupManagementService groupManagement)
@@ -3054,13 +3223,29 @@ public static class PanelAdminApiEndpoints
         return Results.Ok(new OperationResultDto(true, "分类已删除"));
     }
 
-    private static async Task<IResult> SaveChannelGroupAssignmentsAsync(int id, SaveResourceAssignmentsRequestDto request, ChannelManagementService channelManagement)
+    private static async Task<IResult> SaveChannelGroupAssignmentsAsync(
+        int id,
+        SaveResourceAssignmentsRequestDto request,
+        ChannelManagementService channelManagement,
+        ChannelGroupManagementService groupManagement,
+        CancellationToken cancellationToken)
     {
         var scope = NormalizeIds(request.ScopeIds);
+        if (await groupManagement.GetGroupAsync(id) == null)
+            return Results.NotFound(new OperationResultDto(false, "分类不存在，请刷新页面后重试"));
+        if (scope.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "当前没有可保存的频道"));
+
         var selected = NormalizeIds(request.SelectedIds).ToHashSet();
-        foreach (var channelId in scope)
-            await channelManagement.UpdateChannelGroupAsync(channelId, selected.Contains(channelId) ? id : null);
-        return Results.Ok(new OperationResultDto(true, "分类绑定已保存"));
+        try
+        {
+            await channelManagement.UpdateChannelGroupAssignmentsAsync(scope, selected, id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "分类绑定已保存"));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类绑定保存失败：数据库暂时忙，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> GetGroupCategoriesAsync(GroupCategoryManagementService categoryManagement)
@@ -3077,13 +3262,26 @@ public static class PanelAdminApiEndpoints
         var name = (request.Name ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(name))
             return Results.BadRequest(new OperationResultDto(false, "分类名称不能为空"));
-        var category = await categoryManagement.CreateCategoryAsync(new GroupCategory
+        if (name.Length > 100)
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能超过 100 个字符"));
+
+        if (await categoryManagement.IsNameTakenAsync(name))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在"));
+
+        try
         {
-            Name = name,
-            Description = NormalizeNullable(request.Description),
-            CreatedAt = DateTime.UtcNow
-        });
-        return Results.Ok(ToDto(category));
+            var category = await categoryManagement.CreateCategoryAsync(new GroupCategory
+            {
+                Name = name,
+                Description = NormalizeNullable(request.Description),
+                CreatedAt = DateTime.UtcNow
+            });
+            return Results.Ok(ToDto(category));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在或数据库暂时不可写，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> UpdateGroupCategoryAsync(int id, SaveSimpleCategoryRequestDto request, GroupCategoryManagementService categoryManagement)
@@ -3091,10 +3289,26 @@ public static class PanelAdminApiEndpoints
         var category = await categoryManagement.GetCategoryAsync(id);
         if (category == null)
             return Results.NotFound(new OperationResultDto(false, "分类不存在"));
-        category.Name = (request.Name ?? string.Empty).Trim();
+        var name = (request.Name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能为空"));
+        if (name.Length > 100)
+            return Results.BadRequest(new OperationResultDto(false, "分类名称不能超过 100 个字符"));
+
+        if (await categoryManagement.IsNameTakenAsync(name, id))
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在"));
+
+        category.Name = name;
         category.Description = NormalizeNullable(request.Description);
-        await categoryManagement.UpdateCategoryAsync(category);
-        return Results.Ok(ToDto(category));
+        try
+        {
+            await categoryManagement.UpdateCategoryAsync(category);
+            return Results.Ok(ToDto(category));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类名称已存在或数据库暂时不可写，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> DeleteGroupCategoryAsync(int id, GroupCategoryManagementService categoryManagement)
@@ -3103,13 +3317,29 @@ public static class PanelAdminApiEndpoints
         return Results.Ok(new OperationResultDto(true, "分类已删除"));
     }
 
-    private static async Task<IResult> SaveGroupCategoryAssignmentsAsync(int id, SaveResourceAssignmentsRequestDto request, GroupManagementService groupManagement)
+    private static async Task<IResult> SaveGroupCategoryAssignmentsAsync(
+        int id,
+        SaveResourceAssignmentsRequestDto request,
+        GroupManagementService groupManagement,
+        GroupCategoryManagementService categoryManagement,
+        CancellationToken cancellationToken)
     {
         var scope = NormalizeIds(request.ScopeIds);
+        if (await categoryManagement.GetCategoryAsync(id) == null)
+            return Results.NotFound(new OperationResultDto(false, "分类不存在，请刷新页面后重试"));
+        if (scope.Count == 0)
+            return Results.BadRequest(new OperationResultDto(false, "当前没有可保存的群组"));
+
         var selected = NormalizeIds(request.SelectedIds).ToHashSet();
-        foreach (var groupId in scope)
-            await groupManagement.UpdateGroupCategoryAsync(groupId, selected.Contains(groupId) ? id : null);
-        return Results.Ok(new OperationResultDto(true, "分类绑定已保存"));
+        try
+        {
+            await groupManagement.UpdateGroupCategoryAssignmentsAsync(scope, selected, id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "分类绑定已保存"));
+        }
+        catch (DbUpdateException)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "分类绑定保存失败：数据库暂时忙，请稍后重试"));
+        }
     }
 
     private static async Task<IResult> GetBotsAsync(BotManagementService botManagement)
@@ -4450,7 +4680,8 @@ public static class PanelAdminApiEndpoints
             .Select(x => new
             {
                 Item = x,
-                Href = ResolveVueModuleHref(x.Module.Id, null, x.Definition.Href)
+                Href = ResolveVueModuleHref(x.Module.Id, null, x.Definition.Href),
+                PageKey = ResolveModuleNavPageKey(x.Module.Id, x.Definition.Href)
             })
             .Where(x => !string.IsNullOrWhiteSpace(x.Href))
             .Select(x => new ModuleNavItemDto(
@@ -4460,8 +4691,8 @@ public static class PanelAdminApiEndpoints
                 x.Item.Definition.Group,
                 x.Item.Definition.Order,
                 x.Item.Module.Id,
-                null,
-                "direct")));
+                x.PageKey,
+                x.PageKey == null ? "direct" : "embedded")));
 
         items.AddRange(contributions.Pages
             .OrderBy(x => x.Definition.Group ?? "", StringComparer.OrdinalIgnoreCase)
@@ -4494,6 +4725,12 @@ public static class PanelAdminApiEndpoints
 
         return raw.StartsWith("/ext/", StringComparison.OrdinalIgnoreCase) ? raw : null;
     }
+
+    private static string? ResolveModuleNavPageKey(string moduleId, string? href)
+        => ExtensionModuleRoute.TryParse(href, out var routeModuleId, out var pageKey)
+           && string.Equals(routeModuleId, moduleId, StringComparison.OrdinalIgnoreCase)
+            ? pageKey
+            : null;
 
     private static string NormalizeModuleHref(string? href)
     {
@@ -5659,6 +5896,33 @@ public static class PanelAdminApiEndpoints
             .Distinct()
             .ToList();
 
+    /// <summary>
+    /// 将 Telegram/数据库异常转换为前端可直接展示的中文错误，避免只看到 Axios 的 400。
+    /// </summary>
+    private static string BuildChatOperationError(string operation, Exception ex)
+    {
+        if (ex is DbUpdateException)
+        {
+            return $"{operation}后本地数据库保存失败。Telegram 侧可能已经创建成功，请先同步频道/群组列表确认，避免重复创建；数据库恢复可写后再重试。";
+        }
+
+        var (summary, details) = AccountTelegramToolsService.MapTelegramException(ex);
+        var message = summary;
+        if (!string.IsNullOrWhiteSpace(details)
+            && !string.Equals(summary, details, StringComparison.OrdinalIgnoreCase))
+        {
+            message = string.IsNullOrWhiteSpace(summary)
+                ? details
+                : $"{summary}：{details}";
+        }
+        if (string.IsNullOrWhiteSpace(message))
+            message = ex.Message;
+
+        return string.IsNullOrWhiteSpace(message)
+            ? $"{operation}失败"
+            : $"{operation}失败：{message}";
+    }
+
     private static IReadOnlyList<string> NormalizeUsernames(IEnumerable<string>? usernames) =>
         (usernames ?? Array.Empty<string>())
             .Select(x => (x ?? string.Empty).Trim())
@@ -6594,7 +6858,8 @@ public sealed record ChannelListItemDto(
     DateTime? CreatedAt,
     DateTime? SystemCreatedAtUtc,
     DateTime SyncedAt,
-    IReadOnlyList<ChatMembershipAccountDto> Accounts);
+    IReadOnlyList<ChatMembershipAccountDto> Accounts,
+    string? Warning = null);
 
 public sealed record GroupListItemDto(
     int Id,
@@ -6610,7 +6875,8 @@ public sealed record GroupListItemDto(
     DateTime? CreatedAt,
     DateTime? SystemCreatedAtUtc,
     DateTime SyncedAt,
-    IReadOnlyList<ChatMembershipAccountDto> Accounts);
+    IReadOnlyList<ChatMembershipAccountDto> Accounts,
+    string? Warning = null);
 
 public sealed record ChannelDetailDto(ChannelListItemDto Channel, IReadOnlyList<ChatMembershipAccountDto> Accounts);
 public sealed record GroupDetailDto(GroupListItemDto Group, IReadOnlyList<ChatMembershipAccountDto> Accounts);

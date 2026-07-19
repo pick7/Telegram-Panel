@@ -23,19 +23,24 @@
       <el-button :icon="selectionIcon" :disabled="loading || rows.length === 0" @click="cycleSelection">
         {{ selectionText }}
       </el-button>
-      <el-button :icon="Refresh" :disabled="loading || selectedIds.length === 0" @click="batchRefreshStatus">
+      <el-button
+        :icon="Refresh"
+        :loading="selectedStatusRefreshing"
+        :disabled="loading || selectedIds.length === 0 || selectedStatusRefreshing"
+        @click="batchRefreshStatus"
+      >
         刷新已选状态
       </el-button>
-      <el-button :icon="Monitor" :disabled="loading || selectedIds.length === 0" @click="batchKickDevices">
+      <el-button :icon="Monitor" :disabled="loading || selectedMutationDisabled" @click="batchKickDevices">
         踢出其他设备（已选）
       </el-button>
-      <el-button type="danger" :icon="Delete" :disabled="loading || selectedIds.length === 0" @click="cleanupWaste('selected')">
+      <el-button type="danger" :icon="Delete" :disabled="loading || selectedMutationDisabled" @click="cleanupWaste('selected')">
         清理废号（已选）
       </el-button>
-      <el-button v-if="filters.onlyWaste" type="danger" :icon="Delete" :disabled="loading || rows.length === 0" @click="cleanupWaste('filtered')">
+      <el-button v-if="filters.onlyWaste" type="danger" :icon="Delete" :disabled="loading || rows.length === 0 || statusRefreshCount > 0" @click="cleanupWaste('filtered')">
         清理废号（筛选）
       </el-button>
-      <el-button type="danger" :icon="Delete" :disabled="loading" @click="cleanupWaste('all')">
+      <el-button type="danger" :icon="Delete" :disabled="loading || statusRefreshCount > 0" @click="cleanupWaste('all')">
         清理所有废号
       </el-button>
 
@@ -45,17 +50,17 @@
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="batch-join" :disabled="selectedIds.length === 0">批量加群/订阅/启用Bot（已选）</el-dropdown-item>
-            <el-dropdown-item command="batch-leave" :disabled="selectedIds.length === 0">批量退群/退订/停用Bot（已选）</el-dropdown-item>
-            <el-dropdown-item command="two-factor" :disabled="selectedIds.length === 0">修改二级密码（已选）</el-dropdown-item>
-            <el-dropdown-item command="recovery-email" :disabled="selectedIds.length === 0">批量换绑邮箱（找回+登录）（Cloud Mail）（已选）</el-dropdown-item>
-            <el-dropdown-item command="kick-devices" :disabled="selectedIds.length === 0">批量踢出所有其他设备（已选）</el-dropdown-item>
-            <el-dropdown-item command="category" :disabled="selectedIds.length === 0">批量修改分类（已选）</el-dropdown-item>
-            <el-dropdown-item command="nickname" :disabled="selectedIds.length === 0">批量改昵称（已选）</el-dropdown-item>
-            <el-dropdown-item command="avatar" :disabled="selectedIds.length === 0">批量改头像（已选）</el-dropdown-item>
-            <el-dropdown-item command="username" :disabled="selectedIds.length === 0">批量改用户名（已选）</el-dropdown-item>
-            <el-dropdown-item command="bio" :disabled="selectedIds.length === 0">批量改Bio（已选）</el-dropdown-item>
-            <el-dropdown-item command="delete" :disabled="selectedIds.length === 0">删除已选</el-dropdown-item>
+            <el-dropdown-item command="batch-join" :disabled="selectedMutationDisabled">批量加群/订阅/启用Bot（已选）</el-dropdown-item>
+            <el-dropdown-item command="batch-leave" :disabled="selectedMutationDisabled">批量退群/退订/停用Bot（已选）</el-dropdown-item>
+            <el-dropdown-item command="two-factor" :disabled="selectedMutationDisabled">修改二级密码（已选）</el-dropdown-item>
+            <el-dropdown-item command="recovery-email" :disabled="selectedMutationDisabled">批量换绑邮箱（找回+登录）（Cloud Mail）（已选）</el-dropdown-item>
+            <el-dropdown-item command="kick-devices" :disabled="selectedMutationDisabled">批量踢出所有其他设备（已选）</el-dropdown-item>
+            <el-dropdown-item command="category" :disabled="selectedMutationDisabled">批量修改分类（已选）</el-dropdown-item>
+            <el-dropdown-item command="nickname" :disabled="selectedMutationDisabled">批量改昵称（已选）</el-dropdown-item>
+            <el-dropdown-item command="avatar" :disabled="selectedMutationDisabled">批量改头像（已选）</el-dropdown-item>
+            <el-dropdown-item command="username" :disabled="selectedMutationDisabled">批量改用户名（已选）</el-dropdown-item>
+            <el-dropdown-item command="bio" :disabled="selectedMutationDisabled">批量改Bio（已选）</el-dropdown-item>
+            <el-dropdown-item command="delete" :disabled="selectedMutationDisabled">删除已选</el-dropdown-item>
             <el-dropdown-item command="export-selected">导出已选</el-dropdown-item>
             <el-dropdown-item command="export-page">导出当前页</el-dropdown-item>
           </el-dropdown-menu>
@@ -71,7 +76,8 @@
       />
 
       <el-tag v-if="selectedIds.length > 0" type="info">已选 {{ selectedIds.length }}</el-tag>
-      <span v-else class="muted">共 {{ total }} 个账号</span>
+      <el-tag v-if="statusRefreshCount > 0" type="warning">后台刷新中 {{ statusRefreshCount }} 个</el-tag>
+      <span v-if="selectedIds.length === 0 && statusRefreshCount === 0" class="muted">共 {{ total }} 个账号</span>
     </div>
 
     <el-card shadow="never" class="page-card mt-4">
@@ -132,29 +138,41 @@
                 <el-button link type="primary" :icon="InfoFilled" @click="openDetails(row)" />
               </el-tooltip>
               <el-tooltip v-if="!isCompactList" content="编辑用户资料" placement="top">
-                <el-button link type="primary" :icon="Edit" :disabled="loading" @click="openProfile(row)" />
+                <el-button link type="primary" :icon="Edit" :disabled="loading || isStatusRefreshing(row.id)" @click="openProfile(row)" />
               </el-tooltip>
               <el-tooltip v-if="!isCompactList" content="刷新 Telegram 状态" placement="top">
-                <el-button link type="primary" :icon="Refresh" :disabled="loading" @click="refreshStatus(row)" />
+                <el-button
+                  link
+                  type="primary"
+                  :icon="Refresh"
+                  :loading="isStatusRefreshing(row.id)"
+                  :disabled="loading || isStatusRefreshing(row.id)"
+                  @click="refreshStatus(row)"
+                />
               </el-tooltip>
               <el-dropdown trigger="click" @command="(command: string | number | object) => handleRowCommand(String(command), row)">
                 <el-button link :icon="MoreFilled" />
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item v-if="isCompactList" command="details" :icon="InfoFilled">查看详情</el-dropdown-item>
-                    <el-dropdown-item v-if="isCompactList" command="profile" :icon="Edit" :disabled="loading">编辑用户资料</el-dropdown-item>
-                    <el-dropdown-item v-if="isCompactList" command="refresh" :icon="Refresh" :disabled="loading">刷新 Telegram 状态</el-dropdown-item>
-                    <el-dropdown-item command="join" :icon="UserFilled">加群/订阅</el-dropdown-item>
-                    <el-dropdown-item command="leave" :icon="SwitchButton">退群/退订</el-dropdown-item>
+                    <el-dropdown-item v-if="isCompactList" command="profile" :icon="Edit" :disabled="loading || isStatusRefreshing(row.id)">编辑用户资料</el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="isCompactList"
+                      command="refresh"
+                      :icon="Refresh"
+                      :disabled="loading || isStatusRefreshing(row.id)"
+                    >刷新 Telegram 状态</el-dropdown-item>
+                    <el-dropdown-item command="join" :icon="UserFilled" :disabled="isStatusRefreshing(row.id)">加群/订阅</el-dropdown-item>
+                    <el-dropdown-item command="leave" :icon="SwitchButton" :disabled="isStatusRefreshing(row.id)">退群/退订</el-dropdown-item>
                     <el-dropdown-item command="channels" :icon="Promotion">查看加入的频道</el-dropdown-item>
                     <el-dropdown-item command="groups" :icon="ChatDotRound">查看加入的群组</el-dropdown-item>
-                    <el-dropdown-item command="inbox" :icon="Message">系统通知（验证码）</el-dropdown-item>
-                    <el-dropdown-item command="devices" :icon="Monitor">在线设备</el-dropdown-item>
-                    <el-dropdown-item divided command="two-factor" :icon="Lock">修改二级密码</el-dropdown-item>
-                    <el-dropdown-item command="recovery-email" :icon="Message">绑定/换绑找回邮箱</el-dropdown-item>
-                    <el-dropdown-item command="login-email" :icon="Message">绑定/换绑登录邮箱</el-dropdown-item>
-                    <el-dropdown-item divided command="toggle" :icon="SwitchButton">{{ row.isActive ? '停用' : '启用' }}</el-dropdown-item>
-                    <el-dropdown-item command="delete" :icon="Delete">删除账号</el-dropdown-item>
+                    <el-dropdown-item command="inbox" :icon="Message" :disabled="isStatusRefreshing(row.id)">系统通知（验证码）</el-dropdown-item>
+                    <el-dropdown-item command="devices" :icon="Monitor" :disabled="isStatusRefreshing(row.id)">在线设备</el-dropdown-item>
+                    <el-dropdown-item divided command="two-factor" :icon="Lock" :disabled="isStatusRefreshing(row.id)">修改二级密码</el-dropdown-item>
+                    <el-dropdown-item command="recovery-email" :icon="Message" :disabled="isStatusRefreshing(row.id)">绑定/换绑找回邮箱</el-dropdown-item>
+                    <el-dropdown-item command="login-email" :icon="Message" :disabled="isStatusRefreshing(row.id)">绑定/换绑登录邮箱</el-dropdown-item>
+                    <el-dropdown-item divided command="toggle" :icon="SwitchButton" :disabled="isStatusRefreshing(row.id)">{{ row.isActive ? '停用' : '启用' }}</el-dropdown-item>
+                    <el-dropdown-item command="delete" :icon="Delete" :disabled="isStatusRefreshing(row.id)">删除账号</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -200,7 +218,12 @@
       </template>
       <template #footer>
         <el-button @click="details.visible = false">关闭</el-button>
-        <el-button type="primary" :loading="details.saving" @click="saveDetails">保存</el-button>
+        <el-button
+          type="primary"
+          :loading="details.saving"
+          :disabled="details.account ? isStatusRefreshing(details.account.id) : false"
+          @click="saveDetails"
+        >保存</el-button>
       </template>
     </el-dialog>
 
@@ -549,7 +572,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
   ArrowDown,
@@ -589,6 +612,7 @@ import type {
   AccountOperationItem,
   BatchTask,
   DataDictionary,
+  TelegramStatus,
   TelegramAuthorization,
   TelegramSystemMessage,
 } from '@/api/types'
@@ -611,6 +635,12 @@ const tableRef = ref<TableInstance>()
 const batchChatMembershipRef = ref<InstanceType<typeof BatchChatMembershipDialog>>()
 const batchRecoveryEmailRef = ref<InstanceType<typeof BatchRecoveryEmailDialog>>()
 const selectedRows = ref<Row[]>([])
+// 状态检测独立于列表加载状态：只标记正在检测的账号，避免整页出现 loading 遮罩。
+const refreshingStatusIds = reactive(new Set<number>())
+// 每个刷新队列拥有独立令牌，避免旧队列结束时误清理新队列刚接手的账号。
+const statusRefreshOwners = new Map<number, symbol>()
+// 防止较晚返回的旧列表请求覆盖刚完成的逐行状态响应。
+const latestStatusById = new Map<number, TelegramStatus>()
 const selectionMode = ref<SelectionMode>('select')
 const isCompactList = useMediaQuery('(max-width: 640px)')
 const filters = reactive({
@@ -640,6 +670,9 @@ const { visibleColumnKeys, isColumnVisible, resetColumns, showAllColumns } = use
 let filterTimer: number | undefined
 
 const selectedIds = computed(() => selectedRows.value.map((x) => x.id))
+const statusRefreshCount = computed(() => refreshingStatusIds.size)
+const selectedStatusRefreshing = computed(() => selectedIds.value.some((id) => refreshingStatusIds.has(id)))
+const selectedMutationDisabled = computed(() => selectedIds.value.length === 0 || selectedStatusRefreshing.value)
 const imageDictionaries = computed(() =>
   dictionaries.value
     .filter((x) => x.isEnabled && x.type === 'image' && x.enabledItemCount > 0)
@@ -787,7 +820,8 @@ async function load() {
       search: filters.search,
       onlyWaste: filters.onlyWaste,
     })
-    rows.value = data.items
+    // 列表重新加载时保留后台检测标记，并合并更新较晚的逐行状态响应。
+    rows.value = data.items.map(mergeLatestStatus)
     total.value = data.total
     selectedRows.value = []
     tableRef.value?.clearSelection()
@@ -815,6 +849,58 @@ function onSelectionChange(selection: Row[]) {
   selectedRows.value = selection
 }
 
+function isStatusRefreshing(accountId: number) {
+  return refreshingStatusIds.has(accountId)
+}
+
+function statusTime(value?: string | null) {
+  const timestamp = value ? Date.parse(value) : Number.NaN
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function mergeLatestStatus(item: Row): Row {
+  const cached = latestStatusById.get(item.id)
+  if (!cached || statusTime(item.telegramStatusCheckedAtUtc) >= statusTime(cached.checkedAtUtc)) {
+    if (cached) latestStatusById.delete(item.id)
+    return { ...item, busy: refreshingStatusIds.has(item.id) }
+  }
+
+  return {
+    ...item,
+    telegramStatusOk: cached.ok,
+    telegramStatusSummary: cached.summary,
+    telegramStatusDetails: cached.details,
+    telegramStatusCheckedAtUtc: cached.checkedAtUtc,
+    busy: refreshingStatusIds.has(item.id),
+  }
+}
+
+function ensureAccountsIdle(accountIds: number[], action: string) {
+  const count = [...new Set(accountIds)].filter((id) => refreshingStatusIds.has(id)).length
+  if (count === 0) return true
+  ElMessage.warning(`有 ${count} 个账号正在刷新状态，请完成后再${action}`)
+  return false
+}
+
+function reserveStatusRefreshing(accountId: number, owner: symbol) {
+  if (statusRefreshOwners.has(accountId)) return false
+  statusRefreshOwners.set(accountId, owner)
+  refreshingStatusIds.add(accountId)
+
+  const row = rows.value.find((item) => item.id === accountId)
+  if (row) row.busy = true
+  return true
+}
+
+function releaseStatusRefreshing(accountId: number, owner: symbol) {
+  if (statusRefreshOwners.get(accountId) !== owner) return
+  statusRefreshOwners.delete(accountId)
+  refreshingStatusIds.delete(accountId)
+
+  const row = rows.value.find((item) => item.id === accountId)
+  if (row) row.busy = false
+}
+
 function cycleSelection() {
   if (!tableRef.value) return
   if (selectionMode.value === 'select') {
@@ -832,6 +918,7 @@ function cycleSelection() {
 }
 
 function buildStatusTitle(row: Row) {
+  if (isStatusRefreshing(row.id)) return '正在后台刷新 Telegram 状态，请稍候…'
   if (!row.isActive) {
     const lastStatus = row.telegramStatusSummary ? `；上次 Telegram 检测：${row.telegramStatusSummary}` : ''
     return `面板已停用：该账号不会参与任务和批量操作${lastStatus}`
@@ -843,12 +930,14 @@ function buildStatusTitle(row: Row) {
 }
 
 function telegramStatusText(row: Row) {
+  if (isStatusRefreshing(row.id)) return '刷新中…'
   if (!row.isActive) return '停用'
   if (!row.telegramStatusSummary) return '未检测'
   return row.telegramStatusOk ? row.telegramStatusSummary : '失效'
 }
 
 function telegramStatusTagType(row: Row) {
+  if (isStatusRefreshing(row.id)) return 'warning'
   if (!row.isActive) return 'info'
   if (!row.telegramStatusSummary) return 'info'
   return row.telegramStatusOk ? 'success' : 'danger'
@@ -870,6 +959,7 @@ async function openDetails(row: Row) {
 
 async function saveDetails() {
   if (!details.account) return
+  if (!ensureAccountsIdle([details.account.id], '保存账号详情')) return
   details.saving = true
   try {
     await panelApi.updateAccount(details.account.id, {
@@ -886,6 +976,7 @@ async function saveDetails() {
 }
 
 function openProfile(row: Row) {
+  if (!ensureAccountsIdle([row.id], '编辑用户资料')) return
   profile.row = row
   profile.avatarFile = null
   profile.form.editNickname = false
@@ -916,6 +1007,7 @@ function onBatchAvatarRemove() {
 
 async function saveProfile() {
   if (!profile.row) return
+  if (!ensureAccountsIdle([profile.row.id], '保存用户资料')) return
   const form = profile.form
   if (!form.editNickname && !form.editBio && !form.editUsername && !form.editAvatar) {
     ElMessage.warning('请选择要修改的资料项')
@@ -959,40 +1051,125 @@ async function saveProfile() {
   }
 }
 
+function getStatusRefreshError(error: unknown) {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+  return '请求失败，请稍后重试'
+}
+
+/**
+ * 先登记整批待检测账号，再按顺序执行状态检测，并在每个请求完成后立即写回当前列表行。
+ * 这里刻意不设置全局 loading，避免列表被遮罩；Set 同时承担队列占用标记，防止重复请求。
+ */
+async function refreshStatusRows(accountIds: number[], probeCreateChannel: boolean): Promise<AccountBatchOperationResult> {
+  const requestedIds = [...new Set(accountIds)].filter((id) => id > 0)
+  const items: AccountOperationItem[] = []
+  const owner = Symbol('account-status-refresh')
+  const reservedIds: number[] = []
+  const skippedIds: number[] = []
+
+  // 先同步占用整批账号。这样在第一个请求等待网络时，后续账号也不会被另一条刷新操作重复占用。
+  requestedIds.forEach((id) => {
+    if (reserveStatusRefreshing(id, owner)) reservedIds.push(id)
+    else skippedIds.push(id)
+  })
+  skippedIds.forEach((accountId) => {
+    const row = rows.value.find((item) => item.id === accountId)
+    items.push({
+      accountId,
+      phone: row?.displayPhone ?? null,
+      success: false,
+      summary: '刷新跳过',
+      error: '该账号正在刷新',
+    })
+  })
+
+  try {
+    for (const accountId of reservedIds) {
+      const initialRow = rows.value.find((item) => item.id === accountId)
+      try {
+        const status = await panelApi.refreshTelegramStatusWithProbe(accountId, probeCreateChannel)
+        latestStatusById.set(accountId, status)
+        const row = rows.value.find((item) => item.id === accountId)
+        if (row) {
+          row.telegramStatusOk = status.ok
+          row.telegramStatusSummary = status.summary
+          row.telegramStatusDetails = status.details
+          row.telegramStatusCheckedAtUtc = status.checkedAtUtc
+        }
+        items.push({
+          accountId,
+          phone: row?.displayPhone ?? initialRow?.displayPhone ?? null,
+          success: status.ok,
+          summary: status.summary,
+          error: status.ok ? null : status.details || null,
+        })
+      } catch (error) {
+        const row = rows.value.find((item) => item.id === accountId)
+        items.push({
+          accountId,
+          phone: row?.displayPhone ?? initialRow?.displayPhone ?? null,
+          success: false,
+          summary: '刷新失败',
+          error: getStatusRefreshError(error),
+        })
+      } finally {
+        releaseStatusRefreshing(accountId, owner)
+        // 让当前账号的最新状态/加载图标先渲染，再开始下一个账号。
+        await nextTick()
+      }
+    }
+  } finally {
+    // 即使出现未预期的运行时异常，也不能让剩余账号永久停留在“刷新中”。
+    reservedIds.forEach((id) => releaseStatusRefreshing(id, owner))
+  }
+
+  return {
+    success: items.filter((item) => item.success).length,
+    failed: items.filter((item) => !item.success).length,
+    items,
+  }
+}
+
 async function refreshStatus(row: Row) {
+  if (isStatusRefreshing(row.id)) return
   const probe = await chooseProbe(
     '刷新 Telegram 状态',
     '是否进行深度探测（将创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？',
   )
-  row.busy = true
-  loading.value = true
+  if (probe === null) return
   try {
-    const status = await panelApi.refreshTelegramStatusWithProbe(row.id, probe)
-    row.telegramStatusOk = status.ok
-    row.telegramStatusSummary = status.summary
-    row.telegramStatusDetails = status.details
-    row.telegramStatusCheckedAtUtc = status.checkedAtUtc
-    ElMessage.success(`账号 ${row.displayPhone} 状态：${status.summary}`)
-  } finally {
-    row.busy = false
-    loading.value = false
+    const result = await refreshStatusRows([row.id], probe)
+    const item = result.items[0]
+    if (!item) return
+    const message = `账号 ${row.displayPhone} 状态：${item.summary}`
+    if (item.success) ElMessage.success(message)
+    else ElMessage.warning(`${message}${item.error ? `（${item.error}）` : ''}`)
+  } catch (error) {
+    // 兜底处理渲染/运行时异常，避免单行一直停留在“刷新中”状态。
+    ElMessage.error(`刷新失败：${getStatusRefreshError(error)}`)
   }
 }
 
 async function batchRefreshStatus() {
   if (!ensureSelected()) return
+  const selected = [...new Set(selectedIds.value)].filter((id) => id > 0)
+  const ids = selected.filter((id) => !isStatusRefreshing(id))
+  if (ids.length === 0) {
+    ElMessage.info(selected.length > 0 ? '所选账号正在刷新，请稍候' : '没有可刷新的账号')
+    return
+  }
   const probe = await chooseProbe(
     '刷新已选 Telegram 状态',
-    `将刷新已选 ${selectedIds.value.length} 个账号的 Telegram 状态。\n\n是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？`,
+    `将刷新已选 ${ids.length} 个账号的 Telegram 状态。\n\n是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？`,
   )
-  loading.value = true
-  try {
-    const result = await panelApi.batchRefreshTelegramStatus(selectedIds.value, probe)
-    showBatchResult('批量刷新完成', result)
-    await load()
-  } finally {
-    loading.value = false
-  }
+  if (probe === null) return
+
+  // 后台顺序执行：当前函数立即返回，列表仍可操作，状态按账号逐个更新。
+  ElMessage.info(`已开始后台刷新 ${ids.length} 个账号，列表将逐个更新状态`)
+  void refreshStatusRows(ids, probe)
+    .then((result) => showBatchResult('批量刷新完成', result))
+    .catch((error) => ElMessage.error(`批量刷新异常：${getStatusRefreshError(error)}`))
 }
 
 async function chooseProbe(title: string, message: string) {
@@ -1004,8 +1181,8 @@ async function chooseProbe(title: string, message: string) {
       distinguishCancelAndClose: true,
     })
     return true
-  } catch {
-    return false
+  } catch (action) {
+    return action === 'cancel' ? false : null
   }
 }
 
@@ -1017,6 +1194,7 @@ async function toggleActive(row: Row) {
 }
 
 async function deleteOne(row: Row) {
+  if (!ensureAccountsIdle([row.id], '删除账号')) return
   await ElMessageBox.confirm(`确定要删除账号 ${row.displayPhone} 吗？此操作不可撤销！`, '确认删除', {
     type: 'warning',
     confirmButtonText: '删除',
@@ -1029,6 +1207,7 @@ async function deleteOne(row: Row) {
 
 async function deleteSelected() {
   if (!ensureSelected()) return
+  if (!ensureAccountsIdle(selectedIds.value, '删除账号')) return
   await ElMessageBox.confirm(
     `确定要删除已选账号（${selectedIds.value.length} 个）吗？将同时清理 sessions 文件，且不可恢复。`,
     '确认删除',
@@ -1046,6 +1225,7 @@ async function deleteSelected() {
 
 async function batchKickDevices() {
   if (!ensureSelected()) return
+  if (!ensureAccountsIdle(selectedIds.value, '踢出其他设备')) return
   await ElMessageBox.confirm(`将对 ${selectedIds.value.length} 个账号执行【踢出所有其他设备】（会保留面板当前会话）。是否继续？`, '确认踢出', {
     type: 'warning',
     confirmButtonText: '继续',
@@ -1062,6 +1242,11 @@ async function batchKickDevices() {
 
 async function cleanupWaste(scope: 'selected' | 'filtered' | 'all') {
   if (scope === 'selected' && !ensureSelected()) return
+  if (scope === 'selected' && !ensureAccountsIdle(selectedIds.value, '清理废号')) return
+  if (scope !== 'selected' && statusRefreshCount.value > 0) {
+    ElMessage.warning('后台状态刷新完成后才能清理筛选或全部账号')
+    return
+  }
   if (scope === 'filtered' && rows.value.length === 0) {
     ElMessage.info('当前筛选条件下没有可清理的废号')
     return
@@ -1072,6 +1257,7 @@ async function cleanupWaste(scope: 'selected' | 'filtered' | 'all') {
     scope === 'all' ? '清理所有废号' : scope === 'filtered' ? '清理筛选废号' : '清理已选废号',
     `将对${countText}执行 Telegram 状态检测，并删除判定为废号的账号与 session 文件。\n\n是否进行深度探测？`,
   )
+  if (probe === null) return
 
   if (scope === 'all' && probe) {
     await ElMessageBox.confirm('你选择了【深度探测】并且范围是【全部账号】。这会对每个账号创建并删除测试频道，属于高频敏感操作。确定继续吗？', '二次确认（高风险）', {
@@ -1101,6 +1287,7 @@ async function cleanupWaste(scope: 'selected' | 'filtered' | 'all') {
 }
 
 function openChatDialog(operation: 'join' | 'leave', accountIds: number[]) {
+  if (!ensureAccountsIdle(accountIds, operation === 'join' ? '加群/订阅' : '退群/退订')) return
   batchChatMembershipRef.value?.open(operation, accountIds)
 }
 
@@ -1481,6 +1668,8 @@ async function kickAllDevicesForDialog() {
 function handleBatchCommand(command: string) {
   if (command !== 'export-page' && command !== 'export-selected' && !ensureSelected()) return
   const ids = selectedIds.value
+  const nonConflictingCommands = new Set(['export-selected', 'export-page'])
+  if (!nonConflictingCommands.has(command) && !ensureAccountsIdle(ids, '执行该批量操作')) return
   switch (command) {
     case 'batch-join':
       openChatDialog('join', ids)
@@ -1525,6 +1714,8 @@ function handleBatchCommand(command: string) {
 }
 
 function handleRowCommand(command: string, row: Row) {
+  const readOnlyCommands = new Set(['details', 'refresh', 'channels', 'groups'])
+  if (!readOnlyCommands.has(command) && !ensureAccountsIdle([row.id], '执行该操作')) return
   switch (command) {
     case 'details':
       openDetails(row)

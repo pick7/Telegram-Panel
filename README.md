@@ -58,7 +58,7 @@ ports:
 
 Then access: http://localhost:18080
 
-Default credentials: admin / admin123
+Default credentials: tgpanel / tgpanel123
 
 ### Local Development
 

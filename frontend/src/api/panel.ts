@@ -103,9 +103,9 @@ export const panelApi = {
     api.patch<OperationResult>(`/accounts/${id}/active`, { isActive }).then((r) => r.data),
   deleteAccount: (id: number) => api.delete<OperationResult>(`/accounts/${id}`).then((r) => r.data),
   refreshTelegramStatus: (id: number) =>
-    api.post<TelegramStatus>(`/accounts/${id}/telegram-status`, { probeCreateChannel: false }).then((r) => r.data),
+    api.post<TelegramStatus>(`/accounts/${id}/telegram-status`, { probeCreateChannel: false }, { timeout: 300_000 }).then((r) => r.data),
   refreshTelegramStatusWithProbe: (id: number, probeCreateChannel: boolean) =>
-    api.post<TelegramStatus>(`/accounts/${id}/telegram-status`, { probeCreateChannel }).then((r) => r.data),
+    api.post<TelegramStatus>(`/accounts/${id}/telegram-status`, { probeCreateChannel }, { timeout: 300_000 }).then((r) => r.data),
   batchRefreshTelegramStatus: (accountIds: number[], probeCreateChannel: boolean) =>
     api.post<AccountBatchOperationResult>('/accounts/telegram-status', { accountIds, probeCreateChannel }).then((r) => r.data),
   batchSetAccountCategory: (accountIds: number[], categoryId: number | null) =>
@@ -355,7 +355,7 @@ export const panelApi = {
     api.patch<OperationResult>(`/channels/${id}/group`, { categoryId }).then((r) => r.data),
   deleteChannel: (id: number) => api.delete<OperationResult>(`/channels/${id}`).then((r) => r.data),
   batchSetChannelGroup: (ids: number[], categoryId: number | null) =>
-    api.post<OperationResult>('/channels/batch/group', { ids, categoryId }).then((r) => r.data),
+    api.post<OperationResult>('/channels/batch/group', { ids, categoryId }, { timeout: 120_000 }).then((r) => r.data),
   batchDeleteChannels: (ids: number[]) =>
     api.post<OperationResult>('/channels/batch/delete', { ids }).then((r) => r.data),
   batchInviteChannels: (payload: { ids: number[]; usernames: string[]; accountId?: number | null; accountCategoryId?: number | null; delayMs?: number | null }) =>
@@ -388,7 +388,7 @@ export const panelApi = {
     api.put<SimpleCategory>(`/channel-groups/${id}`, payload).then((r) => r.data),
   deleteChannelGroup: (id: number) => api.delete<OperationResult>(`/channel-groups/${id}`).then((r) => r.data),
   saveChannelGroupAssignments: (id: number, scopeIds: number[], selectedIds: number[]) =>
-    api.post<OperationResult>(`/channel-groups/${id}/assignments`, { scopeIds, selectedIds }).then((r) => r.data),
+    api.post<OperationResult>(`/channel-groups/${id}/assignments`, { scopeIds, selectedIds }, { timeout: 120_000 }).then((r) => r.data),
 
   groups: (params: {
     page: number
@@ -417,7 +417,7 @@ export const panelApi = {
     api.patch<OperationResult>(`/groups/${id}/category`, { categoryId }).then((r) => r.data),
   deleteGroup: (id: number) => api.delete<OperationResult>(`/groups/${id}`).then((r) => r.data),
   batchSetGroupCategory: (ids: number[], categoryId: number | null) =>
-    api.post<OperationResult>('/groups/batch/category', { ids, categoryId }).then((r) => r.data),
+    api.post<OperationResult>('/groups/batch/category', { ids, categoryId }, { timeout: 120_000 }).then((r) => r.data),
   batchDeleteGroups: (ids: number[]) =>
     api.post<OperationResult>('/groups/batch/delete', { ids }).then((r) => r.data),
   batchInviteGroups: (payload: { ids: number[]; usernames: string[]; accountId?: number | null; accountCategoryId?: number | null; delayMs?: number | null }) =>
@@ -450,7 +450,7 @@ export const panelApi = {
     api.put<SimpleCategory>(`/group-categories/${id}`, payload).then((r) => r.data),
   deleteGroupCategory: (id: number) => api.delete<OperationResult>(`/group-categories/${id}`).then((r) => r.data),
   saveGroupCategoryAssignments: (id: number, scopeIds: number[], selectedIds: number[]) =>
-    api.post<OperationResult>(`/group-categories/${id}/assignments`, { scopeIds, selectedIds }).then((r) => r.data),
+    api.post<OperationResult>(`/group-categories/${id}/assignments`, { scopeIds, selectedIds }, { timeout: 120_000 }).then((r) => r.data),
 
   bots: () => api.get<BotManagementItem[]>('/bots').then((r) => r.data),
   createBot: (payload: { name: string; token: string; username?: string | null }) =>

@@ -105,6 +105,25 @@ public class GroupManagementService
         }
     }
 
+    /// <summary>
+    /// 一次性保存群组分类绑定。scope 内从目标分类取消勾选的群组会移出分类，其他分类不受影响。
+    /// </summary>
+    public async Task<int> UpdateGroupCategoryAssignmentsAsync(
+        IReadOnlyCollection<int> scopeIds,
+        IReadOnlyCollection<int> selectedIds,
+        int? categoryId,
+        CancellationToken cancellationToken = default)
+    {
+        var selected = selectedIds
+            .Where(x => x > 0)
+            .ToHashSet();
+        return await _groupRepository.UpdateCategoryAssignmentsAsync(
+            scopeIds,
+            selected,
+            categoryId,
+            cancellationToken);
+    }
+
     public async Task<int> GetTotalGroupCountAsync()
     {
         return await _groupRepository.CountAsync();

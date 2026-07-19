@@ -395,10 +395,6 @@ function normalizeModuleHref(href: string) {
 }
 
 function resolveModuleRoute(item: ModuleNavItem) {
-  if (item.uiMode === 'direct') {
-    return `direct:${normalizeModuleHref(item.href)}`
-  }
-
   const pageKey = (item.pageKey || '').trim()
   if (item.moduleId && pageKey) {
     return `/ext/${encodeURIComponent(item.moduleId)}/${encodeURIComponent(pageKey)}`
@@ -407,7 +403,15 @@ function resolveModuleRoute(item: ModuleNavItem) {
   const href = normalizeModuleHref(item.href)
   const match = href.match(/^\/ext\/([^/?#]+)\/([^/?#]+)/i)
   if (match) {
-    return `/ext/${encodeURIComponent(decodeURIComponent(match[1]))}/${encodeURIComponent(decodeURIComponent(match[2]))}`
+    try {
+      return `/ext/${encodeURIComponent(decodeURIComponent(match[1]))}/${encodeURIComponent(decodeURIComponent(match[2]))}`
+    } catch {
+      // 损坏的百分号编码不能影响整个主布局，交由原始模块地址处理。
+    }
+  }
+
+  if (item.uiMode === 'direct') {
+    return `direct:${href}`
   }
 
   return href

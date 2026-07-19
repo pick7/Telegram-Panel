@@ -164,6 +164,25 @@ public class ChannelManagementService
         }
     }
 
+    /// <summary>
+    /// 一次性保存频道分组绑定。scope 内从目标分组取消勾选的频道会移出分组，其他分组不受影响。
+    /// </summary>
+    public async Task<int> UpdateChannelGroupAssignmentsAsync(
+        IReadOnlyCollection<int> scopeIds,
+        IReadOnlyCollection<int> selectedIds,
+        int? groupId,
+        CancellationToken cancellationToken = default)
+    {
+        var selected = selectedIds
+            .Where(x => x > 0)
+            .ToHashSet();
+        return await _channelRepository.UpdateGroupAssignmentsAsync(
+            scopeIds,
+            selected,
+            groupId,
+            cancellationToken);
+    }
+
     public async Task<int> GetTotalChannelCountAsync()
     {
         return await _channelRepository.CountAsync();

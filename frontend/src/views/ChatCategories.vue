@@ -7,7 +7,7 @@
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3" /></el-form-item>
         <el-form-item>
           <el-button v-if="editingId" @click="cancelEdit">取消</el-button>
-          <el-button type="primary" :disabled="!form.name.trim()" @click="saveCategory">
+          <el-button type="primary" :loading="savingCategory" :disabled="!form.name.trim()" @click="saveCategory">
             {{ editingId ? '保存修改' : '添加分类' }}
           </el-button>
         </el-form-item>
@@ -57,7 +57,12 @@
           </el-table-column>
         </el-table>
         <div class="mt-4">
-          <el-button type="primary" :disabled="assignCategoryId <= 0 || resourceLoading" @click="saveAssignments">
+          <el-button
+            type="primary"
+            :loading="savingAssignments"
+            :disabled="assignCategoryId <= 0 || resourceLoading || resources.length === 0"
+            @click="saveAssignments"
+          >
             保存勾选到分类
           </el-button>
         </div>
@@ -70,6 +75,7 @@
 import { nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { panelApi } from '@/api/panel'
+import { extractApiErrorMessage } from '@/api/client'
 import type { ChannelListItem, GroupListItem, OperationAccount, SimpleCategory } from '@/api/types'
 
 type Kind = 'channel' | 'group'
@@ -79,6 +85,8 @@ const kindName = props.kind === 'channel' ? '频道' : '群组'
 
 const loading = ref(false)
 const resourceLoading = ref(false)
+const savingCategory = ref(false)
+const savingAssignments = ref(false)
 const categories = ref<SimpleCategory[]>([])
 const accounts = ref<OperationAccount[]>([])
 const resources = ref<Resource[]>([])
@@ -161,17 +169,25 @@ function cancelEdit() {
 }
 
 async function saveCategory() {
+  if (savingCategory.value) return
   const payload = { name: form.name.trim(), description: form.description.trim() || null }
-  if (props.kind === 'channel') {
-    if (editingId.value) await panelApi.updateChannelGroup(editingId.value, payload)
-    else await panelApi.createChannelGroup(payload)
-  } else {
-    if (editingId.value) await panelApi.updateGroupCategory(editingId.value, payload)
-    else await panelApi.createGroupCategory(payload)
+  savingCategory.value = true
+  try {
+    if (props.kind === 'channel') {
+      if (editingId.value) await panelApi.updateChannelGroup(editingId.value, payload)
+      else await panelApi.createChannelGroup(payload)
+    } else {
+      if (editingId.value) await panelApi.updateGroupCategory(editingId.value, payload)
+      else await panelApi.createGroupCategory(payload)
+    }
+    cancelEdit()
+    ElMessage.success('分类已保存')
+    await loadCategories()
+  } catch (error: any) {
+    if (!extractApiErrorMessage(error?.response?.data)) ElMessage.error(error?.message || '分类保存失败')
+  } finally {
+    savingCategory.value = false
   }
-  cancelEdit()
-  ElMessage.success('分类已保存')
-  await loadCategories()
 }
 
 async function deleteCategory(category: SimpleCategory) {
@@ -185,11 +201,13 @@ async function deleteCategory(category: SimpleCategory) {
 
 async function restoreSelection() {
   await nextTick()
+  selectedIds.value = []
   tableRef.value?.clearSelection()
   if (assignCategoryId.value <= 0) return
-  resources.value.forEach((row) => {
-    if (rowCategoryId(row) === assignCategoryId.value) tableRef.value?.toggleRowSelection(row, true)
-  })
+
+  const selected = resources.value.filter((row) => rowCategoryId(row) === assignCategoryId.value)
+  selectedIds.value = selected.map((row) => row.id)
+  selected.forEach((row) => tableRef.value?.toggleRowSelection(row, true))
 }
 
 function onSelectionChange(selection: Resource[]) {
@@ -197,12 +215,23 @@ function onSelectionChange(selection: Resource[]) {
 }
 
 async function saveAssignments() {
+  if (savingAssignments.value || assignCategoryId.value <= 0) return
+
   const scopeIds = resources.value.map((x) => x.id)
-  if (props.kind === 'channel') await panelApi.saveChannelGroupAssignments(assignCategoryId.value, scopeIds, selectedIds.value)
-  else await panelApi.saveGroupCategoryAssignments(assignCategoryId.value, scopeIds, selectedIds.value)
-  ElMessage.success('分类绑定已保存')
-  await loadCategories()
-  await loadResources()
+  const scopeSet = new Set(scopeIds)
+  const selected = [...new Set(selectedIds.value)].filter((id) => scopeSet.has(id))
+  savingAssignments.value = true
+  try {
+    if (props.kind === 'channel') await panelApi.saveChannelGroupAssignments(assignCategoryId.value, scopeIds, selected)
+    else await panelApi.saveGroupCategoryAssignments(assignCategoryId.value, scopeIds, selected)
+    ElMessage.success('分类绑定已保存')
+    await loadCategories()
+    await loadResources()
+  } catch (error: any) {
+    if (!extractApiErrorMessage(error?.response?.data)) ElMessage.error(error?.message || '分类绑定保存失败')
+  } finally {
+    savingAssignments.value = false
+  }
 }
 
 onMounted(async () => {

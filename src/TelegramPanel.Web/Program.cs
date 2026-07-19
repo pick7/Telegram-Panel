@@ -860,20 +860,19 @@ static bool TryResolveExtensionModuleVueRoute(
     out string vueTarget)
 {
     vueTarget = string.Empty;
-    var parts = normalizedRequestPath
-        .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    if (parts.Length != 3 || !string.Equals(parts[0], "ext", StringComparison.OrdinalIgnoreCase))
+    if (!ExtensionModuleRoute.TryParse(normalizedRequestPath, out var moduleId, out var pageKey))
         return false;
 
-    var moduleId = Uri.UnescapeDataString(parts[1]);
-    var pageKey = Uri.UnescapeDataString(parts[2]);
     var matched = contributions.Pages.Any(page =>
         string.Equals(page.Module.Id, moduleId, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(page.Definition.Key, pageKey, StringComparison.OrdinalIgnoreCase));
+        && string.Equals(page.Definition.Key, pageKey, StringComparison.OrdinalIgnoreCase))
+        || contributions.NavItems.Any(item =>
+            string.Equals(item.Module.Id, moduleId, StringComparison.OrdinalIgnoreCase)
+            && ExtensionModuleRoute.Matches(item.Definition.Href, moduleId, pageKey));
     if (!matched)
         return false;
 
-    vueTarget = $"/ui/ext/{Uri.EscapeDataString(moduleId)}/{Uri.EscapeDataString(pageKey)}";
+    vueTarget = ExtensionModuleRoute.BuildVuePath(moduleId, pageKey);
     return true;
 }
 
@@ -921,8 +920,8 @@ app.MapGet("/login", async (HttpContext http, IConfiguration configuration, Admi
     var title = "Telegram Panel 登录";
     var msg = error == "1" ? "<div class=\"mud-alert mud-alert-filled mud-alert-filled-error\" style=\"margin-bottom:12px;\">账号或密码错误</div>" : "";
     var disabledMsg = configured ? "" : "<div class=\"mud-alert mud-alert-filled mud-alert-filled-warning\" style=\"margin-bottom:12px;\">后台验证未启用</div>";
-    var initialUsername = System.Net.WebUtility.HtmlEncode((configuration["AdminAuth:InitialUsername"] ?? "admin").Trim());
-    var initialPassword = System.Net.WebUtility.HtmlEncode((configuration["AdminAuth:InitialPassword"] ?? "admin123").Trim());
+    var initialUsername = System.Net.WebUtility.HtmlEncode((configuration["AdminAuth:InitialUsername"] ?? "tgpanel").Trim());
+    var initialPassword = System.Net.WebUtility.HtmlEncode((configuration["AdminAuth:InitialPassword"] ?? "tgpanel123").Trim());
     var initialHint = configured
         ? $"<div class=\"mud-alert mud-alert-filled mud-alert-filled-info\" style=\"margin-bottom:12px;\">初始账号：<b>{initialUsername}</b>，初始密码：<b>{initialPassword}</b>（首次登录后请立即修改）</div>"
         : "";

@@ -424,7 +424,7 @@ export interface ModuleNavItem {
   order: number
   moduleId: string
   pageKey?: string | null
-  uiMode?: 'direct' | 'legacy' | string
+  uiMode?: 'direct' | 'embedded' | 'legacy' | string
 }
 
 export interface CreateChatMembershipTaskRequest {
@@ -637,6 +637,7 @@ export interface ChannelListItem {
   systemCreatedAtUtc?: string | null
   syncedAt: string
   accounts: ChatMembershipAccount[]
+  warning?: string | null
 }
 
 export interface GroupListItem {
@@ -654,6 +655,7 @@ export interface GroupListItem {
   systemCreatedAtUtc?: string | null
   syncedAt: string
   accounts: ChatMembershipAccount[]
+  warning?: string | null
 }
 
 export interface ChannelDetail {

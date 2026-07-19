@@ -41,8 +41,8 @@ docker compose up -d
 
 ### 默认后台账号（首次登录）
 
-- 用户名：`admin`
-- 密码：`admin123`
+- 用户名：`tgpanel`
+- 密码：`tgpanel123`
 
 登录后到「修改密码」页面改掉即可。
 

@@ -26,4 +26,18 @@ public class GroupCategoryRepository : Repository<GroupCategory>, IGroupCategory
             .Include(g => g.Groups)
             .FirstOrDefaultAsync(g => g.Name == name);
     }
+
+    public async Task<bool> NameExistsAsync(
+        string name,
+        int? excludingId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = (name ?? string.Empty).Trim().ToUpperInvariant();
+        return await _dbSet
+            .AsNoTracking()
+            .AnyAsync(
+                g => g.Name.ToUpper() == normalized
+                     && (!excludingId.HasValue || g.Id != excludingId.Value),
+                cancellationToken);
+    }
 }

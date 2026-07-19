@@ -7,6 +7,32 @@ export const api = axios.create({
   withCredentials: true,
 })
 
+/** 从 ASP.NET OperationResult/ProblemDetails/验证错误中提取可读消息。 */
+export function extractApiErrorMessage(data: unknown): string {
+  if (typeof data === 'string') return data.trim()
+  if (!data || typeof data !== 'object') return ''
+
+  const body = data as Record<string, unknown>
+  for (const key of ['message', 'detail', 'error']) {
+    const value = body[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+
+  const errors = body.errors
+  if (errors && typeof errors === 'object') {
+    const messages = Object.values(errors as Record<string, unknown>)
+      .flatMap((value) => Array.isArray(value) ? value : [value])
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim())
+    if (messages.length > 0) return messages.join('；')
+  }
+
+  const title = body.title
+  if (typeof title === 'string' && title.trim()) return title.trim()
+
+  return ''
+}
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -15,7 +41,7 @@ api.interceptors.response.use(
       return Promise.reject(err)
     }
 
-    const message = err?.response?.data?.message || err?.response?.data?.title || err?.message
+    const message = extractApiErrorMessage(err?.response?.data) || err?.message
     if (message) ElMessage.error(message)
     return Promise.reject(err)
   },

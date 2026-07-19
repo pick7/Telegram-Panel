@@ -39,16 +39,27 @@ public class GroupService : IGroupService
 
     public async Task<GroupInfo> CreateGroupAsync(int accountId, string title, string about, bool isPublic = false, string? username = null)
     {
-        var client = await GetOrCreateConnectedClientAsync(accountId);
-
-        _logger.LogInformation("Creating group '{Title}' for account {AccountId}", title, accountId);
-
         if (isPublic)
         {
             username = username?.Trim().TrimStart('@');
             if (string.IsNullOrWhiteSpace(username))
                 throw new InvalidOperationException("公开群组需要设置用户名");
         }
+
+        var group = await CreatePrivateGroupAsync(accountId, title, about);
+        if (!isPublic || string.IsNullOrWhiteSpace(username))
+            return group;
+
+        if (!await SetGroupVisibilityAsync(accountId, group.TelegramId, true, username))
+            throw new InvalidOperationException("群组已创建，但公开用户名未设置成功");
+        return group with { Username = username };
+    }
+
+    public async Task<GroupInfo> CreatePrivateGroupAsync(int accountId, string title, string about)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+
+        _logger.LogInformation("Creating group '{Title}' for account {AccountId}", title, accountId);
 
         UpdatesBase updates;
         try
@@ -72,28 +83,12 @@ public class GroupService : IGroupService
         var group = updates.Chats.Values.OfType<Channel>().FirstOrDefault(c => !c.IsChannel)
             ?? throw new InvalidOperationException("群组创建失败");
 
-        if (isPublic && !string.IsNullOrWhiteSpace(username))
-        {
-            var available = await client.Channels_CheckUsername(group, username);
-            if (!available)
-                throw new InvalidOperationException($"用户名 '{username}' 不可用");
-
-            try
-            {
-                await client.Channels_UpdateUsername(group, username);
-            }
-            catch (RpcException ex) when (ex.Message.Contains("USERNAME_NOT_MODIFIED", StringComparison.OrdinalIgnoreCase))
-            {
-                // 视为成功
-            }
-        }
-
         return new GroupInfo
         {
             TelegramId = group.id,
             AccessHash = group.access_hash,
             Title = group.title,
-            Username = isPublic ? username : group.MainUsername,
+            Username = group.MainUsername,
             MemberCount = 0,
             About = about,
             CreatorAccountId = accountId,

@@ -166,7 +166,7 @@
         creating = true;
         try
         {
-            var groupInfo = await GroupService.CreateGroupAsync(selectedAccountId, title, about, isPublic, normalizedUsername);
+            var groupInfo = await GroupService.CreatePrivateGroupAsync(selectedAccountId, title, about);
             var now = DateTime.UtcNow;
 
             var group = new Group
@@ -187,7 +187,30 @@
             var savedGroup = await GroupManagement.CreateOrUpdateGroupAsync(group);
             await GroupManagement.UpsertAccountGroupAsync(selectedAccountId, savedGroup.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
 
-            Snackbar.Add($"群组 \"{title}\" 创建成功", Severity.Success);
+            string? warning = null;
+            if (isPublic && !string.IsNullOrWhiteSpace(normalizedUsername))
+            {
+                try
+                {
+                    if (await GroupService.SetGroupVisibilityAsync(selectedAccountId, groupInfo.TelegramId, true, normalizedUsername))
+                    {
+                        savedGroup.Username = normalizedUsername;
+                        await GroupManagement.UpdateGroupAsync(savedGroup);
+                    }
+                    else
+                    {
+                        warning = "公开用户名未设置成功";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    warning = $"公开用户名未设置：{ex.Message}";
+                }
+            }
+
+            Snackbar.Add(
+                warning == null ? $"群组 \"{title}\" 创建成功" : $"群组已创建，但{warning}",
+                warning == null ? Severity.Success : Severity.Warning);
             Navigation.NavigateTo("/groups");
         }
         catch (Exception ex)

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using TelegramPanel.Modules;
 
 namespace TelegramPanel.Web.Modules;
@@ -11,7 +12,7 @@ public sealed class ModuleRegistry
 
     public void Add(LoadedModule module) => _modules.Add(module);
 
-    public void MapEndpoints(IEndpointRouteBuilder endpoints)
+    public void MapEndpoints(IEndpointRouteBuilder endpoints, ILogger<ModuleRegistry> logger)
     {
         foreach (var m in _modules)
         {
@@ -19,9 +20,11 @@ public sealed class ModuleRegistry
             {
                 m.Instance.MapEndpoints(endpoints, m.Context);
             }
-            catch
+            catch (Exception ex)
             {
-                // 模块出错不应影响主站启动；日志在上层打
+                // 模块端点注册失败不应阻断主站启动，但必须留下完整异常，
+                // 否则侧栏仍会显示模块、请求却会静默落到 Razor 壳页面。
+                logger.LogError(ex, "模块端点注册失败：{ModuleId} {Version}", m.Id, m.Version);
             }
         }
     }

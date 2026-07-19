@@ -30,6 +30,9 @@ public class ChannelGroupManagementService
         return await _groupRepository.GetByNameAsync(name);
     }
 
+    public Task<bool> IsNameTakenAsync(string name, int? excludingId = null, CancellationToken cancellationToken = default) =>
+        _groupRepository.NameExistsAsync(name, excludingId, cancellationToken);
+
     public async Task<ChannelGroup> CreateGroupAsync(ChannelGroup group)
     {
         return await _groupRepository.AddAsync(group);

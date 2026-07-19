@@ -183,6 +183,53 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
             .ToListAsync();
     }
 
+    public async Task<int> UpdateGroupAssignmentsAsync(
+        IReadOnlyCollection<int> scopeIds,
+        IReadOnlySet<int> selectedIds,
+        int? groupId,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = scopeIds
+            .Where(x => x > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return 0;
+
+        var selected = selectedIds.ToHashSet();
+        // SQLite 对单条 SQL 的参数数量有限制；分类页可能一次提交上千个频道，
+        // 分块查询可以避免 “too many SQL variables” 导致保存失败。
+        var channels = new List<Channel>(ids.Length);
+        foreach (var chunk in ids.Chunk(500))
+        {
+            var chunkItems = await _dbSet
+                .Where(x => chunk.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            channels.AddRange(chunkItems);
+        }
+
+        var changed = 0;
+        foreach (var channel in channels)
+        {
+            // 未勾选项仅在原本属于目标分组时移除，不能误清空其他分组。
+            var targetGroupId = selected.Contains(channel.Id)
+                ? groupId
+                : channel.GroupId == groupId
+                    ? null
+                    : channel.GroupId;
+            if (channel.GroupId == targetGroupId)
+                continue;
+
+            channel.GroupId = targetGroupId;
+            changed++;
+        }
+
+        if (changed > 0)
+            await SaveChangesWithSqliteLockRetryAsync(cancellationToken);
+
+        return changed;
+    }
+
     public async Task<int> DeleteOrphanedAsync(CancellationToken cancellationToken = default)
     {
         var orphanedChannels = await _dbSet

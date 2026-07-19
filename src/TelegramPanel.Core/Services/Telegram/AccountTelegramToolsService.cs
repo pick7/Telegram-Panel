@@ -91,7 +91,6 @@ public class AccountTelegramToolsService
             if (account != null)
             {
                 profile.ApplyTo(account);
-                await TryPopulateEstimatedRegistrationAsync(account, client, accountId, cancellationToken);
             }
 
             var summary = "正常";
@@ -2298,6 +2297,30 @@ public class AccountTelegramToolsService
 
         if (msg.Contains("FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
             return ("账号被冻结（FROZEN_METHOD_INVALID）", "Telegram 提示该账号/ApiId 的某些接口被冻结（常见为创建频道接口）。" + Environment.NewLine + msg);
+
+        if (msg.Contains("CHANNELS_TOO_MUCH", StringComparison.OrdinalIgnoreCase))
+            return ("频道/群组数量已达上限（CHANNELS_TOO_MUCH）", "该账号已达到 Telegram 允许创建的频道或超级群组数量上限，请清理不需要的频道/群组或更换账号后重试。" + Environment.NewLine + msg);
+
+        if (msg.Contains("USER_RESTRICTED", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("USER_DEACTIVATED", StringComparison.OrdinalIgnoreCase))
+            return ("账号受限，无法创建频道/群组", "Telegram 限制了该账号的操作权限，请在官方客户端确认账号状态，或更换正常账号后重试。" + Environment.NewLine + msg);
+
+        if (msg.Contains("API_ID_INVALID", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("API_ID_PUBLISHED_FLOOD", StringComparison.OrdinalIgnoreCase))
+            return ("Telegram API 配置无效", "请在系统设置中核对 ApiId/ApiHash，并使用与 Session 匹配的 API 配置后重试。" + Environment.NewLine + msg);
+
+        if (msg.Contains("USERNAME_INVALID", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("USERNAME_OCCUPIED", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("USERNAME_NOT_MODIFIED", StringComparison.OrdinalIgnoreCase))
+            return ("公开用户名不可用", "请使用符合 Telegram 规则且未被占用的用户名（仅字母、数字和下划线，且以字母开头）。" + Environment.NewLine + msg);
+
+        if (msg.Contains("CHAT_ADMIN_REQUIRED", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("CHAT_WRITE_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
+            return ("账号权限不足", "当前执行账号没有完成该操作所需的权限，请使用频道/群组创建者账号重试。" + Environment.NewLine + msg);
+
+        if (msg.Contains("PEER_FLOOD", StringComparison.OrdinalIgnoreCase))
+            return ("账号触发 Telegram 风控（PEER_FLOOD）", "请暂停批量操作，等待风控解除后再试，必要时更换账号。" + Environment.NewLine + msg);
 
         if (msg.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase))
             return ("触发限流（FLOOD_WAIT）", msg);

@@ -131,6 +131,55 @@ public class GroupRepository : Repository<Group>, IGroupRepository
             .ToListAsync();
     }
 
+    public async Task<int> UpdateCategoryAssignmentsAsync(
+        IReadOnlyCollection<int> scopeIds,
+        IReadOnlySet<int> selectedIds,
+        int? categoryId,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = scopeIds
+            .Where(x => x > 0)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return 0;
+
+        var selected = selectedIds.ToHashSet();
+        // SQLite 对单条 SQL 的参数数量有限制；分类页可能一次提交上千个群组，
+        // 分块查询可以避免 “too many SQL variables” 导致保存失败。
+        var groups = new List<Group>(ids.Length);
+        foreach (var chunk in ids.Chunk(500))
+        {
+            var chunkItems = await _dbSet
+                .Where(x => chunk.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            groups.AddRange(chunkItems);
+        }
+
+        var changed = 0;
+        var now = DateTime.UtcNow;
+        foreach (var group in groups)
+        {
+            // 未勾选项仅在原本属于目标分类时移除，不能误清空其他分类。
+            var targetCategoryId = selected.Contains(group.Id)
+                ? categoryId
+                : group.CategoryId == categoryId
+                    ? null
+                    : group.CategoryId;
+            if (group.CategoryId == targetCategoryId)
+                continue;
+
+            group.CategoryId = targetCategoryId;
+            group.SyncedAt = now;
+            changed++;
+        }
+
+        if (changed > 0)
+            await SaveChangesWithSqliteLockRetryAsync(cancellationToken);
+
+        return changed;
+    }
+
     public async Task<int> DeleteOrphanedAsync(CancellationToken cancellationToken = default)
     {
         var orphanedGroups = await _dbSet

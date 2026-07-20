@@ -17,6 +17,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
         var query = _dbSet
             .AsNoTracking()
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .AsQueryable();
 
         if (categoryId.HasValue && categoryId.Value > 0)
@@ -115,6 +116,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .Include(a => a.Channels)
             .Include(a => a.Groups)
             .FirstOrDefaultAsync(a => a.Id == id);
@@ -124,6 +126,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .ToListAsync();
     }
 
@@ -131,6 +134,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .FirstOrDefaultAsync(a => a.Phone == phone);
     }
 
@@ -138,6 +142,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .FirstOrDefaultAsync(a => a.UserId == userId);
     }
 
@@ -145,6 +150,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .Where(a => a.CategoryId == categoryId)
             .ToListAsync();
     }
@@ -153,6 +159,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .Where(a => a.IsActive && (a.Category == null || !a.Category.ExcludeFromOperations))
             .ToListAsync();
     }
@@ -289,6 +296,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
         return await _dbSet
             .AsNoTracking()
             .Include(a => a.Category)
+            .Include(a => a.Proxy)
             .Where(a => a.IsActive
                         && a.TelegramStatusOk == false
                         && a.TelegramStatusSummary != null

@@ -32,6 +32,25 @@
             <span>系统状态</span>
           </template>
           <div class="status-list">
+            <div class="status-row egress-status-row">
+              <span :class="['status-dot', egress?.success ? 'ok' : 'danger']" />
+              <div class="egress-status-content">
+                <div>
+                  面板公网出口：<strong>{{ egress?.success ? egress.ip || '未知' : egress ? '检测失败' : '检测中' }}</strong>
+                  <el-tag v-if="egress?.warpStatus" size="small" :type="egress.warpStatus === 'on' || egress.warpStatus === 'plus' ? 'success' : 'info'">
+                    WARP {{ egress.warpStatus }}
+                  </el-tag>
+                </div>
+                <div class="cell-sub">{{ egressDescription }}</div>
+              </div>
+              <el-button
+                link
+                :icon="Refresh"
+                :loading="egressLoading"
+                title="重新检测面板公网出口"
+                @click="loadEgress"
+              />
+            </div>
             <div class="status-row">
               <span class="status-dot ok" />
               <span>正常账号: {{ summary?.normalAccountCount ?? '-' }}</span>
@@ -87,7 +106,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import { panelApi } from '@/api/panel'
-import type { BatchTask, DashboardSummary } from '@/api/types'
+import type { BatchTask, DashboardSummary, NetworkEgress } from '@/api/types'
 import StatusTag from '@/components/StatusTag.vue'
 import { taskProgress } from '@/utils/format'
 
@@ -95,6 +114,8 @@ const router = useRouter()
 const loading = ref(false)
 const syncing = ref(false)
 const summary = ref<DashboardSummary | null>(null)
+const egress = ref<NetworkEgress | null>(null)
+const egressLoading = ref(false)
 let timer: number | undefined
 let loadPromise: Promise<void> | null = null
 
@@ -113,6 +134,13 @@ const needsAutoRefresh = computed(() =>
   (summary.value?.activeTaskCount || 0) > 0
   || (summary.value?.enabledScheduledTaskCount || 0) > 0,
 )
+const egressDescription = computed(() => {
+  if (!egress.value) return '正在检测出口信息'
+  if (!egress.value.success) return egress.value.error || '无法获取出口信息'
+  const location = [egress.value.country, egress.value.city, egress.value.isp].filter(Boolean).join(' / ')
+  const latency = egress.value.latencyMs == null ? '' : `${egress.value.latencyMs} ms`
+  return [location, latency].filter(Boolean).join(' · ') || '位置未知'
+})
 
 async function load(options: { silent?: boolean } = {}) {
   const showLoading = !options.silent
@@ -143,6 +171,15 @@ async function syncAll() {
     await load()
   } finally {
     syncing.value = false
+  }
+}
+
+async function loadEgress() {
+  egressLoading.value = true
+  try {
+    egress.value = await panelApi.networkEgress()
+  } finally {
+    egressLoading.value = false
   }
 }
 
@@ -179,6 +216,7 @@ function formatRecentTime(value?: string | null) {
 
 onMounted(() => {
   load()
+  void loadEgress()
   timer = window.setInterval(() => {
     if (document.visibilityState === 'visible' && needsAutoRefresh.value) {
       void load({ silent: true }).catch(() => undefined)
@@ -283,6 +321,20 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.egress-status-row {
+  align-items: flex-start;
+}
+
+.egress-status-content {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.egress-status-content .el-tag {
+  margin-left: 6px;
 }
 
 .status-dot {

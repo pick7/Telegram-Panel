@@ -2,8 +2,11 @@ using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Utils;
+using TelegramPanel.Data;
 using TelegramPanel.Data.Entities;
 using System.IO.Compression;
 using WTelegram;
@@ -15,21 +18,32 @@ namespace TelegramPanel.Core.Services.Telegram;
 /// </summary>
 public class AccountImportService
 {
+    public const int MaxPerAccountWarpBatchSize = 10;
+    private const int MaxZipEntryCount = 5_000;
+    private const long MaxZipEntryBytes = 100L * 1024 * 1024;
+    private const long MaxZipExtractedBytes = 1024L * 1024 * 1024;
+
     private readonly ISessionImporter _sessionImporter;
+    private readonly AppDbContext _db;
     private readonly AccountManagementService _accountManagement;
     private readonly ILogger<AccountImportService> _logger;
     private readonly IConfiguration _configuration;
+    private readonly ProxyManagementService _proxyManagement;
 
     public AccountImportService(
         ISessionImporter sessionImporter,
+        AppDbContext db,
         AccountManagementService accountManagement,
         ILogger<AccountImportService> logger,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ProxyManagementService proxyManagement)
     {
         _sessionImporter = sessionImporter;
+        _db = db;
         _accountManagement = accountManagement;
         _logger = logger;
         _configuration = configuration;
+        _proxyManagement = proxyManagement;
     }
 
     /// <summary>
@@ -39,15 +53,36 @@ public class AccountImportService
         IReadOnlyList<IBrowserFile> files,
         int apiId,
         string apiHash,
-        int? categoryId = null)
+        int? categoryId = null,
+        AccountProxyBindingInput? proxyBinding = null,
+        CancellationToken cancellationToken = default)
     {
+        EnsurePerAccountWarpBatchLimit(proxyBinding, files.Count);
         var results = new List<ImportResult>();
+        var importedPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in files)
         {
             await using var upload = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
-            results.Add(await ImportFromSessionFileStreamAsync(file.Name, upload, apiId, apiHash, categoryId));
-            await Task.Delay(500);
+            results.Add(await ExecuteImportWithProxyAsync(
+                file.Name,
+                proxyBinding,
+                importedPhones,
+                proxy => ImportFromSessionFileStreamAsync(
+                    file.Name,
+                    upload,
+                    apiId,
+                    apiHash,
+                    proxy,
+                    cancellationToken),
+                cancellationToken,
+                result => PersistImportedSessionAsync(
+                    result,
+                    apiId,
+                    apiHash,
+                    categoryId,
+                    twoFactorPassword: null)));
+            await Task.Delay(500, cancellationToken);
         }
 
         var successCount = results.Count(r => r.Success);
@@ -63,14 +98,35 @@ public class AccountImportService
         IReadOnlyList<AccountImportFile> files,
         int apiId,
         string apiHash,
-        int? categoryId = null)
+        int? categoryId = null,
+        AccountProxyBindingInput? proxyBinding = null,
+        CancellationToken cancellationToken = default)
     {
+        EnsurePerAccountWarpBatchLimit(proxyBinding, files.Count);
         var results = new List<ImportResult>();
+        var importedPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in files)
         {
-            results.Add(await ImportFromSessionFileStreamAsync(file.FileName, file.Content, apiId, apiHash, categoryId));
-            await Task.Delay(500);
+            results.Add(await ExecuteImportWithProxyAsync(
+                file.FileName,
+                proxyBinding,
+                importedPhones,
+                proxy => ImportFromSessionFileStreamAsync(
+                    file.FileName,
+                    file.Content,
+                    apiId,
+                    apiHash,
+                    proxy,
+                    cancellationToken),
+                cancellationToken,
+                result => PersistImportedSessionAsync(
+                    result,
+                    apiId,
+                    apiHash,
+                    categoryId,
+                    twoFactorPassword: null)));
+            await Task.Delay(500, cancellationToken);
         }
 
         var successCount = results.Count(r => r.Success);
@@ -84,7 +140,8 @@ public class AccountImportService
         Stream content,
         int apiId,
         string apiHash,
-        int? categoryId)
+        ProxyConnectionOptions? proxy,
+        CancellationToken cancellationToken)
     {
         var safeFileName = Path.GetFileName(fileName);
         if (string.IsNullOrWhiteSpace(safeFileName))
@@ -98,11 +155,16 @@ public class AccountImportService
             Directory.CreateDirectory(tempDir);
             await using (var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await content.CopyToAsync(fileStream);
+                await content.CopyToAsync(fileStream, cancellationToken);
             }
 
-            var result = await _sessionImporter.ImportFromSessionFileAsync(tempPath, apiId, apiHash);
-            return await PersistImportedSessionAsync(result, apiId, apiHash, categoryId, twoFactorPassword: null);
+            var result = await ImportFromSessionFileDeferredAsync(
+                tempPath,
+                apiId,
+                apiHash,
+                proxy: proxy,
+                cancellationToken: cancellationToken);
+            return result;
         }
         catch (Exception ex)
         {
@@ -130,62 +192,30 @@ public class AccountImportService
         string sessionString,
         int apiId,
         string apiHash,
-        int? categoryId = null)
+        int? categoryId = null,
+        AccountProxyBindingInput? proxyBinding = null,
+        CancellationToken cancellationToken = default)
     {
-        var result = await _sessionImporter.ImportFromStringSessionAsync(sessionString, apiId, apiHash);
-
-        // 如果导入成功，保存到数据库
-        if (result.Success && result.UserId.HasValue)
-        {
-            try
+        return await ExecuteImportWithProxyAsync(
+            "string-session",
+            proxyBinding,
+            importedPhones: null,
+            async proxy =>
             {
-                var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
-                if (string.IsNullOrWhiteSpace(phone))
-                    throw new InvalidOperationException("导入结果缺少有效手机号");
-
-                var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
-                if (existing != null)
-                {
-                    existing.UserId = result.UserId.Value;
-                    existing.Username = result.Username;
-                    existing.SessionPath = result.SessionPath!;
-                    existing.ApiId = apiId;
-                    existing.ApiHash = apiHash.Trim();
-                    existing.IsActive = true;
-                    existing.CategoryId = categoryId ?? existing.CategoryId;
-                    existing.LastSyncAt = DateTime.UtcNow;
-                    await _accountManagement.UpdateAccountAsync(existing);
-                }
-                else
-                {
-                    var account = new Account
-                    {
-                        Phone = phone,
-                        UserId = result.UserId.Value,
-                        Username = result.Username,
-                        SessionPath = result.SessionPath!,
-                        ApiId = apiId,
-                        ApiHash = apiHash.Trim(),
-                        IsActive = true,
-                        CategoryId = categoryId,
-                        CreatedAt = DateTime.UtcNow,
-                        LastSyncAt = DateTime.UtcNow
-                    };
-
-                    await _accountManagement.CreateAccountAsync(account);
-                }
-
-                _logger.LogInformation("Account saved to database: {Phone}", phone);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to save account to database: {Phone}", result.Phone);
-                return new ImportResult(false, result.Phone, result.UserId, result.Username, result.SessionPath,
-                    $"StringSession 已导入，但数据库保存失败：{FormatException(ex)}");
-            }
-        }
-
-        return result;
+                return await ImportFromStringSessionDeferredAsync(
+                    sessionString,
+                    apiId,
+                    apiHash,
+                    proxy,
+                    cancellationToken);
+            },
+            cancellationToken,
+            result => PersistImportedSessionAsync(
+                    result,
+                    apiId,
+                    apiHash,
+                    categoryId,
+                    twoFactorPassword: null));
     }
 
     /// <summary>
@@ -194,7 +224,9 @@ public class AccountImportService
     public async Task<List<ImportResult>> ImportFromZipAsync(
         IBrowserFile zipFile,
         int? categoryId = null,
-        string? twoFactorPassword = null)
+        string? twoFactorPassword = null,
+        AccountProxyBindingInput? proxyBinding = null,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<ImportResult>();
 
@@ -205,7 +237,13 @@ public class AccountImportService
         }
 
         await using var upload = zipFile.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024);
-        return await ImportFromZipStreamAsync(zipFile.Name, upload, categoryId, twoFactorPassword);
+        return await ImportFromZipStreamAsync(
+            zipFile.Name,
+            upload,
+            categoryId,
+            twoFactorPassword,
+            proxyBinding,
+            cancellationToken);
     }
 
     /// <summary>
@@ -215,7 +253,9 @@ public class AccountImportService
         string fileName,
         Stream zipStream,
         int? categoryId = null,
-        string? twoFactorPassword = null)
+        string? twoFactorPassword = null,
+        AccountProxyBindingInput? proxyBinding = null,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<ImportResult>();
 
@@ -228,18 +268,20 @@ public class AccountImportService
 
             await using (var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await zipStream.CopyToAsync(fs);
+                await zipStream.CopyToAsync(fs, cancellationToken);
             }
 
             // 注意：部分第三方打包工具会生成“目录条目但包含数据”的非标准 zip，
             // ZipFile.ExtractToDirectory 会直接抛异常。这里改为手动解压并容错处理。
-            await ExtractZipToDirectorySafeAsync(tempZipPath, extractDir);
+            await ExtractZipToDirectorySafeAsync(tempZipPath, extractDir, cancellationToken);
 
             var tdataDirs = FindTdataDirectories(extractDir);
             var allJsonFiles = Directory.EnumerateFiles(extractDir, "*.json", SearchOption.AllDirectories).ToList();
             var jsonFiles = allJsonFiles
                 .Where(path => !IsPathInsideAnyDirectory(path, tdataDirs))
                 .ToList();
+            var candidateCount = jsonFiles.Count > 0 ? jsonFiles.Count : tdataDirs.Count;
+            EnsurePerAccountWarpBatchLimit(proxyBinding, candidateCount);
 
             var skippedTdataJsonCount = allJsonFiles.Count - jsonFiles.Count;
             if (skippedTdataJsonCount > 0)
@@ -253,7 +295,12 @@ public class AccountImportService
             {
                 if (tdataDirs.Count > 0)
                 {
-                    results.AddRange(await ImportFromTdataDirectoriesAsync(tdataDirs, categoryId, twoFactorPassword));
+                    results.AddRange(await ImportFromTdataDirectoriesAsync(
+                        tdataDirs,
+                        categoryId,
+                        twoFactorPassword,
+                        proxyBinding,
+                        cancellationToken));
                     var tdataSuccess = results.Count(r => r.Success);
                     _logger.LogInformation("Tdata import completed: {Success}/{Total} successful", tdataSuccess, results.Count);
                     return results;
@@ -266,13 +313,18 @@ public class AccountImportService
             var importedPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var jsonPath in jsonFiles)
             {
-                var result = await ImportFromPackageEntryAsync(jsonPath, categoryId, twoFactorPassword);
-                if (result.Phone != null && !importedPhones.Add(result.Phone))
-                {
-                    results.Add(new ImportResult(false, result.Phone, result.UserId, result.Username, result.SessionPath, "重复账号已跳过"));
-                    continue;
-                }
-
+                var result = await ExecuteImportWithProxyAsync(
+                    Path.GetFileNameWithoutExtension(jsonPath),
+                    proxyBinding,
+                    importedPhones: null,
+                    proxy => ImportFromPackageEntryAsync(
+                        jsonPath,
+                        categoryId,
+                        twoFactorPassword,
+                        importedPhones,
+                        proxy,
+                        cancellationToken),
+                    cancellationToken);
                 results.Add(result);
             }
 
@@ -293,7 +345,10 @@ public class AccountImportService
         }
     }
 
-    private async Task ExtractZipToDirectorySafeAsync(string zipPath, string destinationDirectory)
+    private async Task ExtractZipToDirectorySafeAsync(
+        string zipPath,
+        string destinationDirectory,
+        CancellationToken cancellationToken)
     {
         var destRoot = Path.GetFullPath(destinationDirectory);
         Directory.CreateDirectory(destRoot);
@@ -302,6 +357,10 @@ public class AccountImportService
             : destRoot + Path.DirectorySeparatorChar;
 
         using var archive = ZipFile.OpenRead(zipPath);
+        if (archive.Entries.Count > MaxZipEntryCount)
+            throw new InvalidDataException($"压缩包条目数超过上限 {MaxZipEntryCount}");
+
+        long totalExtractedBytes = 0;
         foreach (var entry in archive.Entries)
         {
             if (string.IsNullOrWhiteSpace(entry.FullName))
@@ -329,28 +388,44 @@ public class AccountImportService
             var filePath = Path.GetFullPath(Path.Combine(destRoot, normalized));
             if (!filePath.StartsWith(destRootWithSep, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"压缩包包含非法路径（Zip Slip）：{entry.FullName}");
+            if (entry.Length > MaxZipEntryBytes)
+                throw new InvalidDataException($"压缩包条目超过 100MB：{entry.FullName}");
+            if (totalExtractedBytes + entry.Length > MaxZipExtractedBytes)
+                throw new InvalidDataException("压缩包解压后总大小超过 1GB");
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-
-            try
+            await using var entryStream = entry.Open();
+            await using var outStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            var buffer = new byte[81920];
+            long entryExtractedBytes = 0;
+            while (true)
             {
-                await using var entryStream = entry.Open();
-                await using var outStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
-                await entryStream.CopyToAsync(outStream);
-            }
-            catch (Exception ex)
-            {
-                // 容错：单个条目失败不影响整体导入
-                _logger.LogWarning(ex, "Failed to extract zip entry: {Entry}", entry.FullName);
+                var read = await entryStream.ReadAsync(buffer, cancellationToken);
+                if (read == 0)
+                    break;
+                entryExtractedBytes += read;
+                totalExtractedBytes += read;
+                if (entryExtractedBytes > MaxZipEntryBytes)
+                    throw new InvalidDataException($"压缩包条目超过 100MB：{entry.FullName}");
+                if (totalExtractedBytes > MaxZipExtractedBytes)
+                    throw new InvalidDataException("压缩包解压后总大小超过 1GB");
+                await outStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
         }
     }
 
-    private async Task<ImportResult> ImportFromPackageEntryAsync(string jsonPath, int? categoryId, string? twoFactorPassword)
+    private async Task<ImportResult> ImportFromPackageEntryAsync(
+        string jsonPath,
+        int? categoryId,
+        string? twoFactorPassword,
+        HashSet<string>? importedPhones,
+        ProxyConnectionOptions? proxy,
+        CancellationToken cancellationToken)
     {
+        var databaseMutationStarted = false;
         try
         {
-            var json = await File.ReadAllTextAsync(jsonPath);
+            var json = await File.ReadAllTextAsync(jsonPath, cancellationToken);
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -369,6 +444,16 @@ public class AccountImportService
             phone = PhoneNumberFormatter.NormalizeToDigits(phone);
             if (string.IsNullOrWhiteSpace(phone))
                 return new ImportResult(false, null, null, null, null, $"json phone 无效: {jsonPath}");
+            if (importedPhones?.Contains(phone) == true)
+            {
+                return new ImportResult(
+                    false,
+                    phone,
+                    null,
+                    null,
+                    null,
+                    "重复账号已跳过");
+            }
 
             _ = TryGetLong(root, out var userId, "user_id", "uid", "userId");
             _ = TryGetString(root, out var username, "username");
@@ -401,89 +486,130 @@ public class AccountImportService
             Directory.CreateDirectory(sessionsPath);
             var targetSessionPath = Path.Combine(sessionsPath, $"{phone}.session");
 
-            // 有些来源的 .session 实际上是 SQLite（Telethon/Pyrogram/Telegram Desktop 等），WTelegram 不能直接读取。
-            // 优先尝试使用 json 里的 session_string（映射到 WTelegram 的 session_key）来生成可用 session 文件。
-            if (LooksLikeSqliteSession(sessionCandidate))
+            string? convertedSessionPath = null;
+            try
             {
-                SessionDataConverter.SessionConvertResult converted;
-                if (string.IsNullOrWhiteSpace(sessionKey))
+                var validatedSessionPath = sessionCandidate;
+
+                // 有些来源的 .session 实际上是 SQLite（Telethon/Pyrogram/Telegram Desktop 等），WTelegram 不能直接读取。
+                // 先转换到临时候选文件，数据库保存成功前不覆盖正式 Session。
+                if (LooksLikeSqliteSession(sessionCandidate))
                 {
-                    // 没有 session_string 也不阻挡：直接从 sqlite 里取 dc/auth_key 转换为 WTelegram session
-                    converted = await SessionDataConverter.TryCreateWTelegramSessionFromTelethonSqliteFileAsync(
-                        sqliteSessionPath: sessionCandidate,
-                        apiId: apiId,
-                        apiHash: apiHash.Trim(),
-                        targetSessionPath: targetSessionPath,
-                        phone: phone,
-                        userId: userId,
-                        logger: _logger);
+                    convertedSessionPath = Path.Combine(
+                        sessionsPath,
+                        $".{phone}.package-convert-{Guid.NewGuid():N}.session");
+                    SessionDataConverter.SessionConvertResult converted;
+                    if (string.IsNullOrWhiteSpace(sessionKey))
+                    {
+                        // 没有 session_string 也不阻挡：直接从 sqlite 里取 dc/auth_key 转换为 WTelegram session
+                        converted = await SessionDataConverter.TryCreateWTelegramSessionFromTelethonSqliteFileAsync(
+                            sqliteSessionPath: sessionCandidate,
+                            apiId: apiId,
+                            apiHash: apiHash.Trim(),
+                            targetSessionPath: convertedSessionPath,
+                            phone: phone,
+                            userId: userId,
+                            logger: _logger,
+                            proxy: proxy,
+                            cancellationToken: cancellationToken);
+                    }
+                    else
+                    {
+                        converted = await SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
+                            sessionString: sessionKey,
+                            apiId: apiId,
+                            apiHash: apiHash.Trim(),
+                            targetSessionPath: convertedSessionPath,
+                            phone: phone,
+                            userId: userId,
+                            logger: _logger,
+                            proxy: proxy,
+                            cancellationToken: cancellationToken);
+                    }
+
+                    if (!converted.Ok)
+                    {
+                        var reason = converted.Reason ?? "未知原因";
+                        return new ImportResult(false, phone, userId, username, null,
+                            $"该 .session 为 SQLite 格式，但转换/校验失败：{reason}（通常表示账号已掉线/被登出/会话失效，需要重新登录生成新 session）");
+                    }
+
+                    validatedSessionPath = convertedSessionPath;
+                }
+
+                using var replacement = AtomicSessionFileReplacement.Create(targetSessionPath);
+                File.Copy(validatedSessionPath, replacement.StagingPath, overwrite: false);
+                replacement.Apply();
+
+                // 入库：存在则更新，不存在则创建。保存失败时 using 会自动恢复旧 Session。
+                databaseMutationStarted = true;
+                var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
+                if (existing != null)
+                {
+                    existing.UserId = userId ?? existing.UserId;
+                    existing.Username = username ?? existing.Username;
+                    existing.Nickname = nickname ?? existing.Nickname;
+                    existing.SessionPath = targetSessionPath;
+                    existing.ApiId = apiId;
+                    existing.ApiHash = apiHash.Trim();
+                    existing.IsActive = true;
+                    existing.LastSyncAt = DateTime.UtcNow;
+                    // 仅在提供了二级密码时更新，避免覆盖已有密码
+                    if (!string.IsNullOrWhiteSpace(effectiveTwoFactorPassword))
+                        existing.TwoFactorPassword = effectiveTwoFactorPassword.Trim();
+                    await _accountManagement.UpdateAccountAsync(existing);
                 }
                 else
                 {
-                    converted = await SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
-                        sessionString: sessionKey,
-                        apiId: apiId,
-                        apiHash: apiHash.Trim(),
-                        targetSessionPath: targetSessionPath,
-                        phone: phone,
-                        userId: userId,
-                        logger: _logger);
+                    var account = new Account
+                    {
+                        Phone = phone,
+                        UserId = userId ?? 0,
+                        Nickname = nickname,
+                        Username = username,
+                        SessionPath = targetSessionPath,
+                        ApiId = apiId,
+                        ApiHash = apiHash.Trim(),
+                        IsActive = true,
+                        CategoryId = categoryId,
+                        TwoFactorPassword = string.IsNullOrWhiteSpace(effectiveTwoFactorPassword) ? null : effectiveTwoFactorPassword.Trim(),
+                        CreatedAt = DateTime.UtcNow,
+                        LastSyncAt = DateTime.UtcNow
+                    };
+
+                    await _accountManagement.CreateAccountAsync(account);
                 }
 
-                if (!converted.Ok)
+                replacement.Commit();
+                if (replacement.CleanupError != null)
                 {
-                    var reason = converted.Reason ?? "未知原因";
-                    return new ImportResult(false, phone, userId, username, null,
-                        $"该 .session 为 SQLite 格式，但转换/校验失败：{reason}（通常表示账号已掉线/被登出/会话失效，需要重新登录生成新 session）");
+                    _logger.LogWarning(
+                        replacement.CleanupError,
+                        "Package Session committed but rollback backup cleanup is pending: {BackupPath}",
+                        replacement.BackupPath);
+                }
+                importedPhones?.Add(phone);
+                return new ImportResult(true, phone, userId, username, targetSessionPath, null);
+            }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(convertedSessionPath) && File.Exists(convertedSessionPath))
+                {
+                    try
+                    {
+                        File.Delete(convertedSessionPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to clean temporary converted Session {SessionPath}", convertedSessionPath);
+                    }
                 }
             }
-            else
-            {
-                File.Copy(sessionCandidate, targetSessionPath, overwrite: true);
-            }
-
-            // 入库：存在则更新，不存在则创建
-            var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
-            if (existing != null)
-            {
-                existing.UserId = userId ?? existing.UserId;
-                existing.Username = username ?? existing.Username;
-                existing.Nickname = nickname ?? existing.Nickname;
-                existing.SessionPath = targetSessionPath;
-                existing.ApiId = apiId;
-                existing.ApiHash = apiHash.Trim();
-                existing.IsActive = true;
-                existing.LastSyncAt = DateTime.UtcNow;
-                // 仅在提供了二级密码时更新，避免覆盖已有密码
-                if (!string.IsNullOrWhiteSpace(effectiveTwoFactorPassword))
-                    existing.TwoFactorPassword = effectiveTwoFactorPassword.Trim();
-                await _accountManagement.UpdateAccountAsync(existing);
-            }
-            else
-            {
-                var account = new Account
-                {
-                    Phone = phone,
-                    UserId = userId ?? 0,
-                    Nickname = nickname,
-                    Username = username,
-                    SessionPath = targetSessionPath,
-                    ApiId = apiId,
-                    ApiHash = apiHash.Trim(),
-                    IsActive = true,
-                    CategoryId = categoryId,
-                    TwoFactorPassword = string.IsNullOrWhiteSpace(effectiveTwoFactorPassword) ? null : effectiveTwoFactorPassword.Trim(),
-                    CreatedAt = DateTime.UtcNow,
-                    LastSyncAt = DateTime.UtcNow
-                };
-
-                await _accountManagement.CreateAccountAsync(account);
-            }
-
-            return new ImportResult(true, phone, userId, username, targetSessionPath, null);
         }
         catch (Exception ex)
         {
+            if (databaseMutationStarted)
+                ClearFailedImportTracking();
             _logger.LogError(ex, "Failed to import package entry from {JsonPath}", jsonPath);
             return new ImportResult(false, null, null, null, null, FormatException(ex));
         }
@@ -494,7 +620,9 @@ public class AccountImportService
     private async Task<List<ImportResult>> ImportFromTdataDirectoriesAsync(
         IReadOnlyCollection<string> tdataDirectories,
         int? categoryId,
-        string? twoFactorPassword)
+        string? twoFactorPassword,
+        AccountProxyBindingInput? proxyBinding,
+        CancellationToken cancellationToken)
     {
         var results = new List<ImportResult>();
 
@@ -513,18 +641,23 @@ public class AccountImportService
         var importedPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var tdataDir in tdataDirectories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var result = await ImportFromTdataDirectoryAsync(tdataDir, apiId, apiHash, categoryId, twoFactorPassword);
-            var normalizedPhone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
-            if (!string.IsNullOrWhiteSpace(normalizedPhone))
-            {
-                result = result with { Phone = normalizedPhone };
-                if (!importedPhones.Add(normalizedPhone))
-                {
-                    results.Add(new ImportResult(false, normalizedPhone, result.UserId, result.Username, result.SessionPath, "重复账号已跳过"));
-                    continue;
-                }
-            }
-
+            var result = await ExecuteImportWithProxyAsync(
+                Path.GetFileName(tdataDir),
+                proxyBinding,
+                importedPhones,
+                proxy => ImportFromTdataDirectoryAsync(
+                    tdataDir,
+                    apiId,
+                    apiHash,
+                    proxy,
+                    cancellationToken),
+                cancellationToken,
+                result => PersistImportedSessionAsync(
+                    result,
+                    apiId,
+                    apiHash,
+                    categoryId,
+                    twoFactorPassword));
             results.Add(result);
         }
 
@@ -535,8 +668,8 @@ public class AccountImportService
         string tdataDir,
         int apiId,
         string apiHash,
-        int? categoryId,
-        string? twoFactorPassword)
+        ProxyConnectionOptions? proxy,
+        CancellationToken cancellationToken)
     {
         string? tempSessionPath = null;
         try
@@ -560,20 +693,24 @@ public class AccountImportService
                 targetSessionPath: tempSessionPath,
                 phone: phoneSeed,
                 userId: converted.UserId,
-                logger: _logger);
+                logger: _logger,
+                proxy: proxy,
+                cancellationToken: cancellationToken);
             if (!writeResult.Ok)
             {
                 return new ImportResult(false, null, converted.UserId, null, null,
                     $"tdata 会话转换失败：{writeResult.Reason ?? "未知原因"}");
             }
 
-            var imported = await _sessionImporter.ImportFromSessionFileAsync(
+            var imported = await ImportFromSessionFileDeferredAsync(
                 tempSessionPath,
                 apiId,
                 apiHash,
                 userId: converted.UserId,
                 phoneHint: phoneSeed,
-                sessionKey: apiHash);
+                sessionKey: apiHash,
+                proxy: proxy,
+                cancellationToken: cancellationToken);
             if (!imported.Success)
             {
                 return new ImportResult(
@@ -585,7 +722,7 @@ public class AccountImportService
                     $"tdata 导入失败：{imported.Error ?? "未知原因"}");
             }
 
-            return await PersistImportedSessionAsync(imported, apiId, apiHash, categoryId, twoFactorPassword);
+            return imported;
         }
         catch (Exception ex)
         {
@@ -606,6 +743,344 @@ public class AccountImportService
         }
     }
 
+    private async Task<ImportResult> ExecuteImportWithProxyAsync(
+        string stableKeySeed,
+        AccountProxyBindingInput? binding,
+        HashSet<string>? importedPhones,
+        Func<ProxyConnectionOptions?, Task<ImportResult>> import,
+        CancellationToken cancellationToken,
+        Func<ImportResult, Task<ImportResult>>? persist = null)
+    {
+        var selectedBinding = binding ?? new AccountProxyBindingInput("global");
+        var operationNonce = Guid.NewGuid().ToString("N");
+        PreparedImportProxy prepared = default;
+        var keepTemporaryWarp = false;
+        ImportResult? result = null;
+
+        try
+        {
+            prepared = await PrepareImportProxyAsync(
+                stableKeySeed,
+                operationNonce,
+                selectedBinding,
+                cancellationToken);
+            result = await import(prepared.Connection);
+            if (!result.Success)
+            {
+                result.PendingSessionReplacement?.Dispose();
+                return result with { PendingSessionReplacement = null };
+            }
+            if (persist == null && result.PendingSessionReplacement != null)
+            {
+                throw new InvalidOperationException(
+                    "延迟提交的 Session 必须在账号保存流程中确认或回滚");
+            }
+
+            var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+            if (importedPhones?.Contains(phone) == true)
+            {
+                try
+                {
+                    result.PendingSessionReplacement?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogCritical(ex, "Failed to roll back duplicate imported Session for {Phone}", phone);
+                    return new ImportResult(
+                        false,
+                        phone,
+                        result.UserId,
+                        result.Username,
+                        result.SessionPath,
+                        $"检测到重复账号，但 Session 自动回滚失败：{FormatException(ex)}");
+                }
+
+                return new ImportResult(
+                    false,
+                    phone,
+                    result.UserId,
+                    result.Username,
+                    null,
+                    "重复账号已跳过");
+            }
+
+            if (persist != null)
+            {
+                result = await persist(result);
+                if (!result.Success)
+                    return result;
+                phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+            }
+
+            if (importedPhones != null && !string.IsNullOrWhiteSpace(phone))
+                importedPhones.Add(phone);
+
+            if (string.IsNullOrWhiteSpace(phone))
+            {
+                result.PendingSessionReplacement?.Dispose();
+                return result with
+                {
+                    Success = false,
+                    PendingSessionReplacement = null,
+                    Error = "账号已导入，但代理设置失败：导入结果缺少有效手机号"
+                };
+            }
+
+            var account = await _accountManagement.GetAccountByPhoneAsync(phone);
+            if (account == null)
+            {
+                return result with
+                {
+                    Phone = phone,
+                    Error = "账号已导入，但代理设置失败：未找到已导入账号"
+                };
+            }
+
+            var effectiveBinding = prepared.TemporaryWarpProxyId is int warpProxyId && warpProxyId > 0
+                ? new AccountProxyBindingInput("existing", warpProxyId)
+                : selectedBinding;
+            var operation = await _proxyManagement.BindAccountsAsync(
+                new[] { account.Id },
+                effectiveBinding,
+                cancellationToken);
+            var item = operation.Items.FirstOrDefault(x => x.AccountId == account.Id);
+            if (item?.Success != true)
+            {
+                return result with
+                {
+                    Phone = phone,
+                    Error = $"账号已导入，但代理设置失败：{item?.Error ?? item?.Summary ?? "未知原因"}"
+                };
+            }
+
+            keepTemporaryWarp = prepared.TemporaryWarpProxyId.HasValue;
+            return result with { Phone = phone };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to import account with selected proxy");
+            var hadPendingSession = result?.PendingSessionReplacement != null;
+            Exception? rollbackError = null;
+            try
+            {
+                result?.PendingSessionReplacement?.Dispose();
+            }
+            catch (Exception rollbackException)
+            {
+                rollbackError = rollbackException;
+                _logger.LogCritical(
+                    rollbackException,
+                    "Failed to roll back pending Session after import orchestration error");
+            }
+
+            if (result?.Success == true)
+            {
+                if (!hadPendingSession)
+                {
+                    return result with
+                    {
+                        Error = $"账号已导入，但代理设置失败：{FormatException(ex)}"
+                    };
+                }
+
+                return result with
+                {
+                    Success = false,
+                    PendingSessionReplacement = null,
+                    Error = rollbackError == null
+                        ? $"账号导入未完成，Session 已回滚：{FormatException(ex)}"
+                        : $"账号导入失败，且 Session 自动回滚失败：{FormatException(rollbackError)}"
+                };
+            }
+
+            return new ImportResult(
+                false,
+                result?.Phone,
+                result?.UserId,
+                result?.Username,
+                result?.SessionPath,
+                $"代理准备或账号导入失败：{FormatException(ex)}");
+        }
+        finally
+        {
+            if (prepared.TemporaryWarpProxyId is int proxyId && proxyId > 0 && !keepTemporaryWarp)
+                await DeleteTemporaryWarpBestEffortAsync(proxyId);
+            if (prepared.Connection != null && !string.IsNullOrWhiteSpace(prepared.TemporaryResinLeaseKey))
+            {
+                await _proxyManagement.ReleaseImportResinLeaseBestEffortAsync(
+                    prepared.Connection.ProxyId,
+                    prepared.TemporaryResinLeaseKey,
+                    CancellationToken.None);
+            }
+        }
+    }
+
+    private async Task<PreparedImportProxy> PrepareImportProxyAsync(
+        string stableKeySeed,
+        string operationNonce,
+        AccountProxyBindingInput? binding,
+        CancellationToken cancellationToken)
+    {
+        if (binding == null)
+            return default;
+
+        var strategy = (binding.Strategy ?? string.Empty).Trim().ToLowerInvariant();
+        if (strategy == "direct")
+            return default;
+        if (strategy == "global")
+            return new PreparedImportProxy(
+                GlobalTelegramProxyConfiguration.Build(_configuration),
+                null,
+                null);
+
+        if (strategy == "existing")
+        {
+            if (binding.ProxyId is not > 0)
+                throw new ArgumentException("请选择已有代理");
+
+            var proxy = await _proxyManagement.GetAsync(
+                binding.ProxyId.Value,
+                cancellationToken: cancellationToken);
+            if (proxy is not { IsEnabled: true })
+                throw new KeyNotFoundException("所选代理不存在或已停用");
+
+            var stableImportKey = BuildImportStableKey(stableKeySeed, operationNonce);
+            return new PreparedImportProxy(
+                AccountProxyResolver.BuildConnectionOptions(proxy, stableImportKey),
+                null,
+                proxy.Kind == OutboundProxyKinds.Resin ? stableImportKey : null);
+        }
+
+        if (strategy != "warp_per_account")
+            throw new ArgumentException("代理策略仅支持 direct、global、existing 或 warp_per_account");
+
+        var displaySeed = Path.GetFileNameWithoutExtension(stableKeySeed)?.Trim();
+        if (string.IsNullOrWhiteSpace(displaySeed))
+            displaySeed = "账号";
+        if (displaySeed.Length > 80)
+            displaySeed = displaySeed[..80];
+
+        var warpProxy = await _proxyManagement.CreateWarpAsync(
+            $"WARP · 导入 {displaySeed}",
+            $"import-{Guid.NewGuid():N}",
+            cancellationToken);
+        try
+        {
+            return new PreparedImportProxy(
+                AccountProxyResolver.BuildConnectionOptions(
+                    warpProxy,
+                    BuildImportStableKey(stableKeySeed, operationNonce)),
+                warpProxy.Id,
+                null);
+        }
+        catch
+        {
+            await DeleteTemporaryWarpBestEffortAsync(warpProxy.Id);
+            throw;
+        }
+    }
+
+    private Task<ImportResult> ImportFromSessionFileDeferredAsync(
+        string filePath,
+        int apiId,
+        string apiHash,
+        long? userId = null,
+        string? phoneHint = null,
+        string? sessionKey = null,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
+    {
+        return _sessionImporter is IDeferredSessionImporter deferred
+            ? deferred.ImportFromSessionFileDeferredAsync(
+                filePath,
+                apiId,
+                apiHash,
+                userId,
+                phoneHint,
+                sessionKey,
+                proxy,
+                cancellationToken)
+            : _sessionImporter.ImportFromSessionFileAsync(
+                filePath,
+                apiId,
+                apiHash,
+                userId,
+                phoneHint,
+                sessionKey,
+                proxy,
+                cancellationToken);
+    }
+
+    private Task<ImportResult> ImportFromStringSessionDeferredAsync(
+        string sessionString,
+        int apiId,
+        string apiHash,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
+    {
+        return _sessionImporter is IDeferredSessionImporter deferred
+            ? deferred.ImportFromStringSessionDeferredAsync(
+                sessionString,
+                apiId,
+                apiHash,
+                proxy,
+                cancellationToken)
+            : _sessionImporter.ImportFromStringSessionAsync(
+                sessionString,
+                apiId,
+                apiHash,
+                proxy,
+                cancellationToken);
+    }
+
+    private async Task DeleteTemporaryWarpBestEffortAsync(int proxyId)
+    {
+        try
+        {
+            await _proxyManagement.DeleteAsync(proxyId, CancellationToken.None);
+        }
+        catch (ProxyInUseException ex)
+        {
+            _logger.LogWarning(ex, "Temporary WARP proxy {ProxyId} was already bound and will be retained", proxyId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to compensate temporary WARP proxy {ProxyId}", proxyId);
+        }
+    }
+
+    private static string BuildImportStableKey(string seed, string operationNonce)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(
+            $"{seed ?? string.Empty}\n{operationNonce}");
+        var hash = System.Security.Cryptography.SHA256.HashData(bytes);
+        return $"tg_import_{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}";
+    }
+
+    private static void EnsurePerAccountWarpBatchLimit(
+        AccountProxyBindingInput? binding,
+        int candidateCount)
+    {
+        if (candidateCount <= MaxPerAccountWarpBatchSize)
+            return;
+
+        var strategy = (binding?.Strategy ?? "global").Trim().ToLowerInvariant();
+        if (strategy == "warp_per_account")
+        {
+            throw new ArgumentException(
+                $"逐账号 WARP 单次最多处理 {MaxPerAccountWarpBatchSize} 个账号");
+        }
+    }
+
+    private readonly record struct PreparedImportProxy(
+        ProxyConnectionOptions? Connection,
+        int? TemporaryWarpProxyId,
+        string? TemporaryResinLeaseKey);
+
     private async Task<ImportResult> PersistImportedSessionAsync(
         ImportResult result,
         int apiId,
@@ -613,9 +1088,35 @@ public class AccountImportService
         int? categoryId,
         string? twoFactorPassword)
     {
-        if (!result.Success || !result.UserId.HasValue)
+        if (!result.Success)
             return result;
+        if (!result.UserId.HasValue)
+        {
+            try
+            {
+                result.PendingSessionReplacement?.Dispose();
+                return new ImportResult(
+                    false,
+                    result.Phone,
+                    null,
+                    result.Username,
+                    result.SessionPath,
+                    "Session 导入未完成：导入结果缺少用户 ID，文件已回滚");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "Failed to roll back imported Session without user ID");
+                return new ImportResult(
+                    false,
+                    result.Phone,
+                    null,
+                    result.Username,
+                    result.SessionPath,
+                    $"Session 导入结果缺少用户 ID，且文件自动回滚失败：{FormatException(ex)}");
+            }
+        }
 
+        var pendingSession = result.PendingSessionReplacement;
         try
         {
             var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
@@ -657,19 +1158,62 @@ public class AccountImportService
                 await _accountManagement.CreateAccountAsync(account);
             }
 
+            pendingSession?.Commit();
+            if (pendingSession?.CleanupError != null)
+            {
+                _logger.LogWarning(
+                    pendingSession.CleanupError,
+                    "Imported Session committed but rollback backup cleanup is pending: {BackupPath}",
+                    pendingSession.BackupPath);
+            }
+            pendingSession?.Dispose();
             _logger.LogInformation("Account saved to database: {Phone}", phone);
-            return result with { Phone = phone };
+            return result with
+            {
+                Phone = phone,
+                PendingSessionReplacement = null
+            };
         }
         catch (Exception ex)
         {
+            ClearFailedImportTracking();
+            Exception? rollbackError = null;
+            try
+            {
+                pendingSession?.Dispose();
+            }
+            catch (Exception rollbackException)
+            {
+                rollbackError = rollbackException;
+                _logger.LogCritical(
+                    rollbackException,
+                    "Failed to roll back imported Session after database save failure: {Phone}",
+                    result.Phone);
+            }
+
             _logger.LogError(ex, "Failed to save account to database: {Phone}", result.Phone);
+            var error = $"Session 导入未完成，数据库保存失败且文件已回滚：{FormatException(ex)}";
+            if (rollbackError != null)
+                error = $"Session 导入未完成，数据库保存失败，且文件自动回滚失败：{FormatException(rollbackError)}";
             return new ImportResult(
                 false,
                 result.Phone,
                 result.UserId,
                 result.Username,
                 result.SessionPath,
-                $"Session 已导入，但数据库保存失败：{FormatException(ex)}");
+                error);
+        }
+    }
+
+    private void ClearFailedImportTracking()
+    {
+        try
+        {
+            _db.ChangeTracker.Clear();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clear tracked entities after account import failure");
         }
     }
 

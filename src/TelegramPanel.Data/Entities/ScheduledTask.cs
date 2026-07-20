@@ -15,6 +15,7 @@ public static class ScheduledTaskStatuses
 public class ScheduledTask
 {
     public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
     public string TaskType { get; set; } = null!;
     public string Status { get; set; } = ScheduledTaskStatuses.Enabled;
     public int Total { get; set; }

@@ -21,6 +21,8 @@ public static class ServiceCollectionExtensions
 
         // 注册所有Repository
         services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddScoped<IOutboundProxyRepository, OutboundProxyRepository>();
+        services.AddScoped<IWarpProfileRepository, WarpProfileRepository>();
         services.AddScoped<IAccountCategoryRepository, AccountCategoryRepository>();
         services.AddScoped<IAccountChannelRepository, AccountChannelRepository>();
         services.AddScoped<IAccountGroupRepository, AccountGroupRepository>();

@@ -69,7 +69,7 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 
 ## Telegram 全局代理
 
-在 `appsettings.local.json` 中配置后重启主程序，所有新建或重新连接的 Telegram 客户端都会使用该代理：
+在 `appsettings.local.json` 中配置后重启主程序，默认继承“全局设置”的账号会使用该代理：
 
 ```json
 {
@@ -87,6 +87,7 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 
 - 普通 SOCKS5 代理按需填写 `Username`、`Password`。
 - MTProxy 填写 `Secret`，不需要用户名和密码。
+- 账号管理中的“已有代理”优先于全局设置；“直连”会明确绕过全局代理；“全局设置”可恢复继承该配置。升级前已有账号默认继续继承全局设置。
 - Docker 部署的配置文件位于宿主机 `docker-data/appsettings.local.json`。容器内的 `127.0.0.1` 指向容器自身；访问宿主机代理时应使用容器可访问的宿主机地址（Docker Desktop 通常可用 `host.docker.internal`），并确保代理监听地址和防火墙允许容器连接。
 - 修改配置后必须重启主程序，以释放已缓存的 Telegram 客户端并按新代理重新连接。
 

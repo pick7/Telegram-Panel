@@ -34,6 +34,13 @@
                     Cron 按面板时区解析：<b>@TimeZone.Current.Id</b>。
                 </MudAlert>
 
+                <MudTextField @bind-Value="scheduledTaskName"
+                              Label="任务名称"
+                              Variant="Variant.Outlined"
+                              Immediate="true"
+                              MaxLength="100"
+                              HelperText="用于在计划任务列表中快速区分任务" />
+
                 <MudTextField @bind-Value="cronExpression"
                               Label="Cron 表达式"
                               Variant="Variant.Outlined"
@@ -121,6 +128,7 @@
     private bool loading = true;
     private bool saving;
     private string? loadError;
+    private string scheduledTaskName = string.Empty;
     private string cronExpression = string.Empty;
     private string genericConfigJson = string.Empty;
     private int genericTotal;
@@ -129,8 +137,9 @@
 
     private bool CanSave =>
         scheduledTask != null
+        && !string.IsNullOrWhiteSpace(scheduledTaskName)
+        && scheduledTaskName.Trim().Length <= 100
         && !string.IsNullOrWhiteSpace(cronExpression)
-        && !hasDedicatedCreateRoute
         && (editorComponentType == null || draft.CanSubmit);
 
     protected override async Task OnInitializedAsync()
@@ -150,6 +159,9 @@
                 return;
             }
 
+            scheduledTaskName = string.IsNullOrWhiteSpace(scheduledTask.Name)
+                ? scheduledTask.TaskType
+                : scheduledTask.Name;
             cronExpression = scheduledTask.CronExpression;
             genericConfigJson = scheduledTask.ConfigJson ?? string.Empty;
             genericTotal = Math.Max(0, scheduledTask.Total);
@@ -211,7 +223,7 @@
 
         bool? confirm = await DialogService.ShowMessageBox(
             "确认保存",
-            $"将更新计划任务 #{scheduledTask.Id} 的配置，是否继续？",
+            $"将更新计划任务“{scheduledTaskName.Trim()}”的配置，是否继续？",
             yesText: "保存", cancelText: "取消");
 
         if (confirm != true)
@@ -231,18 +243,19 @@
                 config = draft.Config?.Trim();
                 total = Math.Max(0, draft.Total);
             }
-            else if (!string.IsNullOrWhiteSpace(config))
+            else if (!hasDedicatedCreateRoute && !string.IsNullOrWhiteSpace(config))
             {
                 JsonDocument.Parse(config);
             }
 
+            scheduledTask.Name = scheduledTaskName.Trim();
             scheduledTask.CronExpression = cronExpression.Trim();
             scheduledTask.ConfigJson = string.IsNullOrWhiteSpace(config) ? null : config;
             scheduledTask.Total = total;
             scheduledTask.OwnedAssetScopeId = TaskAssetScopeHelper.GetAssetScopeId(scheduledTask.ConfigJson);
 
             await ScheduledTaskManagement.UpdateAsync(scheduledTask);
-            Snackbar.Add($"计划任务 #{scheduledTask.Id} 已更新", Severity.Success);
+            Snackbar.Add($"计划任务“{scheduledTask.Name}”已更新", Severity.Success);
             MudDialog.Close(DialogResult.Ok(scheduledTask.Id));
         }
         catch (Exception ex)

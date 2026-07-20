@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data.Entities;
 using TL;
@@ -18,17 +20,23 @@ public enum AccountExportFormat
 
 public class AccountExportService
 {
+    private readonly IConfiguration _configuration;
     private readonly ILogger<AccountExportService> _logger;
     private readonly ITelegramClientPool _clientPool;
+    private readonly IAccountProxyResolver _accountProxyResolver;
     private readonly ISessionPathResolver _sessionPathResolver;
 
     public AccountExportService(
+        IConfiguration configuration,
         ILogger<AccountExportService> logger,
         ITelegramClientPool clientPool,
+        IAccountProxyResolver accountProxyResolver,
         ISessionPathResolver sessionPathResolver)
     {
+        _configuration = configuration;
         _logger = logger;
         _clientPool = clientPool;
+        _accountProxyResolver = accountProxyResolver;
         _sessionPathResolver = sessionPathResolver;
     }
 
@@ -377,6 +385,9 @@ public class AccountExportService
 
         try
         {
+            var exportProxy = await ResolveIndependentExportProxyAsync(
+                account.Id,
+                linkedCts.Token);
             var sourceClient = await _clientPool.GetOrCreateClientAsync(
                 account.Id,
                 account.ApiId,
@@ -390,22 +401,13 @@ public class AccountExportService
             if (sourceUser == null)
                 return PreparedExportSession.Fail("当前账号 session 无法恢复登录状态，无法生成独立 session");
 
-            string Config(string what)
-            {
-                var normalizedPhone = NormalizePhone(account.Phone);
-                return what switch
-                {
-                    "api_id" => account.ApiId.ToString(),
-                    "api_hash" => apiHash,
-                    "session_pathname" => tempSessionPath,
-                    "session_key" => apiHash,
-                    "phone_number" => string.IsNullOrWhiteSpace(normalizedPhone) ? null! : normalizedPhone,
-                    "password" => string.IsNullOrWhiteSpace(twoFactorPassword) ? null! : twoFactorPassword,
-                    _ => null!
-                };
-            }
-
-            await using var builder = new Client(Config);
+            await using var builder = CreateIndependentExportClient(
+                account,
+                apiHash,
+                tempSessionPath,
+                twoFactorPassword,
+                exportProxy,
+                linkedCts.Token);
 
             var user = await builder.LoginWithQRCode(
                 qrDisplay: loginUrl =>
@@ -460,6 +462,52 @@ public class AccountExportService
             linkedCts.Dispose();
             if (!keepTempSession)
                 TryDeleteFile(tempSessionPath);
+        }
+    }
+
+    internal async Task<ProxyConnectionOptions?> ResolveIndependentExportProxyAsync(
+        int accountId,
+        CancellationToken cancellationToken = default)
+    {
+        var resolution = await _accountProxyResolver.ResolveAsync(accountId, cancellationToken);
+        if (resolution.Proxy != null)
+            return resolution.Proxy;
+
+        return resolution.UseGlobalProxy
+            ? GlobalTelegramProxyConfiguration.Build(_configuration)
+            : null;
+    }
+
+    internal Client CreateIndependentExportClient(
+        Account account,
+        string apiHash,
+        string sessionPath,
+        string? twoFactorPassword,
+        ProxyConnectionOptions? proxy,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedPhone = NormalizePhone(account.Phone);
+        string Config(string what) => what switch
+        {
+            "api_id" => account.ApiId.ToString(),
+            "api_hash" => apiHash,
+            "session_pathname" => sessionPath,
+            "session_key" => apiHash,
+            "phone_number" => string.IsNullOrWhiteSpace(normalizedPhone) ? null! : normalizedPhone,
+            "password" => string.IsNullOrWhiteSpace(twoFactorPassword) ? null! : twoFactorPassword,
+            _ => null!
+        };
+
+        var client = new Client(Config);
+        try
+        {
+            TelegramImportProxyConfigurator.Apply(client, proxy, cancellationToken);
+            return client;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
         }
     }
 

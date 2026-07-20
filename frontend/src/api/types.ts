@@ -12,6 +12,130 @@ export interface OperationResult {
   code?: string | null
 }
 
+export type ProxyKind = 'manual' | 'resin' | 'warp'
+
+export type ProxyProtocol = 'http' | 'socks5' | 'mtproto'
+
+export interface NetworkEgress {
+  success: boolean
+  ip?: string | null
+  country?: string | null
+  city?: string | null
+  isp?: string | null
+  warpStatus?: string | null
+  latencyMs?: number | null
+  checkedAtUtc: string
+  error?: string | null
+  source?: string | null
+}
+
+export interface OutboundProxy {
+  id: number
+  name: string
+  kind: ProxyKind
+  protocol: ProxyProtocol
+  host: string
+  port: number
+  username?: string | null
+  resinPlatform?: string | null
+  resinAdminUrl?: string | null
+  hasPassword?: boolean
+  hasSecret?: boolean
+  hasResinAdminToken?: boolean
+  isEnabled: boolean
+  testStatus: string
+  lastError?: string | null
+  lastLatencyMs?: number | null
+  egressIp?: string | null
+  egressCountry?: string | null
+  egressCity?: string | null
+  egressIsp?: string | null
+  lastTestedAtUtc?: string | null
+  firstBoundAtUtc?: string | null
+  accountCount?: number
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export interface SaveOutboundProxyRequest {
+  name: string
+  kind: 'manual' | 'resin'
+  protocol: ProxyProtocol
+  host: string
+  port: number
+  username?: string | null
+  password?: string | null
+  secret?: string | null
+  resinPlatform?: string | null
+  resinAdminUrl?: string | null
+  resinAdminToken?: string | null
+  isEnabled: boolean
+  testAfterSave: boolean
+}
+
+export interface ProxyImportRequest {
+  text: string
+  testAfterImport: boolean
+}
+
+export interface WarpRuntimeStatus {
+  platformSupported: boolean
+  enabled: boolean
+  dockerAvailable: boolean
+  dockerVersion?: string | null
+  error?: string | null
+  image: string
+  network: string
+  proxyHostMode: string
+}
+
+export interface CreateWarpProxyRequest {
+  name?: string | null
+  requestId?: string | null
+}
+
+export type AccountProxyStrategy = 'direct' | 'global' | 'existing' | 'warp_per_account'
+
+export interface AccountProxyBindingRequest {
+  strategy: AccountProxyStrategy
+  proxyId?: number | null
+  expectedProxyId?: number | null
+}
+
+export interface AccountProxyOperationItem {
+  accountId: number
+  phone?: string | null
+  success: boolean
+  summary: string
+  error?: string | null
+  proxyId?: number | null
+}
+
+export interface AccountProxyBatchResult {
+  success: number
+  failed: number
+  items: AccountProxyOperationItem[]
+}
+
+export interface AccountProxyEgress extends NetworkEgress {
+  accountId?: number
+  proxyId?: number | null
+  proxyName?: string | null
+}
+
+export interface AccountProxySummary {
+  id: number
+  name: string
+  kind: ProxyKind
+  protocol: ProxyProtocol
+  host: string
+  port: number
+  resinPlatform?: string | null
+  isEnabled: boolean
+  testStatus: string
+  egressIp?: string | null
+}
+
 export interface SystemRestartResult extends OperationResult {
   restartScheduled: boolean
 }
@@ -50,6 +174,8 @@ export interface AccountListItem {
   telegramStatusDetails?: string | null
   telegramStatusOk?: boolean | null
   telegramStatusCheckedAtUtc?: string | null
+  useGlobalProxy: boolean
+  proxy?: AccountProxySummary | null
 }
 
 export interface AccountDetail {
@@ -384,6 +510,7 @@ export interface BatchTask {
 
 export interface ScheduledTask {
   id: number
+  name: string
   taskType: string
   status: string
   total: number
@@ -443,6 +570,7 @@ export interface CreateTaskRequest {
 }
 
 export interface CreateScheduledTaskRequest {
+  name: string
   taskType: string
   total: number
   configJson?: string | null

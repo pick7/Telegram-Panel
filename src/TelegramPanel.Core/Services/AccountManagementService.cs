@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
@@ -16,6 +17,7 @@ public class AccountManagementService
     private readonly IChannelRepository _channelRepository;
     private readonly IGroupRepository _groupRepository;
     private readonly ITelegramClientPool _clientPool;
+    private readonly ProxyManagementService _proxyManagement;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AccountManagementService> _logger;
     private readonly ISessionPathResolver _sessionPathResolver;
@@ -27,12 +29,14 @@ public class AccountManagementService
         ITelegramClientPool clientPool,
         IConfiguration configuration,
         ILogger<AccountManagementService> logger,
+        ProxyManagementService proxyManagement,
         ISessionPathResolver sessionPathResolver)
     {
         _accountRepository = accountRepository;
         _channelRepository = channelRepository;
         _groupRepository = groupRepository;
         _clientPool = clientPool;
+        _proxyManagement = proxyManagement;
         _configuration = configuration;
         _logger = logger;
         _sessionPathResolver = sessionPathResolver;
@@ -146,20 +150,15 @@ public class AccountManagementService
         await _accountRepository.UpdateAsync(account);
     }
 
-    public async Task DeleteAccountAsync(int id)
+    public async Task DeleteAccountAsync(
+        int id,
+        CancellationToken cancellationToken = default)
     {
         var account = await _accountRepository.GetByIdAsync(id);
         if (account != null)
         {
-            try
-            {
-                // 先断开客户端，释放 session 文件锁
-                await _clientPool.RemoveClientAsync(account.Id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to remove client for account {AccountId} before deletion", account.Id);
-            }
+            // 先解绑并持久化，再删除账号，确保 Restrict 外键和专属代理资源都被正确处理。
+            await ReleaseAccountBindingAsync(account, cancellationToken);
 
             TryDeleteAccountFiles(account);
             await _accountRepository.DeleteAsync(account);
@@ -185,6 +184,9 @@ public class AccountManagementService
         {
             _logger.LogWarning(ex, "Failed to remove client for account {AccountId} before purge", account.Id);
         }
+
+        // 代理资源清理可能失败；必须在销毁 session 前完成，确保失败后账号仍可重试。
+        await ReleaseAccountBindingAsync(account, cancellationToken);
 
         var sessionCandidates = ResolveSessionFileCandidates(account).ToList();
         var existingSessionFiles = sessionCandidates
@@ -221,6 +223,16 @@ public class AccountManagementService
         // session 删除成功后，再尽力清理其它关联文件（json/备份等）
         TryDeleteAccountFiles(account);
         await _accountRepository.DeleteAsync(account);
+    }
+
+    private async Task ReleaseAccountBindingAsync(
+        Account account,
+        CancellationToken cancellationToken)
+    {
+        await _proxyManagement.ReleaseAccountBindingAsync(
+            account.Id,
+            account.ProxyId ?? 0,
+            cancellationToken);
     }
 
     private void TryDeleteAccountFiles(Account account)

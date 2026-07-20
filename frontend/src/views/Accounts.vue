@@ -56,6 +56,7 @@
             <el-dropdown-item command="recovery-email" :disabled="selectedMutationDisabled">批量换绑邮箱（找回+登录）（Cloud Mail）（已选）</el-dropdown-item>
             <el-dropdown-item command="kick-devices" :disabled="selectedMutationDisabled">批量踢出所有其他设备（已选）</el-dropdown-item>
             <el-dropdown-item command="category" :disabled="selectedMutationDisabled">批量修改分类（已选）</el-dropdown-item>
+            <el-dropdown-item command="proxy" :disabled="selectedMutationDisabled">批量切换代理（已选）</el-dropdown-item>
             <el-dropdown-item command="nickname" :disabled="selectedMutationDisabled">批量改昵称（已选）</el-dropdown-item>
             <el-dropdown-item command="avatar" :disabled="selectedMutationDisabled">批量改头像（已选）</el-dropdown-item>
             <el-dropdown-item command="username" :disabled="selectedMutationDisabled">批量改用户名（已选）</el-dropdown-item>
@@ -91,7 +92,31 @@
         @selection-change="onSelectionChange"
       >
         <el-table-column type="selection" width="48" reserve-selection />
-        <el-table-column v-if="isColumnVisible('phone')" prop="displayPhone" label="手机号" min-width="150" />
+        <el-table-column v-if="isColumnVisible('phone')" prop="displayPhone" label="手机号" :min-width="isCompactList ? 214 : 150">
+          <template #default="{ row }">
+            <div>{{ row.displayPhone }}</div>
+            <template v-if="isCompactList && isColumnVisible('proxy')">
+              <div v-if="row.proxy" class="mobile-account-proxy">
+                <el-tag size="small" :type="proxyKindTagType(row.proxy.kind)">{{ proxyKindLabel(row.proxy.kind) }}</el-tag>
+                <span class="proxy-name">{{ row.proxy.name }}</span>
+                <span class="cell-sub">{{ row.proxy.egressIp || '出口未检测' }}</span>
+              </div>
+              <div v-else class="cell-sub">{{ row.useGlobalProxy ? '全局代理设置' : '直连' }}</div>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="isColumnVisible('proxy') && (!isCompactList || !isColumnVisible('phone'))" label="代理" min-width="170">
+          <template #default="{ row }">
+            <div v-if="row.proxy" class="proxy-cell">
+              <div>
+                <el-tag size="small" :type="proxyKindTagType(row.proxy.kind)">{{ proxyKindLabel(row.proxy.kind) }}</el-tag>
+                <span class="proxy-name">{{ row.proxy.name || `代理 #${row.proxy.id}` }}</span>
+              </div>
+              <div class="cell-sub">{{ row.proxy.egressIp || '出口未检测' }}</div>
+            </div>
+            <el-tag v-else type="info" size="small">{{ row.useGlobalProxy ? '全局代理设置' : '直连' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column v-if="isColumnVisible('nickname')" prop="nickname" label="昵称" min-width="130">
           <template #default="{ row }">{{ row.nickname || '-' }}</template>
         </el-table-column>
@@ -168,6 +193,12 @@
                     <el-dropdown-item command="groups" :icon="ChatDotRound">查看加入的群组</el-dropdown-item>
                     <el-dropdown-item command="inbox" :icon="Message" :disabled="isStatusRefreshing(row.id)">系统通知（验证码）</el-dropdown-item>
                     <el-dropdown-item command="devices" :icon="Monitor" :disabled="isStatusRefreshing(row.id)">在线设备</el-dropdown-item>
+                    <el-dropdown-item divided command="proxy" :icon="Connection" :disabled="isStatusRefreshing(row.id)">切换代理</el-dropdown-item>
+                    <el-dropdown-item
+                      command="proxy-egress"
+                      :icon="Position"
+                      :disabled="!row.proxy?.isEnabled || proxyEgressCheckingIds.has(row.id)"
+                    >{{ proxyEgressCheckingIds.has(row.id) ? '检测代理出口中' : '检测代理出口' }}</el-dropdown-item>
                     <el-dropdown-item divided command="two-factor" :icon="Lock" :disabled="isStatusRefreshing(row.id)">修改二级密码</el-dropdown-item>
                     <el-dropdown-item command="recovery-email" :icon="Message" :disabled="isStatusRefreshing(row.id)">绑定/换绑找回邮箱</el-dropdown-item>
                     <el-dropdown-item command="login-email" :icon="Message" :disabled="isStatusRefreshing(row.id)">绑定/换绑登录邮箱</el-dropdown-item>
@@ -273,6 +304,53 @@
       <template #footer>
         <el-button @click="categoryDialog.visible = false">取消</el-button>
         <el-button type="primary" :loading="categoryDialog.saving" @click="saveBatchCategory">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="proxyDialog.visible"
+      :title="proxyDialog.title"
+      width="min(520px, calc(100vw - 24px))"
+      :before-close="beforeAccountProxyDialogClose"
+      :close-on-click-modal="!proxyDialog.running"
+      :close-on-press-escape="!proxyDialog.running"
+      :show-close="!proxyDialog.running"
+    >
+      <el-form label-position="top" :disabled="proxyDialog.running">
+        <el-form-item label="连接方式">
+          <el-radio-group v-model="proxyDialog.strategy" class="proxy-route-options">
+            <el-radio-button value="direct">直连</el-radio-button>
+            <el-radio-button value="global">全局设置</el-radio-button>
+            <el-radio-button value="existing">已有代理</el-radio-button>
+            <el-radio-button
+              value="warp_per_account"
+              :disabled="!warpAvailable || proxyDialog.accountIds.length > 10"
+            >每账号独立 WARP</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="proxyDialog.strategy === 'existing'" label="选择代理">
+          <el-select v-model="proxyDialog.proxyId" class="full" filterable placeholder="请选择代理">
+            <el-option
+              v-for="proxy in proxies"
+              :key="proxy.id"
+              :value="proxy.id"
+              :label="`${proxy.name} · ${proxy.protocol.toUpperCase()} · ${proxy.egressIp || `${proxy.host}:${proxy.port}`}`"
+              :disabled="!proxy.isEnabled"
+            />
+          </el-select>
+        </el-form-item>
+        <el-alert
+          v-if="proxyDialog.strategy === 'warp_per_account'"
+          :title="`将创建 ${proxyDialog.accountIds.length} 个独立 WARP 代理，并逐一绑定账号`"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <div class="muted proxy-account-count">账号数量：{{ proxyDialog.accountIds.length }}</div>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="proxyDialog.running" @click="proxyDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="proxyDialog.running" @click="saveAccountProxy">应用</el-button>
       </template>
     </el-dialog>
 
@@ -578,6 +656,7 @@ import {
   ArrowDown,
   ChatDotRound,
   CollectionTag,
+  Connection,
   Delete,
   Edit,
   Hide,
@@ -587,6 +666,7 @@ import {
   Monitor,
   MoreFilled,
   Picture,
+  Position,
   Promotion,
   Refresh,
   Search,
@@ -610,8 +690,12 @@ import type {
   AccountDetail,
   AccountListItem,
   AccountOperationItem,
+  AccountProxyStrategy,
   BatchTask,
   DataDictionary,
+  OutboundProxy,
+  ProxyKind,
+  WarpRuntimeStatus,
   TelegramStatus,
   TelegramAuthorization,
   TelegramSystemMessage,
@@ -628,6 +712,8 @@ const loading = ref(false)
 const rows = ref<Row[]>([])
 const categories = ref<AccountCategory[]>([])
 const dictionaries = ref<DataDictionary[]>([])
+const proxies = ref<OutboundProxy[]>([])
+const warpStatus = ref<WarpRuntimeStatus | null>(null)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -641,6 +727,7 @@ const refreshingStatusIds = reactive(new Set<number>())
 const statusRefreshOwners = new Map<number, symbol>()
 // 防止较晚返回的旧列表请求覆盖刚完成的逐行状态响应。
 const latestStatusById = new Map<number, TelegramStatus>()
+const proxyEgressCheckingIds = reactive(new Set<number>())
 const selectionMode = ref<SelectionMode>('select')
 const isCompactList = useMediaQuery('(max-width: 640px)')
 const filters = reactive({
@@ -651,6 +738,7 @@ const filters = reactive({
 
 const accountColumns: ColumnVisibilityOption[] = [
   { key: 'phone', label: '手机号' },
+  { key: 'proxy', label: '代理' },
   { key: 'nickname', label: '昵称' },
   { key: 'username', label: '用户名' },
   { key: 'remark', label: '备注' },
@@ -728,6 +816,22 @@ const categoryDialog = reactive({
   saving: false,
   categoryId: null as number | null,
 })
+
+const proxyDialog = reactive({
+  visible: false,
+  running: false,
+  title: '切换代理',
+  accountIds: [] as number[],
+  strategy: 'direct' as AccountProxyStrategy,
+  proxyId: null as number | null,
+  expectedProxyId: null as number | null,
+})
+let accountProxyOperationToken = 0
+const warpAvailable = computed(() => Boolean(
+  warpStatus.value?.platformSupported
+  && warpStatus.value.enabled
+  && warpStatus.value.dockerAvailable,
+))
 
 const twoFactor = reactive({
   visible: false,
@@ -845,6 +949,18 @@ async function loadDictionaries() {
   dictionaries.value = await panelApi.dictionaries()
 }
 
+async function loadProxies() {
+  proxies.value = await panelApi.proxies()
+}
+
+async function loadWarpStatus() {
+  try {
+    warpStatus.value = await panelApi.warpStatus()
+  } catch {
+    warpStatus.value = null
+  }
+}
+
 function onSelectionChange(selection: Row[]) {
   selectedRows.value = selection
 }
@@ -941,6 +1057,18 @@ function telegramStatusTagType(row: Row) {
   if (!row.isActive) return 'info'
   if (!row.telegramStatusSummary) return 'info'
   return row.telegramStatusOk ? 'success' : 'danger'
+}
+
+function proxyKindLabel(kind?: ProxyKind | null) {
+  if (kind === 'warp') return 'WARP'
+  if (kind === 'resin') return 'Resin'
+  return '代理'
+}
+
+function proxyKindTagType(kind?: ProxyKind | null) {
+  if (kind === 'warp') return 'success'
+  if (kind === 'resin') return 'warning'
+  return 'info'
 }
 
 async function openDetails(row: Row) {
@@ -1311,6 +1439,92 @@ async function saveBatchCategory() {
     await load()
   } finally {
     categoryDialog.saving = false
+  }
+}
+
+function openAccountProxy(accountIds: number[], row?: Row) {
+  if (proxyDialog.running) return
+  accountProxyOperationToken += 1
+  proxyDialog.accountIds = [...accountIds]
+  proxyDialog.title = accountIds.length > 1 ? `批量切换代理（${accountIds.length} 个账号）` : `切换代理 - ${row?.displayPhone || ''}`
+  proxyDialog.expectedProxyId = row?.proxy?.id ?? 0
+  proxyDialog.strategy = row?.proxy ? 'existing' : row?.useGlobalProxy ? 'global' : 'direct'
+  proxyDialog.proxyId = row?.proxy?.id ?? null
+  proxyDialog.visible = true
+}
+
+function beforeAccountProxyDialogClose(done: () => void) {
+  if (!proxyDialog.running) done()
+}
+
+async function saveAccountProxy() {
+  if (proxyDialog.running) return
+  const accountIds = [...proxyDialog.accountIds]
+  const strategy = proxyDialog.strategy
+  const proxyId = proxyDialog.proxyId
+  const expectedProxyId = proxyDialog.expectedProxyId
+
+  if (strategy === 'existing' && !proxyId) {
+    ElMessage.warning('请选择要绑定的代理')
+    return
+  }
+  if (strategy === 'warp_per_account' && !warpAvailable.value) {
+    ElMessage.warning(warpStatus.value?.error || '当前环境无法创建 WARP')
+    return
+  }
+  if (strategy === 'warp_per_account' && accountIds.length > 10) {
+    ElMessage.warning('逐账号创建 WARP 单次最多处理 10 个账号')
+    return
+  }
+
+  const operationToken = ++accountProxyOperationToken
+  proxyDialog.running = true
+  try {
+    const payload = {
+      strategy,
+      proxyId: strategy === 'existing' ? proxyId : null,
+    }
+    if (accountIds.length === 1) {
+      const result = await panelApi.setAccountProxy(accountIds[0], {
+        ...payload,
+        expectedProxyId,
+      })
+      if (operationToken !== accountProxyOperationToken) return
+      const item = result.items[0]
+      if (!item?.success) {
+        ElMessage.error(item?.error || item?.summary || '代理切换失败')
+        return
+      }
+      ElMessage.success(item.summary || '代理已切换')
+      proxyDialog.visible = false
+      await Promise.allSettled([load(), loadProxies()])
+      return
+    }
+
+    const result = await panelApi.batchSetAccountProxy(accountIds, payload)
+    if (operationToken !== accountProxyOperationToken) return
+    proxyDialog.visible = false
+    showBatchResult('批量切换代理完成', result)
+    await Promise.allSettled([load(), loadProxies()])
+  } finally {
+    if (operationToken === accountProxyOperationToken) proxyDialog.running = false
+  }
+}
+
+async function checkAccountProxyEgress(row: Row) {
+  if (!row.proxy || proxyEgressCheckingIds.has(row.id)) return
+  proxyEgressCheckingIds.add(row.id)
+  try {
+    const result = await panelApi.accountProxyEgress(row.id)
+    if (result.success) {
+      const location = [result.country, result.city].filter(Boolean).join(' / ')
+      ElMessage.success(`代理出口：${result.ip || '未知'}${location ? ` · ${location}` : ''} · ${result.latencyMs ?? '-'} ms`)
+    } else {
+      ElMessage.error(result.error || '代理出口检测失败')
+    }
+    await load()
+  } finally {
+    proxyEgressCheckingIds.delete(row.id)
   }
 }
 
@@ -1689,6 +1903,9 @@ function handleBatchCommand(command: string) {
     case 'category':
       openBatchCategory()
       break
+    case 'proxy':
+      openAccountProxy(ids)
+      break
     case 'nickname':
       openBatchProfile('nickname')
       break
@@ -1714,7 +1931,7 @@ function handleBatchCommand(command: string) {
 }
 
 function handleRowCommand(command: string, row: Row) {
-  const readOnlyCommands = new Set(['details', 'refresh', 'channels', 'groups'])
+  const readOnlyCommands = new Set(['details', 'refresh', 'channels', 'groups', 'proxy-egress'])
   if (!readOnlyCommands.has(command) && !ensureAccountsIdle([row.id], '执行该操作')) return
   switch (command) {
     case 'details':
@@ -1743,6 +1960,12 @@ function handleRowCommand(command: string, row: Row) {
       break
     case 'devices':
       openDevices(row)
+      break
+    case 'proxy':
+      openAccountProxy([row.id], row)
+      break
+    case 'proxy-egress':
+      checkAccountProxyEgress(row)
       break
     case 'two-factor':
       openTwoFactor([row.id])
@@ -1816,7 +2039,7 @@ watch(filters, () => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadCategories(), loadDictionaries(), load()])
+  await Promise.all([loadCategories(), loadDictionaries(), loadProxies(), loadWarpStatus(), load()])
 })
 </script>
 
@@ -1847,6 +2070,46 @@ onMounted(async () => {
 
 .account-category-tag {
   border-radius: 999px;
+}
+
+.proxy-cell {
+  min-width: 0;
+}
+
+.proxy-name {
+  margin-left: 6px;
+  overflow-wrap: anywhere;
+}
+
+.proxy-account-count {
+  margin-top: 12px;
+}
+
+.proxy-route-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+.proxy-route-options :deep(.el-radio-button),
+.proxy-route-options :deep(.el-radio-button__inner) {
+  width: 100%;
+}
+
+.mobile-account-proxy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+.mobile-account-proxy .proxy-name {
+  max-width: 72px;
+  margin-left: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .row-actions {

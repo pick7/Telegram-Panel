@@ -16,6 +16,8 @@ obj/
 
 # Local temp
 .tmp/
+/.playwright-cli/
+/output/
 
 # Logs
 logs/

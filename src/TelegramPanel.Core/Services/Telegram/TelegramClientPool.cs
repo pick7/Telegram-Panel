@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
+using TelegramPanel.Core.Services.Proxy;
 using TL;
 using WTelegram;
 
@@ -22,8 +23,10 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramClientPool> _logger;
     private readonly TelegramAccountUpdateHub _updateHub;
+    private readonly IAccountProxyResolver _proxyResolver;
     private readonly ISessionPathResolver _sessionPathResolver;
-    private bool _disposed;
+    private readonly object _lifecycleGate = new();
+    private volatile bool _disposed;
     private static int _wtelegramLogConfigured;
     private readonly ConcurrentDictionary<int, UpdateManager> _updateManagers = new();
 
@@ -31,11 +34,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         IConfiguration configuration,
         ILogger<TelegramClientPool> logger,
         TelegramAccountUpdateHub updateHub,
+        IAccountProxyResolver proxyResolver,
         ISessionPathResolver sessionPathResolver)
     {
         _configuration = configuration;
         _logger = logger;
         _updateHub = updateHub;
+        _proxyResolver = proxyResolver;
         _sessionPathResolver = sessionPathResolver;
         ConfigureWTelegramLoggingOnce();
     }
@@ -53,17 +58,8 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     {
         sessionPath = _sessionPathResolver.Resolve(sessionPath);
 
-        if (_clients.TryGetValue(accountId, out var existingClient))
-        {
-            if (existingClient.User != null)
-            {
-                return existingClient;
-            }
-            // 客户端存在但未登录，移除并重新创建
-            await RemoveClientAsync(accountId);
-        }
-
-        var lockObj = _locks.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        Client? existingClient;
+        var lockObj = GetAccountLock(accountId);
         await lockObj.WaitAsync();
 
         try
@@ -74,17 +70,26 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 return existingClient;
             }
 
+            // 客户端存在但未登录，移除并重新创建。这里不能调用
+            // RemoveClientAsync，否则会在同一个账号锁上发生异步重入死锁。
+            if (_clients.ContainsKey(accountId))
+                await RemoveClientCoreAsync(accountId);
+
             _logger.LogInformation("Creating new Telegram client for account {AccountId}", accountId);
+
+            var proxyResolution = await _proxyResolver.ResolveAsync(accountId);
+            var accountProxy = proxyResolution.Proxy;
+            var useGlobalProxy = accountProxy == null && proxyResolution.UseGlobalProxy;
 
             // 使用 config 回调设置 session 路径
             phoneNumber = NormalizePhone(phoneNumber);
             string Config(string what)
             {
-                var proxyServer = (_configuration["Telegram:Proxy:Server"] ?? "").Trim();
-                var proxyPort = (_configuration["Telegram:Proxy:Port"] ?? "").Trim();
-                var proxyUsername = (_configuration["Telegram:Proxy:Username"] ?? "").Trim();
-                var proxyPassword = (_configuration["Telegram:Proxy:Password"] ?? "").Trim();
-                var proxySecret = (_configuration["Telegram:Proxy:Secret"] ?? "").Trim();
+                var proxyServer = useGlobalProxy ? (_configuration["Telegram:Proxy:Server"] ?? "").Trim() : string.Empty;
+                var proxyPort = useGlobalProxy ? (_configuration["Telegram:Proxy:Port"] ?? "").Trim() : string.Empty;
+                var proxyUsername = useGlobalProxy ? (_configuration["Telegram:Proxy:Username"] ?? "").Trim() : string.Empty;
+                var proxyPassword = useGlobalProxy ? (_configuration["Telegram:Proxy:Password"] ?? "").Trim() : string.Empty;
+                var proxySecret = useGlobalProxy ? (_configuration["Telegram:Proxy:Secret"] ?? "").Trim() : string.Empty;
 
                 return what switch
                 {
@@ -110,11 +115,29 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             }
 
             var client = new Client(Config);
+            if (accountProxy is { Protocol: OutboundProxyProtocols.Http or OutboundProxyProtocols.Socks5 })
+            {
+                client.TcpHandler = (address, port) =>
+                    ProxyTcpConnector.ConnectAsync(address, port, accountProxy);
+                _logger.LogInformation(
+                    "Account {AccountId} uses {ProxyKind} proxy {ProxyId} ({Protocol})",
+                    accountId,
+                    accountProxy.Kind,
+                    accountProxy.ProxyId,
+                    accountProxy.Protocol);
+            }
+            else if (accountProxy is { Protocol: OutboundProxyProtocols.MtProto })
+            {
+                client.MTProxyUrl = BuildMtProxyUrl(accountProxy);
+                _logger.LogInformation(
+                    "Account {AccountId} uses MTProxy {ProxyId}",
+                    accountId,
+                    accountProxy.ProxyId);
+            }
             TryRebindApiIdForLoadedSession(client, apiId);
 
             UpdateManager? updateManager = null;
             updateManager = client.WithUpdateManager(update => HandleTelegramUpdateAsync(accountId, updateManager!, update));
-            _updateManagers[accountId] = updateManager;
 
             // 设置日志回调
             client.OnOther += (update) =>
@@ -123,7 +146,22 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 return Task.CompletedTask;
             };
 
-            _clients[accountId] = client;
+            var accepted = false;
+            lock (_lifecycleGate)
+            {
+                if (!_disposed)
+                {
+                    _updateManagers[accountId] = updateManager;
+                    _clients[accountId] = client;
+                    accepted = true;
+                }
+            }
+
+            if (!accepted)
+            {
+                await client.DisposeAsync();
+                throw new ObjectDisposedException(nameof(TelegramClientPool));
+            }
             return client;
         }
         finally
@@ -163,19 +201,49 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 
     public async Task RemoveClientAsync(int accountId)
     {
-        if (_clients.TryRemove(accountId, out var client))
+        var lockObj = GetAccountLock(accountId);
+        await lockObj.WaitAsync();
+        try
         {
-            _logger.LogInformation("Removing Telegram client for account {AccountId}", accountId);
-            _updateManagers.TryRemove(accountId, out _);
+            await RemoveClientCoreAsync(accountId);
+        }
+        finally
+        {
+            lockObj.Release();
+        }
+    }
 
-            try
-            {
-                await client.DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Error disposing client for account {AccountId}", accountId);
-            }
+    private SemaphoreSlim GetAccountLock(int accountId)
+    {
+        if (accountId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(accountId));
+
+        lock (_lifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _locks.GetOrAdd(accountId, _ => new SemaphoreSlim(1, 1));
+        }
+    }
+
+    private async Task RemoveClientCoreAsync(int accountId)
+    {
+        Client? client;
+        lock (_lifecycleGate)
+        {
+            _updateManagers.TryRemove(accountId, out _);
+            if (!_clients.TryRemove(accountId, out client))
+                return;
+        }
+
+        _logger.LogInformation("Removing Telegram client for account {AccountId}", accountId);
+
+        try
+        {
+            await client.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error disposing client for account {AccountId}", accountId);
         }
     }
 
@@ -186,10 +254,21 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        Client[] clients;
+        lock (_lifecycleGate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            clients = _clients.Values.ToArray();
+            _clients.Clear();
+            _updateManagers.Clear();
 
-        foreach (var client in _clients.Values)
+            // 不主动 Dispose 账号锁。关闭过程中可能仍有异步创建/移除正在等待，
+            // 提前释放 SemaphoreSlim 会让这些任务以 ObjectDisposedException 结束。
+            _locks.Clear();
+        }
+
+        foreach (var client in clients)
         {
             try
             {
@@ -200,16 +279,6 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 // 忽略清理时的错误
             }
         }
-
-        _clients.Clear();
-        _updateManagers.Clear();
-
-        foreach (var lockObj in _locks.Values)
-        {
-            lockObj.Dispose();
-        }
-
-        _locks.Clear();
 
         GC.SuppressFinalize(this);
     }
@@ -301,6 +370,16 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             // Docker 日志管道可能反压应用线程，表现为容器还在但 Kestrel 不再响应。
             // 这里默认丢弃底层 trace，只保留上面的 RPC 错误/限流日志。
         };
+    }
+
+    private static string BuildMtProxyUrl(ProxyConnectionOptions proxy)
+    {
+        if (string.IsNullOrWhiteSpace(proxy.Secret))
+            throw new InvalidOperationException($"MTProxy {proxy.ProxyId} 缺少 Secret");
+
+        return $"https://t.me/proxy?server={Uri.EscapeDataString(proxy.Host)}"
+               + $"&port={proxy.Port}"
+               + $"&secret={Uri.EscapeDataString(proxy.Secret)}";
     }
 
     private async Task HandleTelegramUpdateAsync(int accountId, UpdateManager updateManager, Update update)

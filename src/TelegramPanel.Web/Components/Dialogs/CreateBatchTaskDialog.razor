@@ -55,6 +55,13 @@
                     Cron 按面板时区解析：<b>@TimeZone.Current.Id</b>
                 </MudAlert>
 
+                <MudTextField @bind-Value="scheduledTaskName"
+                              Label="任务名称"
+                              Variant="Variant.Outlined"
+                              Immediate="true"
+                              MaxLength="100"
+                              HelperText="用于在计划任务列表中快速区分任务" />
+
                 <MudTextField @bind-Value="cronExpression"
                               Label="Cron 表达式"
                               Variant="Variant.Outlined"
@@ -188,10 +195,12 @@
 
             _selectedTaskType = value;
             ResolveEditorComponent();
+            scheduledTaskName = CurrentOption?.DisplayName ?? value;
         }
     }
 
     private string submissionMode = SubmissionModes.Once;
+    private string scheduledTaskName = string.Empty;
     private string cronExpression = "0 9 * * *";
     private bool creating;
     private string genericConfigJson = string.Empty;
@@ -319,7 +328,7 @@
             {
                 bool? confirm = await DialogService.ShowMessageBox(
                     "确认创建计划任务",
-                    $"将保存计划任务：{selectedTaskType}，Cron：{cronExpression}。是否继续？",
+                    $"将保存计划任务“{scheduledTaskName.Trim()}”，Cron：{cronExpression}。是否继续？",
                     yesText: "继续", cancelText: "取消");
 
                 if (confirm != true)
@@ -327,6 +336,7 @@
 
                 var scheduledTask = new ScheduledTask
                 {
+                    Name = scheduledTaskName.Trim(),
                     TaskType = selectedTaskType,
                     Total = total,
                     ConfigJson = config,
@@ -379,6 +389,12 @@
 
         if (IsScheduledMode && string.IsNullOrWhiteSpace(cronExpression))
             throw new InvalidOperationException("请填写 Cron 表达式");
+
+        if (IsScheduledMode && string.IsNullOrWhiteSpace(scheduledTaskName))
+            throw new InvalidOperationException("请填写计划任务名称");
+
+        if (IsScheduledMode && scheduledTaskName.Trim().Length > 100)
+            throw new InvalidOperationException("计划任务名称不能超过 100 个字符");
 
         if (editorComponentType != null)
         {

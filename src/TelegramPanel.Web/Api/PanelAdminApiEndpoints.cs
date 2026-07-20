@@ -10,6 +10,7 @@ using TelegramPanel.Core.BatchTasks;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
@@ -55,6 +56,8 @@ public static class PanelAdminApiEndpoints
         var secured = api.MapGroup("");
         if (requireAdminAuth)
             secured.RequireAuthorization();
+
+        secured.MapProxyManagementApi();
 
         secured.MapGet("/summary", GetSummaryAsync);
 
@@ -1606,6 +1609,7 @@ public static class PanelAdminApiEndpoints
         HttpRequest httpRequest,
         AccountImportService importService,
         AccountManagementService accountManagement,
+        ProxyManagementService proxyManagement,
         CancellationToken cancellationToken)
     {
         if (!httpRequest.HasFormContentType)
@@ -1620,9 +1624,18 @@ public static class PanelAdminApiEndpoints
 
         var categoryId = ParseNullableInt(form["categoryId"]);
         var twoFactorPassword = NormalizeNullable(form["twoFactorPassword"]);
+        var proxyBinding = ParseImportProxyBinding(form["proxyStrategy"], form["proxyId"]);
+        if (proxyBinding != null)
+            await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
 
         await using var stream = file.OpenReadStream();
-        var results = await importService.ImportFromZipStreamAsync(file.FileName, stream, categoryId, twoFactorPassword);
+        var results = await importService.ImportFromZipStreamAsync(
+            file.FileName,
+            stream,
+            categoryId,
+            twoFactorPassword,
+            proxyBinding,
+            cancellationToken);
         return Results.Ok(await BuildImportResponseAsync(results, accountManagement));
     }
 
@@ -1630,6 +1643,7 @@ public static class PanelAdminApiEndpoints
         HttpRequest httpRequest,
         AccountImportService importService,
         AccountManagementService accountManagement,
+        ProxyManagementService proxyManagement,
         IConfiguration configuration,
         CancellationToken cancellationToken)
     {
@@ -1647,13 +1661,32 @@ public static class PanelAdminApiEndpoints
             return Results.BadRequest(new OperationResultDto(false, "单个 Session 文件不能超过 10MB"));
 
         var categoryId = ParseNullableInt(form["categoryId"]);
+        var proxyBinding = ParseImportProxyBinding(form["proxyStrategy"], form["proxyId"]);
+        if (string.Equals(
+                proxyBinding?.Strategy,
+                "warp_per_account",
+                StringComparison.OrdinalIgnoreCase)
+            && files.Count > AccountImportService.MaxPerAccountWarpBatchSize)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                $"逐账号 WARP 单次最多处理 {AccountImportService.MaxPerAccountWarpBatchSize} 个账号"));
+        }
+        if (proxyBinding != null)
+            await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
         var importFiles = new List<AccountImportFile>();
         foreach (var file in files)
             importFiles.Add(new AccountImportFile(file.FileName, file.OpenReadStream()));
 
         try
         {
-            var results = await importService.ImportFromSessionFileStreamsAsync(importFiles, apiId, apiHash, categoryId);
+            var results = await importService.ImportFromSessionFileStreamsAsync(
+                importFiles,
+                apiId,
+                apiHash,
+                categoryId,
+                proxyBinding,
+                cancellationToken);
             return Results.Ok(await BuildImportResponseAsync(results, accountManagement));
         }
         finally
@@ -1667,7 +1700,9 @@ public static class PanelAdminApiEndpoints
         ImportStringSessionRequestDto request,
         AccountImportService importService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        ProxyManagementService proxyManagement,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (!TryGetTelegramApi(configuration, out var apiId, out var apiHash, out var apiError))
             return Results.BadRequest(new OperationResultDto(false, apiError));
@@ -1676,7 +1711,17 @@ public static class PanelAdminApiEndpoints
         if (string.IsNullOrWhiteSpace(sessionString))
             return Results.BadRequest(new OperationResultDto(false, "请填写 StringSession"));
 
-        var result = await importService.ImportFromStringSessionAsync(sessionString, apiId, apiHash, request.CategoryId);
+        var proxyBinding = ParseImportProxyBinding(request.ProxyStrategy, request.ProxyId?.ToString());
+        if (proxyBinding != null)
+            await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
+
+        var result = await importService.ImportFromStringSessionAsync(
+            sessionString,
+            apiId,
+            apiHash,
+            request.CategoryId,
+            proxyBinding,
+            cancellationToken);
         return Results.Ok(await BuildImportResponseAsync(new[] { result }, accountManagement));
     }
 
@@ -4232,6 +4277,7 @@ public static class PanelAdminApiEndpoints
         ValidateTaskSubmission(request.TaskType, request.ConfigJson);
         var task = await scheduledTasks.CreateAsync(new ScheduledTask
         {
+            Name = request.Name ?? string.Empty,
             TaskType = request.TaskType.Trim(),
             Total = Math.Max(0, request.Total),
             ConfigJson = NormalizeNullable(request.ConfigJson),
@@ -4256,6 +4302,8 @@ public static class PanelAdminApiEndpoints
         if (!string.Equals(task.TaskType, request.TaskType?.Trim(), StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new OperationResultDto(false, "不允许修改任务类型"));
 
+        if (request.Name is not null)
+            task.Name = request.Name;
         task.Total = Math.Max(0, request.Total);
         task.ConfigJson = NormalizeNullable(request.ConfigJson);
         task.CronExpression = request.CronExpression;
@@ -4810,7 +4858,21 @@ public static class PanelAdminApiEndpoints
             account.TelegramStatusSummary,
             account.TelegramStatusDetails,
             account.TelegramStatusOk,
-            account.TelegramStatusCheckedAtUtc);
+            account.TelegramStatusCheckedAtUtc,
+            account.UseGlobalProxy,
+            account.Proxy == null
+                ? null
+                : new AccountProxySummaryDto(
+                    account.Proxy.Id,
+                    account.Proxy.Name,
+                    account.Proxy.Kind,
+                    account.Proxy.Protocol,
+                    account.Proxy.Host,
+                    account.Proxy.Port,
+                    account.Proxy.ResinPlatform,
+                    account.Proxy.IsEnabled,
+                    account.Proxy.TestStatus,
+                    account.Proxy.EgressIp));
 
     private static RiskAccountDto ToRiskAccountDto(Account account)
     {
@@ -4902,6 +4964,7 @@ public static class PanelAdminApiEndpoints
     private static ScheduledTaskDto ToDto(ScheduledTask task) =>
         new(
             task.Id,
+            task.Name,
             task.TaskType,
             task.Status,
             task.Total,
@@ -4916,6 +4979,7 @@ public static class PanelAdminApiEndpoints
     private static ScheduledTaskDto ToScheduledTaskListDto(ScheduledTask task) =>
         new(
             task.Id,
+            task.Name,
             task.TaskType,
             task.Status,
             task.Total,
@@ -5487,6 +5551,17 @@ public static class PanelAdminApiEndpoints
 
     private static bool IsWebhookEnabled(IConfiguration configuration) =>
         string.Equals(configuration["Telegram:WebhookEnabled"]?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+    private static AccountProxyBindingInput? ParseImportProxyBinding(
+        string? strategy,
+        string? proxyId)
+    {
+        if (string.IsNullOrWhiteSpace(strategy))
+            return new AccountProxyBindingInput("global");
+
+        var parsedProxyId = ParseNullableInt(proxyId);
+        return new AccountProxyBindingInput(strategy.Trim(), parsedProxyId);
+    }
 
     private static async Task<ImportAccountsResponseDto> BuildImportResponseAsync(
         IEnumerable<ImportResult> results,
@@ -6401,7 +6476,21 @@ public sealed record AccountListItemDto(
     string? TelegramStatusSummary,
     string? TelegramStatusDetails,
     bool? TelegramStatusOk,
-    DateTime? TelegramStatusCheckedAtUtc);
+    DateTime? TelegramStatusCheckedAtUtc,
+    bool UseGlobalProxy,
+    AccountProxySummaryDto? Proxy);
+
+public sealed record AccountProxySummaryDto(
+    int Id,
+    string Name,
+    string Kind,
+    string Protocol,
+    string Host,
+    int Port,
+    string? ResinPlatform,
+    bool IsEnabled,
+    string TestStatus,
+    string? EgressIp);
 
 public sealed record AccountDetailDto(
     int Id,
@@ -6593,7 +6682,11 @@ public sealed record BatchChangeRecoveryEmailRequestDto(
     int? PollTimeoutSeconds,
     string? SendEmailFilter,
     string? SubjectFilter);
-public sealed record ImportStringSessionRequestDto(string? SessionString, int? CategoryId);
+public sealed record ImportStringSessionRequestDto(
+    string? SessionString,
+    int? CategoryId,
+    string? ProxyStrategy,
+    int? ProxyId);
 public sealed record StartAccountLoginRequestDto(string? Phone, int LoginId = 0);
 public sealed record StartAccountQrLoginRequestDto(int LoginId = 0);
 public sealed record AccountLoginSessionRequestDto(int LoginId);
@@ -6601,8 +6694,20 @@ public sealed record AccountLoginCodeRequestDto(int LoginId, string? Code);
 public sealed record AccountLoginPasswordRequestDto(int LoginId, string? Password, bool? SaveTwoFactorPassword = null);
 public sealed record CreateTaskRequestDto(string TaskType, int Total, string? Config);
 public sealed record UpdateTaskRequestDto(string TaskType, int Total, string? Config);
-public sealed record CreateScheduledTaskRequestDto(string TaskType, int Total, string? ConfigJson, string CronExpression, string? Status);
-public sealed record UpdateScheduledTaskRequestDto(string TaskType, int Total, string? ConfigJson, string CronExpression, string? Status);
+public sealed record CreateScheduledTaskRequestDto(
+    string TaskType,
+    int Total,
+    string? ConfigJson,
+    string CronExpression,
+    string? Status,
+    string? Name = null);
+public sealed record UpdateScheduledTaskRequestDto(
+    string TaskType,
+    int Total,
+    string? ConfigJson,
+    string CronExpression,
+    string? Status,
+    string? Name = null);
 public sealed record CleanupTasksRequestDto(string Mode);
 public sealed record TaskAssetUploadResultDto(string AssetPath, string FileName, string ScopeId);
 public sealed record SaveTextDictionaryRequestDto(
@@ -6629,6 +6734,7 @@ public sealed record BatchTaskDto(
 
 public sealed record ScheduledTaskDto(
     int Id,
+    string Name,
     string TaskType,
     string Status,
     int Total,

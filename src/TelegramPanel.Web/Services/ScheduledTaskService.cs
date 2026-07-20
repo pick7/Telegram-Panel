@@ -183,6 +183,11 @@ public sealed class ScheduledTaskService
     private void Normalize(ScheduledTask task)
     {
         task.TaskType = (task.TaskType ?? string.Empty).Trim();
+        task.Name = string.IsNullOrWhiteSpace(task.Name)
+            ? task.TaskType
+            : task.Name.Trim();
+        if (task.Name.Length > 100)
+            throw new InvalidOperationException("计划任务名称不能超过 100 个字符");
         task.Status = string.Equals((task.Status ?? string.Empty).Trim(), ScheduledTaskStatuses.Paused, StringComparison.OrdinalIgnoreCase)
             ? ScheduledTaskStatuses.Paused
             : ScheduledTaskStatuses.Enabled;

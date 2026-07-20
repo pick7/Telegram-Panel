@@ -27,13 +27,13 @@
         新版本 v{{ versionInfo.latestVersion }}
       </el-tag>
       <div class="appbar-spacer" />
-      <el-button link class="appbar-icon" title="重启面板" :disabled="restartPanelLoading" @click="restartPanel">
+      <el-button link class="appbar-icon appbar-secondary" title="重启面板" :disabled="restartPanelLoading" @click="restartPanel">
         <span class="material-icons">{{ restartPanelLoading ? 'hourglass_empty' : 'restart_alt' }}</span>
       </el-button>
-      <el-button link class="appbar-icon" title="系统设置" @click="router.push('/settings')">
+      <el-button link class="appbar-icon appbar-secondary" title="系统设置" @click="router.push('/settings')">
         <span class="material-icons">settings</span>
       </el-button>
-      <el-button link class="appbar-icon" title="GitHub" @click="openGithub">
+      <el-button link class="appbar-icon appbar-secondary" title="GitHub" @click="openGithub">
         <span class="material-icons">link</span>
       </el-button>
       <el-button link class="appbar-icon" :title="isDark ? '切换到白天模式' : '切换到黑夜模式'" @click="toggleTheme">
@@ -262,6 +262,7 @@ const staticMenuItems: MenuItem[] = [
       { index: '/accounts/categories', label: '账号分类', icon: 'category' },
     ],
   },
+  { index: '/proxies', label: '代理管理', icon: 'vpn_lock' },
   {
     index: 'channels-group',
     label: '频道管理',

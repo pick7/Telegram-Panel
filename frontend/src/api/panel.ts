@@ -5,6 +5,10 @@ import type {
   AccountChatMembership,
   AccountDetail,
   AccountListItem,
+  AccountProxyBatchResult,
+  AccountProxyBindingRequest,
+  AccountProxyEgress,
+  AccountProxyStrategy,
   BatchChangeRecoveryEmailRequest,
   CleanupWasteResult,
   AuthMe,
@@ -70,8 +74,19 @@ import type {
   VersionInfo,
   SystemRestartResult,
   NumberPreset,
+  NetworkEgress,
+  OutboundProxy,
+  ProxyImportRequest,
+  SaveOutboundProxyRequest,
   TextPreset,
+  CreateWarpProxyRequest,
+  WarpRuntimeStatus,
 } from './types'
+
+const PROXY_SAVE_TIMEOUT_MS = 120_000
+const PROXY_DELETE_TIMEOUT_MS = 900_000
+const PROXY_IMPORT_TIMEOUT_MS = 900_000
+const WARP_OPERATION_TIMEOUT_MS = 900_000
 
 export const panelApi = {
   me: () => api.get<AuthMe>('/auth/me').then((r) => r.data),
@@ -80,6 +95,20 @@ export const panelApi = {
   logout: () => api.post<OperationResult>('/auth/logout').then((r) => r.data),
 
   summary: () => api.get<DashboardSummary>('/summary').then((r) => r.data),
+  networkEgress: () => api.get<NetworkEgress>('/network/egress').then((r) => r.data),
+  proxies: () => api.get<OutboundProxy[]>('/proxies').then((r) => r.data),
+  createProxy: (payload: SaveOutboundProxyRequest) =>
+    api.post<OutboundProxy>('/proxies', payload, { timeout: PROXY_SAVE_TIMEOUT_MS }).then((r) => r.data),
+  updateProxy: (id: number, payload: SaveOutboundProxyRequest) =>
+    api.put<OutboundProxy>(`/proxies/${id}`, payload, { timeout: PROXY_SAVE_TIMEOUT_MS }).then((r) => r.data),
+  deleteProxy: (id: number) =>
+    api.delete<OperationResult>(`/proxies/${id}`, { timeout: PROXY_DELETE_TIMEOUT_MS }).then((r) => r.data),
+  testProxy: (id: number) => api.post<OutboundProxy>(`/proxies/${id}/test`, {}, { timeout: 60_000 }).then((r) => r.data),
+  importProxies: (payload: ProxyImportRequest) =>
+    api.post<OutboundProxy[]>('/proxies/import', payload, { timeout: PROXY_IMPORT_TIMEOUT_MS }).then((r) => r.data),
+  warpStatus: () => api.get<WarpRuntimeStatus>('/proxies/warp/status').then((r) => r.data),
+  createWarpProxies: (payload: CreateWarpProxyRequest) =>
+    api.post<OutboundProxy>('/proxies/warp', payload, { timeout: WARP_OPERATION_TIMEOUT_MS }).then((r) => r.data),
   accountCategories: () => api.get<AccountCategory[]>('/account-categories').then((r) => r.data),
   createAccountCategory: (payload: { name: string; color?: string | null; description?: string | null; excludeFromOperations: boolean }) =>
     api.post<AccountCategory>('/account-categories', payload).then((r) => r.data),
@@ -96,6 +125,12 @@ export const panelApi = {
     search?: string
     onlyWaste?: boolean
   }) => api.get<PagedResult<AccountListItem>>('/accounts', { params }).then((r) => r.data),
+  setAccountProxy: (id: number, payload: AccountProxyBindingRequest) =>
+    api.post<AccountProxyBatchResult>(`/accounts/${id}/proxy`, payload, { timeout: 900_000 }).then((r) => r.data),
+  batchSetAccountProxy: (accountIds: number[], payload: AccountProxyBindingRequest) =>
+    api.post<AccountProxyBatchResult>('/accounts/batch/proxy', { accountIds, ...payload }, { timeout: 900_000 }).then((r) => r.data),
+  accountProxyEgress: (id: number) =>
+    api.get<AccountProxyEgress>(`/accounts/${id}/proxy/egress`, { timeout: 60_000 }).then((r) => r.data),
   account: (id: number) => api.get<AccountDetail>(`/accounts/${id}`).then((r) => r.data),
   updateAccount: (id: number, payload: { remark?: string | null; twoFactorPassword?: string | null; categoryId?: number | null }) =>
     api.put<AccountDetail>(`/accounts/${id}`, payload).then((r) => r.data),
@@ -199,11 +234,16 @@ export const panelApi = {
   batchChangeRecoveryEmail: (payload: BatchChangeRecoveryEmailRequest) =>
     api.post<AccountBatchOperationResult>('/accounts/batch/recovery-email', payload, { timeout: 900_000 }).then((r) => r.data),
   importAccountsZip: (form: FormData) =>
-    api.post<ImportAccountsResponse>('/accounts/import/zip', form, { timeout: 300_000 }).then((r) => r.data),
+    api.post<ImportAccountsResponse>('/accounts/import/zip', form, { timeout: 900_000 }).then((r) => r.data),
   importAccountsSessionFiles: (form: FormData) =>
-    api.post<ImportAccountsResponse>('/accounts/import/session-files', form, { timeout: 300_000 }).then((r) => r.data),
-  importAccountsStringSession: (payload: { sessionString: string; categoryId?: number | null }) =>
-    api.post<ImportAccountsResponse>('/accounts/import/string-session', payload, { timeout: 300_000 }).then((r) => r.data),
+    api.post<ImportAccountsResponse>('/accounts/import/session-files', form, { timeout: 900_000 }).then((r) => r.data),
+  importAccountsStringSession: (payload: {
+    sessionString: string
+    categoryId?: number | null
+    proxyStrategy?: AccountProxyStrategy
+    proxyId?: number | null
+  }) =>
+    api.post<ImportAccountsResponse>('/accounts/import/string-session', payload, { timeout: 900_000 }).then((r) => r.data),
   startAccountLogin: (payload: { phone: string; loginId?: number }) =>
     api.post<AccountLoginResponse>('/accounts/login/start', payload, { timeout: 120_000 }).then((r) => r.data),
   startAccountQrLogin: (loginId?: number) =>

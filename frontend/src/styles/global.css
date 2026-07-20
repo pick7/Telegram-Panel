@@ -726,6 +726,41 @@ body,
 }
 
 @media (max-width: 640px) {
+  .appbar {
+    padding: 0 8px;
+    gap: 2px;
+  }
+
+  .appbar > .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  .appbar-icon {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
+  .app-title {
+    margin-left: 4px;
+    font-size: 17px;
+    white-space: nowrap;
+  }
+
+  .appbar-secondary,
+  .version-chip {
+    display: none;
+  }
+
+  .user-menu {
+    gap: 0;
+    padding: 4px;
+  }
+
+  .user-arrow {
+    display: none;
+  }
+
   .main {
     padding: 12px 10px;
   }

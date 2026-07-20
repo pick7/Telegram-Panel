@@ -14,6 +14,42 @@
       </div>
     </el-alert>
 
+    <section class="import-proxy-bar" aria-label="导入账号代理设置">
+      <div class="import-proxy-heading">
+        <span class="material-icons">vpn_lock</span>
+        <div>
+          <div class="cell-main">导入账号代理</div>
+        </div>
+      </div>
+      <el-radio-group
+        v-model="proxyStrategy"
+        class="proxy-strategy"
+        aria-label="导入账号连接方式"
+        :disabled="busy"
+      >
+        <el-radio-button value="global">全局设置</el-radio-button>
+        <el-radio-button value="direct">直连</el-radio-button>
+        <el-radio-button value="existing">已有代理</el-radio-button>
+        <el-radio-button value="warp_per_account" :disabled="!warpAvailable">每账号独立 WARP</el-radio-button>
+      </el-radio-group>
+      <el-select
+        v-if="proxyStrategy === 'existing'"
+        v-model="proxyId"
+        filterable
+        class="proxy-select"
+        placeholder="选择已有代理"
+        :disabled="busy"
+      >
+        <el-option
+          v-for="proxy in proxies"
+          :key="proxy.id"
+          :value="proxy.id"
+          :label="`${proxy.name} · ${proxy.protocol.toUpperCase()} · ${proxy.egressIp || `${proxy.host}:${proxy.port}`}`"
+          :disabled="!proxy.isEnabled"
+        />
+      </el-select>
+    </section>
+
     <el-card shadow="never" class="page-card import-card import-card-primary">
       <template #header>
         <div class="card-header">
@@ -42,13 +78,15 @@
     └── 8615119714541.session</pre>
       <div class="upload-row">
         <el-upload
+          v-model:file-list="zipUploadFiles"
           :auto-upload="false"
           :limit="1"
           accept=".zip"
           :on-change="onZipChange"
           :on-remove="onZipRemove"
+          :disabled="busy"
         >
-          <el-button type="primary" :icon="Upload">选择 Zip 压缩包</el-button>
+          <el-button type="primary" :icon="Upload" :disabled="busy">选择 Zip 压缩包</el-button>
         </el-upload>
         <span v-if="zipFile" class="muted">{{ zipFile.name }}（{{ formatBytes(zipFile.size) }}）</span>
       </div>
@@ -58,12 +96,13 @@
         show-password
         placeholder="二级密码（可选，用于没有 2fa.txt 的账号）"
         class="mt-4"
+        :disabled="busy"
       />
       <el-button
         type="success"
         class="full-btn mt-4"
         :loading="importingZip"
-        :disabled="!zipFile"
+        :disabled="busy || !zipFile || proxySelectionInvalid"
         @click="importZip"
       >
         开始导入 Zip
@@ -78,13 +117,15 @@
           </div>
         </template>
         <el-upload
+          v-model:file-list="sessionFiles"
           :auto-upload="false"
           multiple
           accept=".session"
           :on-change="onSessionChange"
           :on-remove="onSessionRemove"
+          :disabled="busy"
         >
-          <el-button type="primary" :icon="UploadFilled">选择 Session 文件</el-button>
+          <el-button type="primary" :icon="UploadFilled" :disabled="busy">选择 Session 文件</el-button>
         </el-upload>
         <div v-if="sessionFiles.length" class="file-list">
           <div v-for="file in sessionFiles" :key="file.uid" class="file-item">
@@ -113,6 +154,7 @@
           type="textarea"
           :rows="7"
           placeholder="Session String (Base64)"
+          :disabled="busy"
         />
         <el-button
           type="success"
@@ -130,9 +172,27 @@
       <template #header>
         <div class="card-header">
           <span>导入结果</span>
-          <el-button text @click="importResults = []">清空结果</el-button>
+          <el-button text :disabled="busy" @click="importResults = []">清空结果</el-button>
         </div>
       </template>
+      <div v-if="importFeedbackSummary.partial > 0 || importFeedbackSummary.failed > 0" class="import-result-alerts">
+        <el-alert
+          v-if="importFeedbackSummary.partial > 0"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`${importFeedbackSummary.partial} 个账号已导入，但代理设置失败`"
+          description="账号数据已经保留，请查看下方消息列中的具体原因并重新设置代理。"
+        />
+        <el-alert
+          v-if="importFeedbackSummary.failed > 0"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="`${importFeedbackSummary.failed} 个账号导入失败`"
+          description="请查看下方消息列中的具体错误。"
+        />
+      </div>
       <el-table :data="importResults" stripe>
         <el-table-column prop="phone" label="手机号" min-width="150">
           <template #default="{ row }">{{ row.phone || '-' }}</template>
@@ -143,13 +203,15 @@
         <el-table-column prop="username" label="用户名" min-width="130">
           <template #default="{ row }">{{ row.username ? `@${row.username}` : '-' }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="104">
           <template #default="{ row }">
-            <el-tag :type="row.success ? 'success' : 'danger'" size="small">{{ row.success ? '成功' : '失败' }}</el-tag>
+            <el-tag :type="getImportResultFeedback(row).tagType" size="small">
+              {{ getImportResultFeedback(row).label }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="error" label="消息" min-width="260">
-          <template #default="{ row }">{{ row.success ? '成功' : row.error || '失败' }}</template>
+          <template #default="{ row }">{{ getImportResultFeedback(row).message }}</template>
         </el-table-column>
       </el-table>
     </el-card>
@@ -438,19 +500,24 @@ import type {
   AccountCategory,
   AccountListItem,
   AccountOperationItem,
+  AccountProxyStrategy,
   BatchTask,
   DataDictionary,
   ImportAccountsResponse,
   ImportResult,
+  OutboundProxy,
+  WarpRuntimeStatus,
 } from '@/api/types'
 import { formatTime } from '@/utils/format'
 import { accountCategoryTagStyle } from '@/utils/categoryStyle'
+import { getImportResultFeedback, summarizeImportResults } from '@/utils/importResultFeedback'
 
 type Row = AccountListItem & { busy?: boolean }
 type SelectionMode = 'select' | 'invert' | 'clear'
 
 const router = useRouter()
 const zipFile = ref<File | null>(null)
+const zipUploadFiles = ref<UploadFile[]>([])
 const zipTwoFactorPassword = ref('')
 const sessionFiles = ref<UploadFile[]>([])
 const sessionString = ref('')
@@ -463,6 +530,10 @@ const importResults = ref<ImportResult[]>([])
 const rows = ref<Row[]>([])
 const categories = ref<AccountCategory[]>([])
 const dictionaries = ref<DataDictionary[]>([])
+const proxies = ref<OutboundProxy[]>([])
+const proxyStrategy = ref<AccountProxyStrategy>('global')
+const proxyId = ref<number | null>(null)
+const warpStatus = ref<WarpRuntimeStatus | null>(null)
 const tableRef = ref<TableInstance>()
 const batchChatMembershipRef = ref<InstanceType<typeof BatchChatMembershipDialog>>()
 const batchRecoveryEmailRef = ref<InstanceType<typeof BatchRecoveryEmailDialog>>()
@@ -471,12 +542,23 @@ const selectionMode = ref<SelectionMode>('select')
 const telegramApiChecked = ref(false)
 const telegramApiConfigured = ref(true)
 const effectiveApiId = ref('')
+let importOperationToken = 0
 
 const selectedIds = computed(() => selectedRows.value.map((x) => x.id))
 const busy = computed(() => importingZip.value || importingSessions.value || importingString.value || actionLoading.value)
 const shouldBlockApiImport = computed(() => telegramApiChecked.value && !telegramApiConfigured.value)
-const sessionImportDisabled = computed(() => sessionFiles.value.length === 0 || shouldBlockApiImport.value)
-const stringImportDisabled = computed(() => !sessionString.value.trim() || shouldBlockApiImport.value)
+const warpAvailable = computed(() => Boolean(
+  warpStatus.value?.platformSupported
+  && warpStatus.value.enabled
+  && warpStatus.value.dockerAvailable,
+))
+const proxySelectionInvalid = computed(() =>
+  (proxyStrategy.value === 'existing' && !proxyId.value)
+  || (proxyStrategy.value === 'warp_per_account' && !warpAvailable.value),
+)
+const sessionImportDisabled = computed(() => busy.value || sessionFiles.value.length === 0 || shouldBlockApiImport.value || proxySelectionInvalid.value)
+const stringImportDisabled = computed(() => busy.value || !sessionString.value.trim() || shouldBlockApiImport.value || proxySelectionInvalid.value)
+const importFeedbackSummary = computed(() => summarizeImportResults(importResults.value))
 const imageDictionaries = computed(() =>
   dictionaries.value
     .filter((x) => x.isEnabled && x.type === 'image' && x.enabledItemCount > 0)
@@ -550,11 +632,13 @@ const exportDialog = reactive({
   scopeLabel: '',
 })
 
-function onZipChange(file: UploadFile) {
+function onZipChange(file: UploadFile, files: UploadFile[]) {
+  zipUploadFiles.value = files.slice(-1)
   zipFile.value = file.raw || null
 }
 
 function onZipRemove() {
+  zipUploadFiles.value = []
   zipFile.value = null
 }
 
@@ -574,32 +658,64 @@ function onBatchAvatarRemove() {
   batchProfile.avatarFile = null
 }
 
+function ensureProxySelected() {
+  if (!proxySelectionInvalid.value) return true
+  ElMessage.warning(proxyStrategy.value === 'warp_per_account' ? '当前环境无法创建 WARP' : '请选择已有代理')
+  return false
+}
+
+function appendProxyFields(
+  form: FormData,
+  strategy: AccountProxyStrategy,
+  selectedProxyId: number | null,
+) {
+  form.append('proxyStrategy', strategy)
+  if (strategy === 'existing' && selectedProxyId) {
+    form.append('proxyId', String(selectedProxyId))
+  }
+}
+
 async function importZip() {
+  if (busy.value) return
+  if (!ensureProxySelected()) return
   if (!zipFile.value) {
     ElMessage.warning('请先选择 Zip 压缩包')
     return
   }
 
+  const selectedZip = zipFile.value
+  const selectedPassword = zipTwoFactorPassword.value
+  const selectedStrategy = proxyStrategy.value
+  const selectedProxyId = proxyId.value
   const form = new FormData()
-  form.append('file', zipFile.value)
-  form.append('twoFactorPassword', zipTwoFactorPassword.value)
+  form.append('file', selectedZip)
+  form.append('twoFactorPassword', selectedPassword)
+  appendProxyFields(form, selectedStrategy, selectedProxyId)
 
+  const operationToken = ++importOperationToken
   importingZip.value = true
   try {
     const response = await panelApi.importAccountsZip(form)
+    if (operationToken !== importOperationToken) return
     applyImportResponse(response)
-    zipFile.value = null
-    zipTwoFactorPassword.value = ''
+    if (zipFile.value === selectedZip) {
+      zipFile.value = null
+      zipUploadFiles.value = []
+    }
+    if (zipTwoFactorPassword.value === selectedPassword) zipTwoFactorPassword.value = ''
   } finally {
-    importingZip.value = false
+    if (operationToken === importOperationToken) importingZip.value = false
   }
 }
 
 async function importSessionFiles() {
+  if (busy.value) return
   if (!ensureTelegramApiConfigured()) return
+  if (!ensureProxySelected()) return
 
+  const selectedUploadFiles = [...sessionFiles.value]
   const files: File[] = []
-  for (const uploadFile of sessionFiles.value) {
+  for (const uploadFile of selectedUploadFiles) {
     if (uploadFile.raw) files.push(uploadFile.raw as File)
   }
   if (files.length === 0) {
@@ -609,32 +725,52 @@ async function importSessionFiles() {
 
   const form = new FormData()
   files.forEach((file) => form.append('files', file))
+  const selectedStrategy = proxyStrategy.value
+  const selectedProxyId = proxyId.value
+  appendProxyFields(form, selectedStrategy, selectedProxyId)
 
+  const operationToken = ++importOperationToken
   importingSessions.value = true
   try {
     const response = await panelApi.importAccountsSessionFiles(form)
+    if (operationToken !== importOperationToken) return
     applyImportResponse(response)
-    sessionFiles.value = []
+    const selectionUnchanged = sessionFiles.value.length === selectedUploadFiles.length
+      && sessionFiles.value.every((file, index) => file.uid === selectedUploadFiles[index]?.uid)
+    if (selectionUnchanged) sessionFiles.value = []
   } finally {
-    importingSessions.value = false
+    if (operationToken === importOperationToken) importingSessions.value = false
   }
 }
 
 async function importStringSession() {
+  if (busy.value) return
   if (!ensureTelegramApiConfigured()) return
+  if (!ensureProxySelected()) return
 
   if (!sessionString.value.trim()) {
     ElMessage.warning('请填写 StringSession')
     return
   }
 
+  const selectedSessionString = sessionString.value
+  const selectedStrategy = proxyStrategy.value
+  const selectedProxyId = proxyId.value
+  const operationToken = ++importOperationToken
   importingString.value = true
   try {
-    const response = await panelApi.importAccountsStringSession({ sessionString: sessionString.value })
+    const response = await panelApi.importAccountsStringSession({
+      sessionString: selectedSessionString,
+      proxyStrategy: selectedStrategy,
+      proxyId: selectedStrategy === 'existing' ? selectedProxyId : null,
+    })
+    if (operationToken !== importOperationToken) return
     applyImportResponse(response)
-    if (response.results.some((x) => x.success)) sessionString.value = ''
+    if (response.results.some((x) => x.success) && sessionString.value === selectedSessionString) {
+      sessionString.value = ''
+    }
   } finally {
-    importingString.value = false
+    if (operationToken === importOperationToken) importingString.value = false
   }
 }
 
@@ -642,10 +778,10 @@ function applyImportResponse(response: ImportAccountsResponse) {
   importResults.value = response.results
   mergeImportedAccounts(response.accounts)
 
-  const success = response.results.filter((x) => x.success).length
-  const failed = response.results.length - success
-  if (success > 0) ElMessage.success(`成功导入 ${success} 个账号`)
-  if (failed > 0) ElMessage.warning(`${failed} 个账号导入失败`)
+  const summary = summarizeImportResults(response.results)
+  if (summary.succeeded > 0) ElMessage.success(`成功导入 ${summary.succeeded} 个账号`)
+  if (summary.partial > 0) ElMessage.warning(`${summary.partial} 个账号已导入，但代理设置失败`)
+  if (summary.failed > 0) ElMessage.error(`${summary.failed} 个账号导入失败`)
 }
 
 function mergeImportedAccounts(accounts: AccountListItem[]) {
@@ -1047,6 +1183,21 @@ async function loadDictionaries() {
   dictionaries.value = await panelApi.dictionaries()
 }
 
+async function loadProxies() {
+  proxies.value = await panelApi.proxies()
+}
+
+async function loadWarpStatus() {
+  try {
+    warpStatus.value = await panelApi.warpStatus()
+  } catch {
+    warpStatus.value = null
+  }
+  if (!warpAvailable.value && proxyStrategy.value === 'warp_per_account') {
+    proxyStrategy.value = 'global'
+  }
+}
+
 async function loadTelegramApiStatus() {
   try {
     const settings = await panelApi.settings()
@@ -1062,15 +1213,54 @@ async function loadTelegramApiStatus() {
 }
 
 onMounted(() => {
-  loadCategories()
-  loadDictionaries()
-  loadTelegramApiStatus()
+  void Promise.allSettled([
+    loadCategories(),
+    loadDictionaries(),
+    loadProxies(),
+    loadWarpStatus(),
+    loadTelegramApiStatus(),
+  ])
 })
 </script>
 
 <style scoped>
 .account-import-page {
   min-width: 0;
+}
+
+.import-proxy-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: min(100%, 1160px);
+  margin: 0 auto 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--tp-border);
+  border-left: 4px solid var(--el-color-primary);
+  border-radius: 4px;
+  background: var(--tp-panel);
+  box-shadow: var(--tp-card-shadow);
+}
+
+.import-proxy-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 190px;
+}
+
+.import-proxy-heading .material-icons {
+  color: var(--el-color-primary);
+  font-size: 26px;
+}
+
+.proxy-strategy {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.proxy-select {
+  width: min(360px, 100%);
 }
 
 .import-card {
@@ -1164,6 +1354,12 @@ onMounted(() => {
   margin-top: 6px;
 }
 
+.import-result-alerts {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .result-summary {
   margin-bottom: 12px;
   color: var(--tp-muted);
@@ -1178,6 +1374,35 @@ onMounted(() => {
 
 @media (max-width: 900px) {
   .import-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .import-proxy-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .proxy-strategy,
+  .proxy-select {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .proxy-strategy {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .proxy-strategy :deep(.el-radio-button),
+  .proxy-strategy :deep(.el-radio-button__inner) {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  .proxy-strategy {
     grid-template-columns: 1fr;
   }
 }

@@ -32,6 +32,9 @@
       <template #header><span>计划任务 ({{ scheduledTasks.length }})</span></template>
       <el-table v-loading="loading && !hasLoaded" :data="scheduledTasks" stripe row-key="id">
         <el-table-column prop="id" label="ID" width="72" />
+        <el-table-column label="任务名称" min-width="180">
+          <template #default="{ row }">{{ scheduledName(row) }}</template>
+        </el-table-column>
         <el-table-column label="归属" width="110">
           <template #default="{ row }"><el-tag size="small">{{ categoryName(taskCategory(row.taskType)) }}</el-tag></template>
         </el-table-column>
@@ -59,9 +62,9 @@
               <el-button link type="primary" :icon="InfoFilled" title="详情" @click="showScheduledDetails(row)" />
               <el-button link type="success" :icon="VideoPlay" title="立即执行" @click="runScheduledNow(row)" />
               <el-button link type="primary" :icon="Edit" title="编辑" @click="openEditScheduled(row)" />
-              <el-button v-if="row.status === 'enabled'" link type="warning" :icon="VideoPause" title="暂停" @click="pauseScheduled(row.id)" />
+              <el-button v-if="row.status === 'enabled'" link type="warning" :icon="VideoPause" title="暂停" @click="pauseScheduled(row)" />
               <el-button v-else link type="success" :icon="VideoPlay" title="恢复" @click="resumeScheduled(row.id)" />
-              <el-button link type="danger" :icon="Delete" title="删除" @click="deleteScheduled(row.id)" />
+              <el-button link type="danger" :icon="Delete" title="删除" @click="deleteScheduled(row)" />
             </div>
           </template>
         </el-table-column>
@@ -242,6 +245,14 @@
         />
 
         <template v-if="!currentCreateTarget && createDialog.form.mode === 'scheduled'">
+          <el-form-item label="任务名称">
+            <el-input
+              v-model="createDialog.form.name"
+              maxlength="100"
+              show-word-limit
+              placeholder="例如：工作日上午同步账号"
+            />
+          </el-form-item>
           <el-form-item label="Cron">
             <el-input v-model="createDialog.form.cronExpression" placeholder="0 9 * * *" />
           </el-form-item>
@@ -334,9 +345,17 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="editScheduledDialog.visible" :title="`编辑计划任务 #${editScheduledDialog.id}`" width="760px" destroy-on-close>
+    <el-dialog
+      v-model="editScheduledDialog.visible"
+      :title="'编辑计划任务：' + (editScheduledDialog.form.name || '#' + editScheduledDialog.id)"
+      width="760px"
+      destroy-on-close
+    >
       <el-alert :title="`Cron 按面板时区解析：${timeZoneId || 'UTC'}。保存后会重新计算下次运行时间。`" type="info" :closable="false" class="mb-3" />
       <el-form label-width="96px">
+        <el-form-item label="任务名称">
+          <el-input v-model="editScheduledDialog.form.name" maxlength="100" show-word-limit />
+        </el-form-item>
         <el-form-item label="任务类型">
           <el-input :model-value="taskName(editScheduledDialog.form.taskType)" disabled />
         </el-form-item>
@@ -423,6 +442,7 @@ const createDialog = ref({
   form: {
     category: '',
     taskType: '',
+    name: '',
     mode: 'once',
     cronExpression: '0 9 * * *',
     config: '',
@@ -462,6 +482,7 @@ const editScheduledDialog = ref({
   id: 0,
   form: {
     taskType: '',
+    name: '',
     total: 0,
     configJson: '',
     cronExpression: '',
@@ -524,6 +545,10 @@ function taskDefinition(type: string) {
 
 function taskName(type: string) {
   return taskDefinition(type)?.displayName || fallbackTaskName(type)
+}
+
+function scheduledName(task: ScheduledTask) {
+  return task.name?.trim() || `${taskName(task.taskType)} #${task.id}`
 }
 
 function taskCategory(type: string) {
@@ -620,6 +645,7 @@ function openCreateDialog() {
   createDialog.value.form = {
     category: firstCategory,
     taskType: '',
+    name: '',
     mode: 'once',
     cronExpression: '0 9 * * *',
     config: '',
@@ -632,12 +658,14 @@ function openCreateDialog() {
 function ensureTaskType() {
   const first = creatableDefinitions.value[0]
   createDialog.value.form.taskType = first?.taskType || ''
+  createDialog.value.form.name = taskName(createDialog.value.form.taskType)
   createDialog.value.form.config = ''
   createDialog.value.form.total = defaultTotalForTask(createDialog.value.form.taskType)
   createDraft.value = emptyDraft()
 }
 
 function onTaskTypeChanged() {
+  createDialog.value.form.name = taskName(createDialog.value.form.taskType)
   createDialog.value.form.config = ''
   createDialog.value.form.total = defaultTotalForTask(createDialog.value.form.taskType)
   createDraft.value = emptyDraft()
@@ -673,11 +701,17 @@ async function submitCreate() {
     ElMessage.warning('请填写 Cron 表达式')
     return
   }
+  if (form.mode === 'scheduled' && !form.name.trim()) {
+    ElMessage.warning('请填写计划任务名称')
+    return
+  }
+  form.name = form.name.trim()
 
   createDialog.value.saving = true
   try {
     if (form.mode === 'scheduled') {
       await panelApi.createScheduledTask({
+        name: form.name,
         taskType: form.taskType,
         total,
         configJson: config,
@@ -883,7 +917,7 @@ async function rerunTask(task: BatchTask) {
 
 async function runScheduledNow(task: ScheduledTask) {
   await ElMessageBox.confirm(
-    `将立即按计划任务 #${task.id} 的当前配置创建一条执行任务，用于测试 Cron 配置效果。原计划仍会按下次运行时间继续调度，是否继续？`,
+    `将立即按“${scheduledName(task)}”的当前配置创建一条执行任务，用于测试 Cron 配置效果。原计划仍会按下次运行时间继续调度，是否继续？`,
     '确认立即执行',
     { type: 'warning' },
   )
@@ -892,9 +926,9 @@ async function runScheduledNow(task: ScheduledTask) {
   await load()
 }
 
-async function pauseScheduled(id: number) {
-  await ElMessageBox.confirm(`确定要暂停计划任务 #${id} 吗？`, '确认暂停', { type: 'warning' })
-  await panelApi.pauseScheduledTask(id)
+async function pauseScheduled(task: ScheduledTask) {
+  await ElMessageBox.confirm(`确定要暂停“${scheduledName(task)}”吗？`, '确认暂停', { type: 'warning' })
+  await panelApi.pauseScheduledTask(task.id)
   await load()
 }
 
@@ -903,9 +937,9 @@ async function resumeScheduled(id: number) {
   await load()
 }
 
-async function deleteScheduled(id: number) {
-  await ElMessageBox.confirm(`确定要删除计划任务 #${id} 吗？删除后不会影响已经触发的执行记录。`, '确认删除', { type: 'warning' })
-  await panelApi.deleteScheduledTask(id)
+async function deleteScheduled(task: ScheduledTask) {
+  await ElMessageBox.confirm(`确定要删除“${scheduledName(task)}”吗？删除后不会影响已经触发的执行记录。`, '确认删除', { type: 'warning' })
+  await panelApi.deleteScheduledTask(task.id)
   await load()
 }
 
@@ -918,6 +952,7 @@ async function openEditScheduled(task: ScheduledTask) {
     id: fullTask.id,
     form: {
       taskType: fullTask.taskType,
+      name: fullTask.name || taskName(fullTask.taskType),
       total: Math.max(0, fullTask.total),
       configJson: fullTask.configJson || '',
       cronExpression: fullTask.cronExpression,
@@ -931,6 +966,10 @@ async function submitEditScheduled() {
   const hasForm = hasTaskConfigForm(dialog.form.taskType)
   const config = hasForm ? editScheduledDraft.value.config : dialog.form.configJson.trim()
   const total = hasForm ? editScheduledDraft.value.total : dialog.form.total
+  if (!dialog.form.name.trim()) {
+    ElMessage.warning('请填写计划任务名称')
+    return
+  }
   if (!dialog.form.cronExpression.trim()) {
     ElMessage.warning('请填写 Cron 表达式')
     return
@@ -947,10 +986,12 @@ async function submitEditScheduled() {
       return
     }
   }
-  await ElMessageBox.confirm(`将更新计划任务 #${dialog.id} 的配置，是否继续？`, '确认保存', { type: 'warning' })
+  dialog.form.name = dialog.form.name.trim()
+  await ElMessageBox.confirm(`将更新“${dialog.form.name}”的配置，是否继续？`, '确认保存', { type: 'warning' })
   dialog.saving = true
   try {
     await panelApi.updateScheduledTask(dialog.id, {
+      name: dialog.form.name,
       taskType: dialog.form.taskType,
       total: Math.max(0, total),
       configJson: config || null,
@@ -1435,6 +1476,7 @@ function formatDelaySeconds(milliseconds: number) {
 async function showScheduledDetails(task: ScheduledTask) {
   task = await loadScheduledTaskDetail(task.id, task)
   const lines = [
+    `任务名称: ${scheduledName(task)}`,
     `任务类型: ${taskName(task.taskType)}`,
     `状态: ${task.status === 'paused' ? '已暂停' : '启用中'}`,
     `Cron: ${task.cronExpression}`,
@@ -1451,7 +1493,7 @@ async function showScheduledDetails(task: ScheduledTask) {
   }
   detailDialog.value = {
     visible: true,
-    title: `计划任务详情 #${task.id}`,
+    title: `计划任务详情：${scheduledName(task)}`,
     content: lines.join('\n'),
   }
 }

@@ -33,6 +33,8 @@ Telegram Panel 用于在单个 Web 面板中统一管理和运营多个 Telegram
 - 🧹 **废号检测与一键清理**：对封禁、受限、冻结、未登录、Session 失效等状态进行批量处理
 - 🔐 **2FA 管理**：支持单个 / 批量修改二级密码，绑定 / 换绑找回邮箱（支持对接 Cloud Mail 自动收码确认）
 - 👤 **账号可见性增强**：可在账号列表一键查看已加入的频道和群组，并展示注册时间（基于 777000 系统通知的估算值，非百分百准确）
+- 🌐 **账号级代理管理**：支持 HTTP、SOCKS5、MTProxy、Resin 粘性网关，单账号 / 批量切换及导入时自动绑定
+- ☁️ **WARP 独立出口**：Linux Docker 环境可为每个账号一键创建、检测并绑定独立 Cloudflare WARP 容器
 - 🧩 **模块化扩展**：任务 / API 可安装扩展模块，支持 Vue 后台管理接口与旧 Razor 模块页面兼容（见 `docs/developer/modules.md`）
 
 ## 前端架构说明
@@ -74,7 +76,7 @@ Telegram Panel 用于在单个 Web 面板中统一管理和运营多个 Telegram
 - [ ] 手机号注册：未注册号码支持完整注册流程（姓名 / 可选邮箱 / 邮箱验证码等）
 - [ ] 通用接码 API：抽象接口 + 主程序只依赖抽象；厂商通过“适配模块”对接（无需改动主程序代码）
 - [ ] 支持更换手机号
-- [ ] 多代理：支持账号分类绑定代理
+- [x] 多代理：代理池、账号级 / 批量绑定、Resin 粘性路由、导入自动 WARP
 - [ ] 多 API：支持账号分类绑定 ApiId / ApiHash
 - [ ] 定时创建频道、定时公开频道
 - [ ] 定时刷粉丝：对接刷粉 API（通用适配结构），通过适配模块对接多家刷粉平台
@@ -125,6 +127,33 @@ ports:
 ```
 
 然后访问：`http://localhost:18080`
+
+#### 启用 WARP 一键创建（可选）
+
+普通代理与 Resin 不需要 Docker Socket。只有需要面板创建独立 WARP 容器时，才显式叠加受管 WARP 配置：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.warp.yml up -d
+```
+
+该配置会把 `/var/run/docker.sock` 挂入面板容器，其权限接近宿主机 `root`，只应在可信主机启用。默认网络名为 `telegram-panel_default`；若 Compose 项目名不同，可在 `.env` 设置：
+
+```dotenv
+TP_WARP_DOCKER_NETWORK=实际的_Docker_网络名
+```
+
+生产环境建议通过 `Proxy__Warp__Image` 固定经过审计的镜像 digest，而不是长期跟随可变的 `latest` 标签。
+
+#### 对接 Resin（可选）
+
+先按 Resin 文档独立部署网关，然后在“代理管理”中新建 `Resin` 类型代理：
+
+- 主机 / 端口：Resin HTTP 或 SOCKS5 数据面地址，默认端口通常为 `2260`
+- Proxy Token：保存到代理密码字段，仅用于数据面认证
+- Platform：例如 `Default`；面板会为账号动态生成 `Platform.tg_account_<账号ID>` 身份
+- 管理地址 / Admin Token：可选，用于校验控制面，并在账号切走时回收对应粘性租约
+
+Resin 提供的是“同账号优先保持出口”的租约，不承诺节点故障后 IP 永远不变。代理页和账号检测显示的是最近一次出口快照。
 
 #### 默认后台账号（首次登录）
 

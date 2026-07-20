@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Services.Telegram;
 
 namespace TelegramPanel.Core;
@@ -13,6 +14,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddTelegramPanelCore(this IServiceCollection services)
     {
         services.AddSingleton<TelegramAccountUpdateHub>();
+        services.AddSingleton<IAccountProxyResolver, AccountProxyResolver>();
         services.AddSingleton<ISessionPathResolver, SessionPathResolver>();
 
         // 注册 Telegram 客户端池（单例）
@@ -25,6 +27,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISessionImporter, SessionImporter>();
         services.AddScoped<AccountTelegramToolsService>();
         services.AddScoped<BotTelegramService>();
+        services.AddScoped<ProxyEgressProbeService>();
+        services.AddScoped<WarpContainerManager>();
+        services.AddScoped<ProxyManagementService>();
 
         // Bot API updates（getUpdates）统一轮询与分发：避免 409 Conflict
         services.AddSingleton<BotUpdateHub>();

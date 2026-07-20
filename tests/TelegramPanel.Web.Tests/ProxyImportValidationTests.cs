@@ -1,0 +1,67 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Services.Proxy;
+using TelegramPanel.Data;
+using WTelegram;
+using Xunit;
+
+namespace TelegramPanel.Web.Tests;
+
+public sealed class ProxyImportValidationTests
+{
+    [Fact]
+    public async Task 批量导入包含HTTPS代理时不写入部分数据()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var probe = new ProxyEgressProbeService();
+        var warp = new WarpContainerManager(
+            db,
+            new ConfigurationBuilder().Build(),
+            probe,
+            NullLogger<WarpContainerManager>.Instance);
+        var service = new ProxyManagementService(
+            db,
+            new EmptyClientPool(),
+            probe,
+            warp,
+            NullLogger<ProxyManagementService>.Instance);
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.ImportAsync(
+                "http://127.0.0.1:8001\nhttps://127.0.0.1:8002",
+                testAfterImport: false));
+
+        Assert.Contains("不支持 HTTPS 代理地址", error.Message);
+        Assert.Empty(await db.OutboundProxies.AsNoTracking().ToListAsync());
+    }
+
+    private sealed class EmptyClientPool : ITelegramClientPool
+    {
+        public int ActiveClientCount => 0;
+
+        public Task<Client> GetOrCreateClientAsync(
+            int accountId,
+            int apiId,
+            string apiHash,
+            string sessionPath,
+            string? sessionKey = null,
+            string? phoneNumber = null,
+            long? userId = null) =>
+            throw new NotSupportedException();
+
+        public Client? GetClient(int accountId) => null;
+        public Task RemoveClientAsync(int accountId) => Task.CompletedTask;
+        public Task RemoveAllClientsAsync() => Task.CompletedTask;
+        public bool IsClientConnected(int accountId) => false;
+    }
+}

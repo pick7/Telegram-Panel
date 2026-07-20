@@ -60,10 +60,11 @@ jobs:
           corepack enable
           corepack prepare pnpm@10.20.0 --activate
 
-      - name: Build Vue admin
+      - name: Test and build Vue admin
         shell: bash
         run: |
           pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend run test
           pnpm --dir frontend run build
 
       - name: Restore

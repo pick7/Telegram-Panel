@@ -51,6 +51,9 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `Telegram__Proxy__Server` / `Telegram__Proxy__Port`：Telegram 全局代理地址和端口
 - `Telegram__Proxy__Username` / `Telegram__Proxy__Password`：SOCKS5 代理认证（可选）
 - `Telegram__Proxy__Secret`：MTProxy Secret（可选；与用户名/密码二选一）
+- `Proxy__Warp__Enabled`：允许面板管理独立 WARP 容器
+- `Proxy__Warp__Network`：WARP 容器加入的 Docker 网络
+- `Proxy__Warp__Protocol`：自动创建 WARP 时默认使用 `http` 或 `socks5`
 - `AdminAuth__CredentialsPath`：后台密码文件（默认 `/data/admin_auth.json`）
 - `Sync__AutoSyncEnabled`：账号创建的频道/群组自动同步（默认关闭）
 - `Telegram__BotAutoSyncEnabled`：Bot 频道自动同步（默认关闭）
@@ -67,7 +70,19 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `ChannelAdminPresets:Presets`：批量设置管理员的“用户名列表预设”（名称 -> usernames）
 - `ChannelInvitePresets:Presets`：批量邀请成员的“用户名列表预设”（名称 -> usernames）
 
-## Telegram 全局代理
+## 账号代理优先于全局代理
+
+代理管理中的 HTTP、SOCKS5、MTProxy、WARP 和 Resin 可以绑定到单个或多个账号。
+账号的 Telegram 客户端、后台任务和模块操作都会复用这条账号路由。完整操作说明见
+[代理管理与账号出口](../guides/proxy-management.md)。
+
+路由优先级由账号明确选择决定：
+
+- **已有代理**：使用账号绑定的代理。
+- **全局设置**：继承下面的 `Telegram:Proxy`。
+- **直连**：明确绕过账号代理和全局代理。
+
+## 配置 Telegram 全局代理
 
 在 `appsettings.local.json` 中配置后重启主程序，默认继承“全局设置”的账号会使用该代理：
 
@@ -90,6 +105,19 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - 账号管理中的“已有代理”优先于全局设置；“直连”会明确绕过全局代理；“全局设置”可恢复继承该配置。升级前已有账号默认继续继承全局设置。
 - Docker 部署的配置文件位于宿主机 `docker-data/appsettings.local.json`。容器内的 `127.0.0.1` 指向容器自身；访问宿主机代理时应使用容器可访问的宿主机地址（Docker Desktop 通常可用 `host.docker.internal`），并确保代理监听地址和防火墙允许容器连接。
 - 修改配置后必须重启主程序，以释放已缓存的 Telegram 客户端并按新代理重新连接。
+
+## 配置受管 WARP 默认值
+
+使用 `docker-compose.warp.yml` 时，在 `.env` 设置：
+
+```dotenv
+TP_WARP_DOCKER_NETWORK=telegram-panel_default
+TP_WARP_PROXY_PROTOCOL=http
+```
+
+Compose 会映射为 `Proxy:Warp:Network` 和 `Proxy:Warp:Protocol`。修改后需要使用包含
+`docker-compose.warp.yml` 的命令重新创建容器。代理管理中的一键创建弹窗可以覆盖单次
+创建协议；导入、登录和批量绑定自动创建 WARP 时使用这里的默认值。
 
 ## Bot 启用/停用（每个 Bot）
 

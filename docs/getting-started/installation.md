@@ -53,6 +53,21 @@ docker compose up -d
 > 说明：不需要每个账号都申请，全站共用这一对即可工作。  
 > 注意：`api_hash` 是 **32 位十六进制字符串（0-9a-f）**，请不要填 Token/用户名/URL 等其它值。
 
+### 导入或登录前先选择账号出口
+
+导入账号、手机号登录和二维码登录会在第一条 Telegram 请求前要求选择已有代理、
+独立 WARP、有效的全局代理或明确直连。系统不会先用面板公网 IP 登录，再补绑代理。
+
+普通 HTTP、SOCKS5、MTProxy 和 Resin 可直接在 **代理管理** 中添加。需要面板一键创建
+WARP 时，使用受管 WARP 叠加配置：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.warp.yml up -d
+```
+
+该配置会挂载 Docker Socket，仅应在可信主机启用。完整说明见
+[代理管理与账号出口](../guides/proxy-management.md)。
+
 ### 数据持久化（别乱删）
 
 容器内所有持久化数据统一挂载到宿主机 `./docker-data`：
@@ -101,5 +116,8 @@ docker compose down
 ## 本地开发运行（可选）
 
 ```bash
+corepack enable
+pnpm --dir frontend install --frozen-lockfile
+pnpm --dir frontend run build
 dotnet run --project src/TelegramPanel.Web
 ```

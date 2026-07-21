@@ -38,14 +38,23 @@
 - 一次性批处理：使用 `IModuleTaskHandler`
 - 常驻监听/通知：使用 `HostedService`
 - 配置入口：新模块优先 `CreateRoute = "/ext/{moduleId}/settings"` 或宿主 Vue 路由
+- 当前 Vue 后台不消费 `EditorComponentType` / `EditComponentType`；这两个字段只用于旧 Razor 兼容流程
 
-## 6. API 安全
+## 6. 账号代理边界
+
+- 账号 Telegram 操作通过宿主服务按 `accountId` 执行，自动继承账号绑定代理、全局代理或明确直连状态
+- 模块不重复提供账号代理选择，不保存代理地址、认证信息或 WARP 配置
+- 不自行创建 `WTelegram.Client`，不使用 `AccountProxyResolution` 覆盖宿主路由
+- 不在静态字段或单例中长期缓存客户端；账号切换代理后由宿主重新创建
+- 模块自己的 `HttpClient` 和第三方 API 请求不会自动继承账号代理
+
+## 7. API 安全
 
 - 显式声明 `AllowAnonymous()` 或 `RequireAuthorization()`
 - 对匿名接口自行补齐 token、限流、防缓存等控制
 - 后台管理接口默认使用 `/api/panel/extensions/{module-slug}`，跟随宿主后台登录鉴权
 
-## 7. 打包前自查
+## 8. 打包前自查
 
 - `manifest.version` 与发布目标一致
 - `entry.assembly` 与编译输出一致

@@ -11,7 +11,8 @@
 ## 使用指南
 
 - [防冻结指南（新号必看）](guides/anti-freeze.md)
-- [账号导入（Zip / TData）](guides/account-import.md)
+- [账号导入（Zip / Session / StringSession / TData）](guides/account-import.md)
+- [代理管理与账号出口](guides/proxy-management.md)
 - [同步说明](guides/sync.md)
 
 ## 部署与运维

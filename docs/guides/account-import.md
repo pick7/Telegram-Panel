@@ -1,11 +1,31 @@
-# 账号导入（Zip / TData）
+# 账号导入（Zip / Session / StringSession / TData）
 
-当前支持两种压缩包导入格式：
+当前支持：
 
-- Telethon 格式：`.json + .session`
-- TData 格式：`tdata` 目录（含 `key_datas` / `D877F783D5D3EF8C*`）
+- Telethon 压缩包：`.json + .session`
+- 单个或批量 `.session` 文件
+- Telethon StringSession
+- TData 压缩包：`tdata` 目录（含 `key_datas` / `D877F783D5D3EF8C*`）
 
-## 方式一：Telethon 压缩包（推荐）
+## 上传前先选择首次连接出口
+
+页面会先要求选择：
+
+- 已启用的现有代理
+- 每个账号独立 WARP
+- 已配置的全局代理
+- 明确直连
+
+所选路由会在 Session 验证前生效。验证、读取账号资料、写入 Session 和正式绑定使用同一
+出口；未选择、代理无效或 WARP 环境不可用时，会在连接 Telegram 前停止，不会静默回退
+为面板直连。
+
+批量选择独立 WARP 时，系统会为每个账号分别创建和绑定 WARP。页面会显示当前批次限制，
+创建或绑定失败的条目会返回明确结果并清理未使用的临时资源。
+
+更多说明见[代理管理与账号出口](proxy-management.md)。
+
+## 导入 Telethon 压缩包
 
 ### 单账号结构
 
@@ -35,7 +55,15 @@ accounts.zip
 - `2fa.txt` 为可选；若存在则会优先作为该账号二级密码
 - 目录名、文件名建议使用手机号，便于排查
 
-## 方式二：TData 压缩包
+## 导入 Session 文件或 StringSession
+
+`.session` 文件支持一次选择多个；StringSession 通过页面文本框导入。这两种方式都需要先在
+**系统设置** 中配置全局 Telegram `ApiId` 和 `ApiHash`。
+
+只提供 `.session` 时，系统会尝试从会话读取账号身份；如果 Session 已失效或格式不兼容，
+该条目会导入失败，不会写入一个看似成功但无法连接的账号。
+
+## 导入 TData 压缩包
 
 支持 Zip 内包含 `tdata` 目录（可单账号，也可批量多目录）。
 
@@ -67,6 +95,11 @@ tdata-accounts.zip
 
 - 导入 TData 前，需先在「系统设置」配置全局 Telegram API（`ApiId/ApiHash`）
 - 首次导入 TData 时会自动准备解析依赖，耗时会比普通导入长一点
+
+## 查看导入结果
+
+结果分为成功、部分成功和失败。部分成功表示账号资料已经完成验证，但正式代理绑定或
+托管资源收尾失败；账号会保持停用并显示具体错误，不会在未知出口上继续连接。
 
 ## Docker 部署下导入文件存储位置
 

@@ -45,6 +45,10 @@ powershell tools/package-module.ps1 -Project "<模块.csproj相对路径>" -Mani
 - `lib/wwwroot/settings.html`
 - `lib/wwwroot/assets/**`
 
+模块编译时可以引用 `TelegramPanel.Core` 里的账号服务。运行时仍应使用宿主版本，
+不要因为引用了账号代理相关类型就把 `TelegramPanel.Core.dll`、`WTelegramClient.dll`
+或代理实现依赖重新打入模块包。
+
 ## 5. 产物校验
 
 1. 解压 `.tpm` 后根目录应包含：`manifest.json`、`lib/`

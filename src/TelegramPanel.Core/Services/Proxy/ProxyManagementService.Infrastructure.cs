@@ -75,6 +75,18 @@ public sealed partial class ProxyManagementService
                 warpProfile.WarpStatus = result.Success ? result.WarpStatus : null;
                 warpProfile.LastError = result.Error;
                 warpProfile.LastCheckedAtUtc = result.CheckedAtUtc;
+                if (result.Success)
+                {
+                    warpProfile.ConsecutiveFailures = 0;
+                    if (warpProfile.DesiredEnabled && proxy.IsEnabled)
+                        warpProfile.Status = "active";
+                }
+                else if (warpProfile.DesiredEnabled && proxy.IsEnabled)
+                {
+                    warpProfile.ConsecutiveFailures++;
+                    if (warpProfile.Status != "restarting")
+                        warpProfile.Status = "degraded";
+                }
                 warpProfile.UpdatedAtUtc = DateTime.UtcNow;
             }
 

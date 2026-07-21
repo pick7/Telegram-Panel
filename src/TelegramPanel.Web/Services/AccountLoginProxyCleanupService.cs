@@ -133,8 +133,28 @@ public sealed class AccountLoginProxyCleanupService : BackgroundService
 
         foreach (var proxyId in orphanIds)
         {
+            using var cleanupLease = _store.TryAcquireMaintenance(proxyId);
+            if (cleanupLease == null)
+                continue;
+
             try
             {
+                // 候选列表与实际删除之间可能出现新的首次连接或导入占用。
+                // 维护租约阻止新的 WARP 使用者进入，再复查请求声明和正式账号绑定。
+                var candidate = await proxyManagement.GetAsync(
+                    proxyId,
+                    includeAccounts: true,
+                    cancellationToken);
+                if (candidate == null
+                    || !IsRestartOrphan(
+                        candidate,
+                        cutoffUtc,
+                        _store,
+                        _temporaryWarpClaims))
+                {
+                    continue;
+                }
+
                 await proxyManagement.DeleteAsync(proxyId, cancellationToken);
                 _logger.LogInformation(
                     "Cleaned orphaned temporary WARP proxy {ProxyId}",

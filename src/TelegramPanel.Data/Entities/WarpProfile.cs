@@ -20,6 +20,10 @@ public class WarpProfile
     public string? WarpStatus { get; set; }
     public string? LastError { get; set; }
     public DateTime? LastCheckedAtUtc { get; set; }
+    public int ConsecutiveFailures { get; set; }
+    public DateTime? LastRecoveryAttemptAtUtc { get; set; }
+    public DateTime? LastRecoveredAtUtc { get; set; }
+    public int RecoveryCount { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 

@@ -54,6 +54,12 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `Proxy__Warp__Enabled`：允许面板管理独立 WARP 容器
 - `Proxy__Warp__Network`：WARP 容器加入的 Docker 网络
 - `Proxy__Warp__Protocol`：自动创建 WARP 时默认使用 `http` 或 `socks5`
+- `Proxy__Warp__Maintenance__Enabled`：启用受管 WARP 出口巡检与故障恢复
+- `Proxy__Warp__Maintenance__HealthCheckIntervalMinutes`：巡检周期，默认 5 分钟
+- `Proxy__Warp__Maintenance__FailureThreshold`：连续失败恢复阈值，默认 2 次
+- `Proxy__Warp__Maintenance__RecoveryCooldownMinutes`：失败恢复冷却，默认 30 分钟
+- `Proxy__Warp__Maintenance__ScheduledRefreshEnabled`：是否定时重启健康出口，默认关闭
+- `Proxy__Warp__Maintenance__ScheduledRefreshIntervalMinutes`：健康出口定时刷新周期，默认 720 分钟
 - `AdminAuth__CredentialsPath`：后台密码文件（默认 `/data/admin_auth.json`）
 - `Sync__AutoSyncEnabled`：账号创建的频道/群组自动同步（默认关闭）
 - `Telegram__BotAutoSyncEnabled`：Bot 频道自动同步（默认关闭）
@@ -113,11 +119,20 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 ```dotenv
 TP_WARP_DOCKER_NETWORK=telegram-panel_default
 TP_WARP_PROXY_PROTOCOL=http
+TP_WARP_AUTO_RECOVERY_ENABLED=true
+TP_WARP_HEALTH_CHECK_INTERVAL_MINUTES=5
+TP_WARP_FAILURE_THRESHOLD=2
+TP_WARP_RECOVERY_COOLDOWN_MINUTES=30
+TP_WARP_SCHEDULED_REFRESH_ENABLED=false
+TP_WARP_SCHEDULED_REFRESH_INTERVAL_MINUTES=720
 ```
 
 Compose 会映射为 `Proxy:Warp:Network` 和 `Proxy:Warp:Protocol`。修改后需要使用包含
 `docker-compose.warp.yml` 的命令重新创建容器。代理管理中的一键创建弹窗可以覆盖单次
 创建协议；导入、登录和批量绑定自动创建 WARP 时使用这里的默认值。
+
+自动恢复会保留原数据卷，只重启容器并重新检测出口。健康出口的周期刷新默认关闭，
+因为它可能改变账号公网 IP；需要与 tokens-pro 相同的 720 分钟刷新行为时再显式开启。
 
 ## Bot 启用/停用（每个 Bot）
 

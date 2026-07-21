@@ -23,14 +23,14 @@ public sealed class WarpContainerManager
 
     private readonly AppDbContext _db;
     private readonly IConfiguration _configuration;
-    private readonly ProxyEgressProbeService _probeService;
+    private readonly IProxyEgressProbeService _probeService;
     private readonly ILogger<WarpContainerManager> _logger;
     private readonly IWarpDockerClientFactory _dockerFactory;
 
     public WarpContainerManager(
         AppDbContext db,
         IConfiguration configuration,
-        ProxyEgressProbeService probeService,
+        IProxyEgressProbeService probeService,
         ILogger<WarpContainerManager> logger)
         : this(
             db,
@@ -44,7 +44,7 @@ public sealed class WarpContainerManager
     internal WarpContainerManager(
         AppDbContext db,
         IConfiguration configuration,
-        ProxyEgressProbeService probeService,
+        IProxyEgressProbeService probeService,
         ILogger<WarpContainerManager> logger,
         IWarpDockerClientFactory dockerFactory)
     {
@@ -439,6 +439,57 @@ public sealed class WarpContainerManager
         }
     }
 
+    /// <summary>
+    /// 重启受管 WARP 容器并保留其持久化卷。调用前后由上层负责释放账号客户端、
+    /// 重新探测出口并提交业务状态。
+    /// </summary>
+    public async Task RestartContainerAsync(
+        WarpProfile profile,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        await LifecycleLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (profile.Status is "creating" or "starting" or "deleting"
+                or "deleted" or "failed" or "cleanup_pending")
+            {
+                throw new InvalidOperationException(
+                    $"WARP 当前状态为 {profile.Status}，不能执行刷新");
+            }
+            if (!profile.DesiredEnabled)
+                throw new InvalidOperationException("WARP 已被设置为停用，不能执行刷新");
+
+            var settings = WarpSettings.From(_configuration);
+            if (!_dockerFactory.PlatformSupported)
+                throw new InvalidOperationException("WARP 仅支持在 Linux Docker 环境中运行");
+            if (!settings.Enabled)
+                throw new InvalidOperationException("WARP 未启用，请设置 Proxy:Warp:Enabled=true");
+
+            var containerReference = string.IsNullOrWhiteSpace(profile.ContainerId)
+                ? profile.ContainerName
+                : profile.ContainerId;
+            if (string.IsNullOrWhiteSpace(containerReference))
+                throw new InvalidOperationException("WARP 容器标识缺失，请删除后重新创建");
+
+            using var docker = _dockerFactory.Create(settings.DockerSocketPath);
+            await docker.GetVersionAsync(cancellationToken);
+            if (!await docker.VerifyContainerOwnershipAsync(
+                    containerReference,
+                    profile.ProfileId,
+                    cancellationToken))
+            {
+                throw new InvalidOperationException("WARP 容器不存在，请删除后重新创建");
+            }
+
+            await docker.RestartContainerAsync(containerReference, cancellationToken);
+        }
+        finally
+        {
+            LifecycleLock.Release();
+        }
+    }
+
     private async Task CleanupHistoricalFailedProfileAsync(
         WarpProfile profile,
         WarpSettings settings,
@@ -709,6 +760,7 @@ public sealed class WarpContainerManager
             CancellationToken cancellationToken);
         Task StartContainerAsync(string containerId, CancellationToken cancellationToken);
         Task StopContainerAsync(string containerId, CancellationToken cancellationToken);
+        Task RestartContainerAsync(string containerId, CancellationToken cancellationToken);
         Task<bool> VerifyContainerOwnershipAsync(
             string containerId,
             string profileId,
@@ -933,6 +985,18 @@ public sealed class WarpContainerManager
                 timeout.Token);
             if (response.StatusCode != HttpStatusCode.NotModified)
                 await EnsureSuccessAsync(response, timeout.Token);
+        }
+
+        public async Task RestartContainerAsync(
+            string containerId,
+            CancellationToken cancellationToken)
+        {
+            using var timeout = TimeoutAfter(cancellationToken, TimeSpan.FromSeconds(45));
+            using var response = await _http.PostAsync(
+                Api($"/containers/{Uri.EscapeDataString(containerId)}/restart?t=10"),
+                null,
+                timeout.Token);
+            await EnsureSuccessAsync(response, timeout.Token);
         }
 
         public async Task<bool> VerifyContainerOwnershipAsync(

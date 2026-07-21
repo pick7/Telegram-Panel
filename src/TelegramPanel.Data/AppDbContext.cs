@@ -369,6 +369,8 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Country).HasMaxLength(100);
             entity.Property(e => e.WarpStatus).HasMaxLength(50);
             entity.Property(e => e.LastError).HasMaxLength(2000);
+            entity.Property(e => e.ConsecutiveFailures).HasDefaultValue(0);
+            entity.Property(e => e.RecoveryCount).HasDefaultValue(0);
 
             entity.HasIndex(e => e.ProfileId).IsUnique();
             entity.HasIndex(e => e.RequestId).IsUnique();

@@ -16,6 +16,7 @@ using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
+using TelegramPanel.Web.Services;
 using WTelegram;
 using Xunit;
 
@@ -23,6 +24,79 @@ namespace TelegramPanel.Web.Tests;
 
 public sealed class ImportProxyFirstConnectionTests
 {
+    [Fact]
+    public async Task 已有WARP导入与自动维护双向互斥且不会提前连接()
+    {
+        var usageGuard = new AccountLoginProxyStateStore();
+        await using var fixture = await ImportFixture.CreateAsync(
+            OutboundProxyProtocols.Http,
+            warpProxyUsageGuard: usageGuard);
+        fixture.Proxy.Kind = OutboundProxyKinds.Warp;
+        await fixture.Db.SaveChangesAsync();
+
+        var maintenanceLease = usageGuard.TryAcquireMaintenance(fixture.Proxy.Id);
+        Assert.NotNull(maintenanceLease);
+        var blocked = await fixture.Service.ImportFromStringSessionAsync(
+            "session-data",
+            12345,
+            "0123456789abcdef0123456789abcdef",
+            proxyBinding: new AccountProxyBindingInput("existing", fixture.Proxy.Id));
+
+        Assert.False(blocked.Success);
+        Assert.Contains("正在维护", blocked.Error);
+        Assert.Equal(0, fixture.Importer.ImportCount);
+
+        maintenanceLease!.Dispose();
+        fixture.Importer.BeforeImport = () =>
+        {
+            Assert.True(usageGuard.OwnsWarpProxy(fixture.Proxy.Id));
+            Assert.Null(usageGuard.TryAcquireMaintenance(fixture.Proxy.Id));
+        };
+        var imported = await fixture.Service.ImportFromStringSessionAsync(
+            "session-data",
+            12345,
+            "0123456789abcdef0123456789abcdef",
+            proxyBinding: new AccountProxyBindingInput("existing", fixture.Proxy.Id));
+
+        Assert.True(imported.Success, imported.Error);
+        Assert.False(usageGuard.OwnsWarpProxy(fixture.Proxy.Id));
+    }
+
+    [Fact]
+    public async Task 已有WARP仍属另一临时创建流程时导入不会开始首次连接()
+    {
+        var temporaryWarpClaims = new TemporaryWarpClaimStore();
+        await using var fixture = await ImportFixture.CreateAsync(
+            OutboundProxyProtocols.Http,
+            temporaryWarpClaims: temporaryWarpClaims);
+        fixture.Proxy.Kind = OutboundProxyKinds.Warp;
+        var profile = new WarpProfile
+        {
+            ProfileId = "active-import-owner",
+            RequestId = "telegram-panel.internal.import.active-owner",
+            ContainerName = "active-import-owner-container",
+            ContainerId = "active-import-owner-container-id",
+            VolumeName = "active-import-owner-volume",
+            HostPort = 42095,
+            Status = "active",
+            DesiredEnabled = true,
+            Proxy = fixture.Proxy
+        };
+        fixture.Db.WarpProfiles.Add(profile);
+        await fixture.Db.SaveChangesAsync();
+
+        using var ownerClaim = temporaryWarpClaims.ClaimRequest(profile.RequestId);
+        var blocked = await fixture.Service.ImportFromStringSessionAsync(
+            "session-data",
+            12345,
+            "0123456789abcdef0123456789abcdef",
+            proxyBinding: new AccountProxyBindingInput("existing", fixture.Proxy.Id));
+
+        Assert.False(blocked.Success);
+        Assert.Contains("另一个账号首次连接流程", blocked.Error);
+        Assert.Equal(0, fixture.Importer.ImportCount);
+    }
+
     [Theory]
     [InlineData(OutboundProxyProtocols.Http)]
     [InlineData(OutboundProxyProtocols.Socks5)]
@@ -689,7 +763,9 @@ public sealed class ImportProxyFirstConnectionTests
 
         public static async Task<ImportFixture> CreateAsync(
             string protocol,
-            IEnumerable<KeyValuePair<string, string?>>? configurationValues = null)
+            IEnumerable<KeyValuePair<string, string?>>? configurationValues = null,
+            IWarpProxyUsageGuard? warpProxyUsageGuard = null,
+            TemporaryWarpClaimStore? temporaryWarpClaims = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -718,6 +794,7 @@ public sealed class ImportProxyFirstConnectionTests
             var configuration = configurationBuilder.Build();
             var pool = new StubClientPool();
             var probe = new ProxyEgressProbeService();
+            temporaryWarpClaims ??= new TemporaryWarpClaimStore();
             var warp = new WarpContainerManager(
                 db,
                 configuration,
@@ -728,7 +805,9 @@ public sealed class ImportProxyFirstConnectionTests
                 pool,
                 probe,
                 warp,
-                NullLogger<ProxyManagementService>.Instance);
+                NullLogger<ProxyManagementService>.Instance,
+                temporaryWarpClaims: temporaryWarpClaims,
+                warpProxyUsageGuard: warpProxyUsageGuard);
             var accountManagement = new AccountManagementService(
                 new AccountRepository(db),
                 new ChannelRepository(db),
@@ -746,7 +825,8 @@ public sealed class ImportProxyFirstConnectionTests
                 NullLogger<AccountImportService>.Instance,
                 configuration,
                 proxyManagement,
-                new TemporaryWarpClaimStore());
+                temporaryWarpClaims,
+                warpProxyUsageGuard);
 
             return new ImportFixture(connection, db, importer, service, proxy, pool);
         }

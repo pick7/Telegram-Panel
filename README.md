@@ -75,6 +75,14 @@ Set the automatic-creation default to `http` or `socks5` in `.env`:
 TP_WARP_PROXY_PROTOCOL=http
 ```
 
+Managed WARP health checks run every five minutes by default. Two consecutive failures trigger
+a container restart, egress recheck, and reconnection of bound account clients without any
+direct-connection fallback. Periodic restart of a healthy route is disabled by default to avoid
+unnecessary Telegram IP changes; set `TP_WARP_SCHEDULED_REFRESH_ENABLED=true` to enable the
+optional 720-minute refresh cycle. While an account import, phone login, or QR login is using a
+WARP route, health recovery and manual mutation wait rather than changing the first-connection
+egress.
+
 Docker Socket access is close to host `root`; enable this overlay only on a trusted host.
 
 ## Download and update

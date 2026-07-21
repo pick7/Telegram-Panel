@@ -29,6 +29,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AccountTelegramToolsService>();
         services.AddScoped<BotTelegramService>();
         services.AddScoped<ProxyEgressProbeService>();
+        services.AddScoped<IProxyEgressProbeService>(sp =>
+            sp.GetRequiredService<ProxyEgressProbeService>());
         services.AddScoped<WarpContainerManager>();
         services.AddScoped<ProxyManagementService>();
 

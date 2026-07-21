@@ -52,6 +52,11 @@ export interface OutboundProxy {
   egressCity?: string | null
   egressIsp?: string | null
   warpStatus?: string | null
+  warpRuntimeStatus?: string | null
+  warpConsecutiveFailures?: number
+  warpLastRecoveryAttemptAtUtc?: string | null
+  warpLastRecoveredAtUtc?: string | null
+  warpRecoveryCount?: number
   lastTestedAtUtc?: string | null
   firstBoundAtUtc?: string | null
   accountCount?: number
@@ -92,6 +97,43 @@ export interface WarpRuntimeStatus {
   network: string
   proxyHostMode: string
   defaultProtocol: WarpProxyProtocol
+  maintenance?: WarpMaintenanceRuntimeStatus | null
+}
+
+export interface WarpMaintenanceRuntimeStatus {
+  enabled: boolean
+  running: boolean
+  healthCheckIntervalMinutes: number
+  failureThreshold: number
+  recoveryCooldownMinutes: number
+  scheduledRefreshEnabled: boolean
+  scheduledRefreshIntervalMinutes: number
+  lastRunAtUtc?: string | null
+  nextRunAtUtc?: string | null
+  lastError?: string | null
+  checkedCount: number
+  healthyCount: number
+  recoveredCount: number
+  failedCount: number
+}
+
+export interface WarpMaintenanceResult {
+  proxyId: number
+  name: string
+  success: boolean
+  restarted: boolean
+  recovered: boolean
+  runtimeStatus: string
+  summary: string
+  error?: string | null
+}
+
+export interface WarpMaintenanceBatchResult {
+  checked: number
+  healthy: number
+  recovered: number
+  failed: number
+  items: WarpMaintenanceResult[]
 }
 
 export interface CreateWarpProxyRequest {

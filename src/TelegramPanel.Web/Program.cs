@@ -458,8 +458,12 @@ builder.Services.AddTelegramPanelData(connectionString);
 // Telegram Panel 核心服务
 builder.Services.AddTelegramPanelCore();
 builder.Services.AddSingleton<AccountLoginProxyStateStore>();
+builder.Services.AddSingleton<IWarpProxyUsageGuard>(serviceProvider =>
+    serviceProvider.GetRequiredService<AccountLoginProxyStateStore>());
 builder.Services.AddScoped<AccountLoginProxyCoordinator>();
 builder.Services.AddHostedService<AccountLoginProxyCleanupService>();
+builder.Services.AddSingleton<WarpMaintenanceState>();
+builder.Services.AddHostedService<WarpMaintenanceBackgroundService>();
 builder.Services.AddScoped<AccountExportService>();
 builder.Services.AddScoped<DataSyncService>();
 builder.Services.AddScoped<UiPreferencesService>();

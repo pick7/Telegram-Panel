@@ -1,3 +1,4 @@
+using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Services.Telegram;
@@ -21,6 +22,8 @@ public static class ProxyApiEndpoints
         group.MapPost("/proxies/import", ImportAsync);
         group.MapGet("/proxies/warp/status", GetWarpStatusAsync);
         group.MapPost("/proxies/warp", CreateWarpAsync);
+        group.MapPost("/proxies/{id:int}/warp/refresh", RefreshWarpAsync);
+        group.MapPost("/proxies/warp/refresh-all", RefreshAllWarpAsync);
 
         group.MapPost("/accounts/{id:int}/proxy", BindAccountAsync);
         group.MapPost("/accounts/batch/proxy", BindAccountsAsync);
@@ -75,10 +78,18 @@ public static class ProxyApiEndpoints
         int id,
         ProxySaveRequestDto request,
         ProxyManagementService service,
+        IWarpProxyUsageGuard warpProxyUsageGuard,
+        TemporaryWarpClaimStore temporaryWarpClaims,
         CancellationToken cancellationToken)
     {
         try
         {
+            using var usageLease = await AcquireWarpMutationLeaseAsync(
+                id,
+                service,
+                warpProxyUsageGuard,
+                temporaryWarpClaims,
+                cancellationToken);
             var proxy = await service.UpdateAsync(id, ToInput(request), cancellationToken);
             return Results.Ok(ToDto(proxy));
         }
@@ -91,10 +102,18 @@ public static class ProxyApiEndpoints
     private static async Task<IResult> DeleteAsync(
         int id,
         ProxyManagementService service,
+        IWarpProxyUsageGuard warpProxyUsageGuard,
+        TemporaryWarpClaimStore temporaryWarpClaims,
         CancellationToken cancellationToken)
     {
         try
         {
+            using var usageLease = await AcquireWarpMutationLeaseAsync(
+                id,
+                service,
+                warpProxyUsageGuard,
+                temporaryWarpClaims,
+                cancellationToken);
             await service.DeleteAsync(id, cancellationToken);
             return Results.Ok(new OperationResultDto(true, "代理已删除"));
         }
@@ -141,9 +160,16 @@ public static class ProxyApiEndpoints
 
     private static async Task<IResult> GetWarpStatusAsync(
         ProxyManagementService service,
+        IConfiguration configuration,
+        WarpMaintenanceState maintenanceState,
         CancellationToken cancellationToken)
     {
-        return Results.Ok(await service.GetWarpStatusAsync(cancellationToken));
+        var status = await service.GetWarpStatusAsync(cancellationToken);
+        var options = WarpMaintenanceOptions.From(configuration);
+        return Results.Ok(status with
+        {
+            Maintenance = maintenanceState.Snapshot(options)
+        });
     }
 
     private static async Task<IResult> CreateWarpAsync(
@@ -168,6 +194,39 @@ public static class ProxyApiEndpoints
         {
             return ToError(ex);
         }
+    }
+
+    private static async Task<IResult> RefreshWarpAsync(
+        int id,
+        ProxyManagementService service,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await service.MaintainWarpAsync(
+                id,
+                WarpMaintenanceOptions.From(configuration),
+                forceRestart: true,
+                cancellationToken);
+            return Results.Ok(result);
+        }
+        catch (Exception ex) when (IsClientError(ex))
+        {
+            return ToError(ex);
+        }
+    }
+
+    private static async Task<IResult> RefreshAllWarpAsync(
+        ProxyManagementService service,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.MaintainAllWarpAsync(
+            WarpMaintenanceOptions.From(configuration),
+            forceRestart: true,
+            cancellationToken);
+        return Results.Ok(result);
     }
 
     private static async Task<IResult> BindAccountAsync(
@@ -248,6 +307,30 @@ public static class ProxyApiEndpoints
             request.ClearPassword,
             request.ClearResinAdminToken);
 
+    private static async Task<IDisposable?> AcquireWarpMutationLeaseAsync(
+        int proxyId,
+        ProxyManagementService service,
+        IWarpProxyUsageGuard warpProxyUsageGuard,
+        TemporaryWarpClaimStore temporaryWarpClaims,
+        CancellationToken cancellationToken)
+    {
+        var proxy = await service.GetAsync(
+            proxyId,
+            cancellationToken: cancellationToken);
+        if (proxy?.Kind != OutboundProxyKinds.Warp || proxy.WarpProfile == null)
+            return null;
+
+        if (temporaryWarpClaims.OwnsRequest(proxy.WarpProfile.RequestId))
+        {
+            throw new ProxyInUseException(
+                "WARP 正在维护或被账号首次连接流程使用，已阻止修改或删除");
+        }
+
+        return warpProxyUsageGuard.TryAcquireMaintenance(proxyId)
+            ?? throw new ProxyInUseException(
+                "WARP 正在维护或被账号首次连接流程使用，已阻止修改或删除");
+    }
+
     public static ProxyDto ToDto(OutboundProxy proxy) =>
         new(
             proxy.Id,
@@ -271,6 +354,11 @@ public static class ProxyApiEndpoints
             proxy.EgressCity,
             proxy.EgressIsp,
             proxy.WarpProfile?.WarpStatus,
+            proxy.WarpProfile?.Status,
+            proxy.WarpProfile?.ConsecutiveFailures ?? 0,
+            proxy.WarpProfile?.LastRecoveryAttemptAtUtc,
+            proxy.WarpProfile?.LastRecoveredAtUtc,
+            proxy.WarpProfile?.RecoveryCount ?? 0,
             proxy.LastTestedAtUtc,
             proxy.FirstBoundAtUtc,
             proxy.Accounts?.Count ?? 0,
@@ -358,6 +446,11 @@ public sealed record ProxyDto(
     string? EgressCity,
     string? EgressIsp,
     string? WarpStatus,
+    string? WarpRuntimeStatus,
+    int WarpConsecutiveFailures,
+    DateTime? WarpLastRecoveryAttemptAtUtc,
+    DateTime? WarpLastRecoveredAtUtc,
+    int WarpRecoveryCount,
     DateTime? LastTestedAtUtc,
     DateTime? FirstBoundAtUtc,
     int AccountCount,

@@ -31,6 +31,7 @@ public class AccountImportService
     private readonly IConfiguration _configuration;
     private readonly ProxyManagementService _proxyManagement;
     private readonly TemporaryWarpClaimStore _temporaryWarpClaims;
+    private readonly IWarpProxyUsageGuard? _warpProxyUsageGuard;
 
     public static bool IsManagedWarpRequestId(string? requestId) =>
         !string.IsNullOrWhiteSpace(requestId)
@@ -45,7 +46,8 @@ public class AccountImportService
         ILogger<AccountImportService> logger,
         IConfiguration configuration,
         ProxyManagementService proxyManagement,
-        TemporaryWarpClaimStore temporaryWarpClaims)
+        TemporaryWarpClaimStore temporaryWarpClaims,
+        IWarpProxyUsageGuard? warpProxyUsageGuard = null)
     {
         _sessionImporter = sessionImporter;
         _db = db;
@@ -54,6 +56,7 @@ public class AccountImportService
         _configuration = configuration;
         _proxyManagement = proxyManagement;
         _temporaryWarpClaims = temporaryWarpClaims;
+        _warpProxyUsageGuard = warpProxyUsageGuard;
     }
 
     /// <summary>
@@ -995,6 +998,7 @@ public class AccountImportService
                     CancellationToken.None);
             }
             prepared.TemporaryWarpClaim?.Dispose();
+            prepared.WarpUsageClaim?.Dispose();
         }
     }
 
@@ -1019,6 +1023,7 @@ public class AccountImportService
                 null,
                 null,
                 null,
+                null,
                 null);
         }
 
@@ -1032,6 +1037,12 @@ public class AccountImportService
                 cancellationToken: cancellationToken);
             if (proxy is not { IsEnabled: true })
                 throw new KeyNotFoundException("所选代理不存在或已停用");
+            if (proxy.Kind == OutboundProxyKinds.Warp
+                && _temporaryWarpClaims.OwnsRequest(proxy.WarpProfile?.RequestId))
+            {
+                throw new InvalidOperationException(
+                    "所选 WARP 正被另一个账号首次连接流程使用，请稍后重试");
+            }
 
             var stableImportKey = BuildImportStableKey(stableKeySeed, operationNonce);
             var resinLease = proxy.Kind == OutboundProxyKinds.Resin
@@ -1041,12 +1052,23 @@ public class AccountImportService
                     proxy.ResinAdminToken,
                     proxy.ResinPlatform)
                 : null;
+            var connection = AccountProxyResolver.BuildConnectionOptions(
+                proxy,
+                stableImportKey);
+            IDisposable? warpUsageClaim = null;
+            if (proxy.Kind == OutboundProxyKinds.Warp && _warpProxyUsageGuard != null)
+            {
+                warpUsageClaim = _warpProxyUsageGuard.TryAcquireUsage(proxy.Id)
+                    ?? throw new InvalidOperationException(
+                        "所选 WARP 正在维护或被另一个首次连接流程使用，请稍后重试；账号尚未发起首次连接");
+            }
             return new PreparedImportProxy(
-                AccountProxyResolver.BuildConnectionOptions(proxy, stableImportKey),
+                connection,
                 null,
                 resinLease,
                 resinLease != null ? stableImportKey : null,
                 stableImportKey,
+                warpUsageClaim,
                 null);
         }
 
@@ -1078,6 +1100,7 @@ public class AccountImportService
                     null,
                     null,
                     stableImportKey,
+                    null,
                     warpClaim);
             }
             catch
@@ -1249,6 +1272,7 @@ public class AccountImportService
         ResinLeaseControlSnapshot? TemporaryResinLease,
         string? TemporaryResinLeaseKey,
         string? StableIdentityKey,
+        IDisposable? WarpUsageClaim,
         IDisposable? TemporaryWarpClaim);
 
     private async Task KeepImportedAccountInactiveBestEffortAsync(int? accountId)

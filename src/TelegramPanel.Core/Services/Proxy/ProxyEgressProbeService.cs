@@ -8,10 +8,25 @@ using TelegramPanel.Data.Entities;
 
 namespace TelegramPanel.Core.Services.Proxy;
 
+public interface IProxyEgressProbeService
+{
+    Task<EgressProbeResult> ProbePanelAsync(CancellationToken cancellationToken = default);
+
+    Task<EgressProbeResult> ProbeProxyAsync(
+        OutboundProxy proxy,
+        string stableAccountKey,
+        CancellationToken cancellationToken = default);
+
+    Task<EgressProbeResult> ProbeProxyAsync(
+        ProxyConnectionOptions options,
+        bool requireWarp = false,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// 通过 Cloudflare Trace 检测代理和面板的公网出口。
 /// </summary>
-public sealed class ProxyEgressProbeService
+public sealed class ProxyEgressProbeService : IProxyEgressProbeService
 {
     private static readonly Uri ProbeUri = new("https://cloudflare.com/cdn-cgi/trace");
     private const int MaxResponseBytes = 256 * 1024;

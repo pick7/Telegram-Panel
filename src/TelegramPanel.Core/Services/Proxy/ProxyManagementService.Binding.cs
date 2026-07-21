@@ -358,6 +358,15 @@ public sealed partial class ProxyManagementService
             if (oldProxy?.Kind != OutboundProxyKinds.Warp)
                 continue;
 
+            using var cleanupLease = _warpProxyUsageGuard?.TryAcquireMaintenance(oldId);
+            if (_warpProxyUsageGuard != null && cleanupLease == null)
+            {
+                _logger.LogInformation(
+                    "Skipped cleanup of WARP proxy {ProxyId} because a first-connection flow is using it",
+                    oldId);
+                continue;
+            }
+
             var stillUsed = await _db.Accounts
                 .AnyAsync(x => x.ProxyId == oldId, cancellationToken);
             if (stillUsed)

@@ -447,7 +447,7 @@ public sealed class ManualLoginProxyRoutingTests
             1601,
             new AccountProxyBindingInput("existing", proxy.ProxyId),
             new AccountProxyResolution(proxy, false),
-            proxy.ProxyId,
+            null,
             null,
             null,
             DateTimeOffset.UtcNow)));
@@ -457,11 +457,83 @@ public sealed class ManualLoginProxyRoutingTests
         Assert.NotNull(claimed);
         Assert.False(store.TryTakeForCompletion(1601, out _));
         Assert.True(store.OwnsWarpProxy(proxy.ProxyId));
-        Assert.True(store.OwnsWarpProxy(proxy.ProxyId));
 
         store.ReleaseWarpProxyClaim(proxy.ProxyId);
         store.ReleaseLoginClaim(1601);
         Assert.False(store.OwnsWarpProxy(proxy.ProxyId));
+    }
+
+    [Fact]
+    public void WARP维护租约与首次登录冻结状态双向互斥()
+    {
+        var store = new AccountLoginProxyStateStore();
+        var proxy = new ProxyConnectionOptions(
+            602,
+            "maintenance-warp",
+            OutboundProxyKinds.Warp,
+            OutboundProxyProtocols.Http,
+            "127.0.0.1",
+            1080,
+            null,
+            null,
+            null);
+        var state = new AccountLoginProxyState(
+            1602,
+            new AccountProxyBindingInput("existing", proxy.ProxyId),
+            new AccountProxyResolution(proxy, false),
+            null,
+            null,
+            null,
+            DateTimeOffset.UtcNow);
+
+        var maintenanceLease = store.TryAcquireMaintenance(proxy.ProxyId);
+        Assert.NotNull(maintenanceLease);
+        Assert.False(store.TryAdd(state, out var error));
+        Assert.Contains("正在维护", error);
+
+        maintenanceLease!.Dispose();
+        Assert.True(store.TryAdd(state, out error));
+        Assert.Null(error);
+        Assert.Null(store.TryAcquireMaintenance(proxy.ProxyId));
+        Assert.Null(store.TryAcquireUsage(proxy.ProxyId));
+
+        var concurrentState = state with { LoginId = 1603 };
+        Assert.False(store.TryAdd(concurrentState, out error));
+        Assert.Contains("另一个首次连接流程", error);
+
+        var importFirstStore = new AccountLoginProxyStateStore();
+        using var importUsage = importFirstStore.TryAcquireUsage(proxy.ProxyId);
+        Assert.NotNull(importUsage);
+        Assert.False(importFirstStore.TryAdd(state, out error));
+        Assert.Contains("另一个首次连接流程", error);
+    }
+
+    [Fact]
+    public async Task 已有WARP仍属另一临时创建流程时登录不会冻结该出口()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var proxy = await fixture.AddProxyAsync(OutboundProxyKinds.Warp);
+        var profile = new WarpProfile
+        {
+            ProfileId = "active-login-owner",
+            RequestId = "telegram-panel.internal.login.active-owner",
+            ContainerName = "active-login-owner-container",
+            ContainerId = "active-login-owner-container-id",
+            VolumeName = "active-login-owner-volume",
+            HostPort = 42096,
+            Status = "active",
+            DesiredEnabled = true,
+            Proxy = proxy
+        };
+        fixture.Db.WarpProfiles.Add(profile);
+        await fixture.Db.SaveChangesAsync();
+
+        using var ownerClaim = fixture.TemporaryWarpClaims.ClaimRequest(profile.RequestId);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Coordinator.PrepareAsync(1604, "existing", proxy.Id));
+
+        Assert.Contains("另一个账号首次连接流程", error.Message);
+        Assert.False(fixture.Coordinator.HasState(1604));
     }
 
     [Fact]
@@ -601,19 +673,22 @@ public sealed class ManualLoginProxyRoutingTests
             AppDbContext db,
             AccountLoginProxyStateStore stateStore,
             AccountLoginProxyCoordinator coordinator,
-            StubClientPool clientPool)
+            StubClientPool clientPool,
+            TemporaryWarpClaimStore temporaryWarpClaims)
         {
             _connection = connection;
             Db = db;
             StateStore = stateStore;
             Coordinator = coordinator;
             ClientPool = clientPool;
+            TemporaryWarpClaims = temporaryWarpClaims;
         }
 
         public AppDbContext Db { get; }
         public AccountLoginProxyStateStore StateStore { get; }
         public AccountLoginProxyCoordinator Coordinator { get; }
         public StubClientPool ClientPool { get; }
+        public TemporaryWarpClaimStore TemporaryWarpClaims { get; }
 
         public static async Task<Fixture> CreateAsync(
             IEnumerable<KeyValuePair<string, string?>>? values = null)
@@ -632,6 +707,8 @@ public sealed class ManualLoginProxyRoutingTests
             var configuration = configurationBuilder.Build();
             var pool = new StubClientPool();
             var probe = new ProxyEgressProbeService();
+            var stateStore = new AccountLoginProxyStateStore();
+            var temporaryWarpClaims = new TemporaryWarpClaimStore();
             var warpManager = new WarpContainerManager(
                 db,
                 configuration,
@@ -643,7 +720,9 @@ public sealed class ManualLoginProxyRoutingTests
                 probe,
                 warpManager,
                 NullLogger<ProxyManagementService>.Instance,
-                configuration);
+                configuration,
+                temporaryWarpClaims,
+                stateStore);
             var accountManagement = new AccountManagementService(
                 new AccountRepository(db),
                 new ChannelRepository(db),
@@ -657,17 +736,22 @@ public sealed class ManualLoginProxyRoutingTests
                 pool,
                 NullLogger<AccountService>.Instance,
                 configuration);
-            var stateStore = new AccountLoginProxyStateStore();
             var coordinator = new AccountLoginProxyCoordinator(
                 stateStore,
                 proxyManagement,
                 accountManagement,
                 accountService,
-                new TemporaryWarpClaimStore(),
+                temporaryWarpClaims,
                 configuration,
                 NullLogger<AccountLoginProxyCoordinator>.Instance);
 
-            return new Fixture(connection, db, stateStore, coordinator, pool);
+            return new Fixture(
+                connection,
+                db,
+                stateStore,
+                coordinator,
+                pool,
+                temporaryWarpClaims);
         }
 
         public async Task<OutboundProxy> AddProxyAsync(string kind)

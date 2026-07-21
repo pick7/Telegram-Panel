@@ -80,6 +80,8 @@ import type {
   SaveOutboundProxyRequest,
   TextPreset,
   CreateWarpProxyRequest,
+  WarpMaintenanceBatchResult,
+  WarpMaintenanceResult,
   WarpRuntimeStatus,
 } from './types'
 
@@ -109,6 +111,10 @@ export const panelApi = {
   warpStatus: () => api.get<WarpRuntimeStatus>('/proxies/warp/status').then((r) => r.data),
   createWarpProxies: (payload: CreateWarpProxyRequest) =>
     api.post<OutboundProxy>('/proxies/warp', payload, { timeout: WARP_OPERATION_TIMEOUT_MS }).then((r) => r.data),
+  refreshWarpProxy: (id: number) =>
+    api.post<WarpMaintenanceResult>(`/proxies/${id}/warp/refresh`, {}, { timeout: WARP_OPERATION_TIMEOUT_MS }).then((r) => r.data),
+  refreshAllWarpProxies: () =>
+    api.post<WarpMaintenanceBatchResult>('/proxies/warp/refresh-all', {}, { timeout: WARP_OPERATION_TIMEOUT_MS }).then((r) => r.data),
   accountCategories: () => api.get<AccountCategory[]>('/account-categories').then((r) => r.data),
   createAccountCategory: (payload: { name: string; color?: string | null; description?: string | null; excludeFromOperations: boolean }) =>
     api.post<AccountCategory>('/account-categories', payload).then((r) => r.data),

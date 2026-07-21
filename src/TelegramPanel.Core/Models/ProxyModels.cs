@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace TelegramPanel.Core.Models;
 
 /// <summary>
@@ -130,4 +132,87 @@ public sealed record WarpRuntimeStatus(
     string Image,
     string Network,
     string ProxyHostMode,
-    string DefaultProtocol);
+    string DefaultProtocol,
+    WarpMaintenanceRuntimeStatus? Maintenance = null);
+
+/// <summary>
+/// WARP 自动巡检和恢复配置。健康出口默认不主动重启，避免无故更换账号 IP；
+/// 如确需参考出口池的定时轮换行为，可显式启用 ScheduledRefreshEnabled。
+/// </summary>
+public sealed record WarpMaintenanceOptions(
+    bool Enabled,
+    int InitialDelaySeconds,
+    int HealthCheckIntervalMinutes,
+    int FailureThreshold,
+    int RecoveryCooldownMinutes,
+    int RecoveryProbeAttempts,
+    int RecoveryProbeDelaySeconds,
+    bool ScheduledRefreshEnabled,
+    int ScheduledRefreshIntervalMinutes)
+{
+    public static WarpMaintenanceOptions From(IConfiguration configuration) => new(
+        ReadBool(configuration, "Proxy:Warp:Maintenance:Enabled", true),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:InitialDelaySeconds", 30, 0, 3600),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:HealthCheckIntervalMinutes", 5, 1, 1440),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:FailureThreshold", 2, 1, 10),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:RecoveryCooldownMinutes", 30, 1, 1440),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:RecoveryProbeAttempts", 6, 1, 20),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:RecoveryProbeDelaySeconds", 5, 1, 60),
+        ReadBool(configuration, "Proxy:Warp:Maintenance:ScheduledRefreshEnabled", false),
+        ReadInt(configuration, "Proxy:Warp:Maintenance:ScheduledRefreshIntervalMinutes", 720, 60, 10080));
+
+    private static bool ReadBool(
+        IConfiguration configuration,
+        string key,
+        bool fallback) =>
+        bool.TryParse(configuration[key], out var value) ? value : fallback;
+
+    private static int ReadInt(
+        IConfiguration configuration,
+        string key,
+        int fallback,
+        int min,
+        int max) =>
+        int.TryParse(configuration[key], out var value) && value >= min && value <= max
+            ? value
+            : fallback;
+}
+
+/// <summary>
+/// 后台 WARP 维护任务的可观测状态。
+/// </summary>
+public sealed record WarpMaintenanceRuntimeStatus(
+    bool Enabled,
+    bool Running,
+    int HealthCheckIntervalMinutes,
+    int FailureThreshold,
+    int RecoveryCooldownMinutes,
+    bool ScheduledRefreshEnabled,
+    int ScheduledRefreshIntervalMinutes,
+    DateTime? LastRunAtUtc,
+    DateTime? NextRunAtUtc,
+    string? LastError,
+    int CheckedCount,
+    int HealthyCount,
+    int RecoveredCount,
+    int FailedCount);
+
+/// <summary>
+/// 单个受管 WARP 的巡检或刷新结果。
+/// </summary>
+public sealed record WarpMaintenanceResult(
+    int ProxyId,
+    string Name,
+    bool Success,
+    bool Restarted,
+    bool Recovered,
+    string RuntimeStatus,
+    string Summary,
+    string? Error);
+
+public sealed record WarpMaintenanceBatchResult(
+    int Checked,
+    int Healthy,
+    int Recovered,
+    int Failed,
+    IReadOnlyList<WarpMaintenanceResult> Items);

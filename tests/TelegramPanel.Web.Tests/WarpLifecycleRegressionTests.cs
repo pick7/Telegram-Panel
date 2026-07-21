@@ -3,10 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Data;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Web.Api;
+using TelegramPanel.Web.Services;
 using WTelegram;
 using Xunit;
 
@@ -159,6 +161,23 @@ public sealed class WarpLifecycleRegressionTests
     }
 
     [Fact]
+    public void WARP维护默认启用但不主动刷新健康出口()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection()
+            .Build();
+
+        var options = WarpMaintenanceOptions.From(configuration);
+
+        Assert.True(options.Enabled);
+        Assert.Equal(5, options.HealthCheckIntervalMinutes);
+        Assert.Equal(2, options.FailureThreshold);
+        Assert.Equal(30, options.RecoveryCooldownMinutes);
+        Assert.False(options.ScheduledRefreshEnabled);
+        Assert.Equal(720, options.ScheduledRefreshIntervalMinutes);
+    }
+
+    [Fact]
     public async Task 单次创建WARP可以覆盖系统默认协议()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -265,6 +284,231 @@ public sealed class WarpLifecycleRegressionTests
         var dto = ProxyApiEndpoints.ToDto(proxy);
 
         Assert.Equal("on", dto.WarpStatus);
+        Assert.Equal("active", dto.WarpRuntimeStatus);
+    }
+
+    [Fact]
+    public async Task WARP连续失败达到阈值后自动重启并释放绑定账号客户端()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(dbOptions);
+        await db.Database.EnsureCreatedAsync();
+
+        var profile = Profile("self-heal-profile", "active", 42090);
+        profile.ContainerId = "self-heal-container-id";
+        var proxy = new OutboundProxy
+        {
+            Name = "self-heal-warp",
+            Kind = OutboundProxyKinds.Warp,
+            Protocol = OutboundProxyProtocols.Http,
+            Host = profile.ContainerName,
+            Port = 1080,
+            IsEnabled = true,
+            WarpProfile = profile
+        };
+        var account = new Account
+        {
+            Phone = "+10000000001",
+            UserId = 1001,
+            SessionPath = "self-heal.session",
+            ApiId = 1,
+            ApiHash = "0123456789abcdef0123456789abcdef",
+            Proxy = proxy,
+            UseGlobalProxy = false
+        };
+        db.Accounts.Add(account);
+        await db.SaveChangesAsync();
+
+        var docker = new FakeWarpDockerClient();
+        docker.SeedResources(
+            profile.ProfileId,
+            profile.ContainerName,
+            profile.VolumeName,
+            profile.ContainerId);
+        var probe = new SequenceProbeService(
+            FailedProbe("tunnel down 1"),
+            FailedProbe("tunnel down 2"),
+            SuccessfulWarpProbe("2606:4700:100::1"));
+        var manager = CreateManager(db, docker, enabled: true, probeService: probe);
+        var clientPool = new TrackingClientPool();
+        var service = CreateProxyService(db, manager, probe, clientPool);
+        var options = MaintenanceOptions(failureThreshold: 2);
+
+        var first = await service.MaintainWarpAsync(proxy.Id, options);
+        var second = await service.MaintainWarpAsync(proxy.Id, options);
+
+        Assert.False(first.Restarted);
+        Assert.Contains("1/2", first.Summary);
+        Assert.True(second.Success);
+        Assert.True(second.Restarted);
+        Assert.True(second.Recovered);
+        Assert.Single(docker.RestartedContainerReferences);
+        Assert.Equal(profile.ContainerId, docker.RestartedContainerReferences[0]);
+        Assert.Equal(2, clientPool.RemovedAccountIds.Count(x => x == account.Id));
+
+        var saved = await db.OutboundProxies
+            .AsNoTracking()
+            .Include(x => x.WarpProfile)
+            .SingleAsync(x => x.Id == proxy.Id);
+        Assert.Equal("ok", saved.TestStatus);
+        Assert.Equal("2606:4700:100::1", saved.EgressIp);
+        Assert.Equal("active", saved.WarpProfile!.Status);
+        Assert.Equal(0, saved.WarpProfile.ConsecutiveFailures);
+        Assert.Equal(1, saved.WarpProfile.RecoveryCount);
+        Assert.NotNull(saved.WarpProfile.LastRecoveredAtUtc);
+    }
+
+    [Fact]
+    public async Task 健康WARP默认不定时换IP但显式启用后到期刷新()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(dbOptions);
+        await db.Database.EnsureCreatedAsync();
+
+        var profile = Profile("scheduled-refresh-profile", "active", 42091);
+        profile.ContainerId = "scheduled-refresh-container-id";
+        profile.CreatedAtUtc = DateTime.UtcNow.AddHours(-13);
+        var proxy = new OutboundProxy
+        {
+            Name = "scheduled-refresh-warp",
+            Kind = OutboundProxyKinds.Warp,
+            Protocol = OutboundProxyProtocols.Socks5,
+            Host = profile.ContainerName,
+            Port = 1080,
+            IsEnabled = true,
+            WarpProfile = profile
+        };
+        db.OutboundProxies.Add(proxy);
+        await db.SaveChangesAsync();
+
+        var docker = new FakeWarpDockerClient();
+        docker.SeedResources(
+            profile.ProfileId,
+            profile.ContainerName,
+            profile.VolumeName,
+            profile.ContainerId);
+        var probe = new SequenceProbeService(
+            SuccessfulWarpProbe("2606:4700:100::2"),
+            SuccessfulWarpProbe("2606:4700:100::3"),
+            SuccessfulWarpProbe("2606:4700:100::4"));
+        var manager = CreateManager(db, docker, enabled: true, probeService: probe);
+        var service = CreateProxyService(db, manager, probe);
+
+        var safeDefault = await service.MaintainWarpAsync(
+            proxy.Id,
+            MaintenanceOptions(scheduledRefreshEnabled: false));
+        var scheduled = await service.MaintainWarpAsync(
+            proxy.Id,
+            MaintenanceOptions(scheduledRefreshEnabled: true));
+
+        Assert.True(safeDefault.Success);
+        Assert.False(safeDefault.Restarted);
+        Assert.True(scheduled.Success);
+        Assert.True(scheduled.Restarted);
+        Assert.Single(docker.RestartedContainerReferences);
+    }
+
+    [Fact]
+    public async Task 首次登录或导入占用的WARP不会被后台或手动刷新打断()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(dbOptions);
+        await db.Database.EnsureCreatedAsync();
+
+        var profile = Profile("claimed-profile", "active", 42092);
+        profile.RequestId = "telegram-panel.internal.login.123.claimed";
+        profile.ContainerId = "claimed-container-id";
+        var proxy = new OutboundProxy
+        {
+            Name = "claimed-warp",
+            Kind = OutboundProxyKinds.Warp,
+            Protocol = OutboundProxyProtocols.Http,
+            Host = profile.ContainerName,
+            Port = 1080,
+            IsEnabled = true,
+            WarpProfile = profile
+        };
+        db.OutboundProxies.Add(proxy);
+        await db.SaveChangesAsync();
+
+        var docker = new FakeWarpDockerClient();
+        docker.SeedResources(
+            profile.ProfileId,
+            profile.ContainerName,
+            profile.VolumeName,
+            profile.ContainerId);
+        var probe = new SequenceProbeService();
+        var claims = new TemporaryWarpClaimStore();
+        var loginStates = new AccountLoginProxyStateStore();
+        var manager = CreateManager(db, docker, enabled: true, probeService: probe);
+        var service = CreateProxyService(
+            db,
+            manager,
+            probe,
+            temporaryWarpClaims: claims,
+            warpProxyUsageGuard: loginStates);
+
+        using (claims.ClaimRequest(profile.RequestId))
+        {
+            var background = await service.MaintainWarpAsync(
+                proxy.Id,
+                MaintenanceOptions());
+            var manual = await service.MaintainWarpAsync(
+                proxy.Id,
+                MaintenanceOptions(),
+                forceRestart: true);
+
+            Assert.True(background.Success);
+            Assert.Contains("跳过巡检", background.Summary);
+            Assert.False(manual.Success);
+            Assert.Contains("已阻止刷新", manual.Summary);
+        }
+
+        var frozenProxy = new ProxyConnectionOptions(
+            proxy.Id,
+            proxy.Name,
+            proxy.Kind,
+            proxy.Protocol,
+            proxy.Host,
+            proxy.Port,
+            null,
+            null,
+            null);
+        Assert.True(loginStates.TryAdd(new AccountLoginProxyState(
+            123,
+            new AccountProxyBindingInput("existing", proxy.Id),
+            new AccountProxyResolution(frozenProxy, false),
+            null,
+            null,
+            null,
+            DateTimeOffset.UtcNow)));
+
+        var frozenBackground = await service.MaintainWarpAsync(
+            proxy.Id,
+            MaintenanceOptions());
+        var frozenManual = await service.MaintainWarpAsync(
+            proxy.Id,
+            MaintenanceOptions(),
+            forceRestart: true);
+
+        Assert.True(frozenBackground.Success);
+        Assert.Contains("跳过巡检", frozenBackground.Summary);
+        Assert.False(frozenManual.Success);
+        Assert.Contains("已阻止刷新", frozenManual.Summary);
+        Assert.Equal(0, probe.CallCount);
+        Assert.Empty(docker.RestartedContainerReferences);
     }
 
     [Fact]
@@ -519,7 +763,8 @@ public sealed class WarpLifecycleRegressionTests
         AppDbContext db,
         FakeWarpDockerClient docker,
         bool enabled,
-        string defaultProtocol = "http")
+        string defaultProtocol = "http",
+        IProxyEgressProbeService? probeService = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -532,20 +777,47 @@ public sealed class WarpLifecycleRegressionTests
         return new WarpContainerManager(
             db,
             configuration,
-            new ProxyEgressProbeService(),
+            probeService ?? new ProxyEgressProbeService(),
             NullLogger<WarpContainerManager>.Instance,
             new FakeWarpDockerClientFactory(docker));
     }
 
     private static ProxyManagementService CreateProxyService(
         AppDbContext db,
-        WarpContainerManager manager) =>
+        WarpContainerManager manager,
+        IProxyEgressProbeService? probeService = null,
+        ITelegramClientPool? clientPool = null,
+        TemporaryWarpClaimStore? temporaryWarpClaims = null,
+        IWarpProxyUsageGuard? warpProxyUsageGuard = null) =>
         new(
             db,
-            new NoopClientPool(),
-            new ProxyEgressProbeService(),
+            clientPool ?? new NoopClientPool(),
+            probeService ?? new ProxyEgressProbeService(),
             manager,
-            NullLogger<ProxyManagementService>.Instance);
+            NullLogger<ProxyManagementService>.Instance,
+            configuration: null,
+            temporaryWarpClaims: temporaryWarpClaims,
+            warpProxyUsageGuard: warpProxyUsageGuard);
+
+    private static WarpMaintenanceOptions MaintenanceOptions(
+        int failureThreshold = 2,
+        bool scheduledRefreshEnabled = false) =>
+        new(
+            true,
+            0,
+            5,
+            failureThreshold,
+            30,
+            2,
+            0,
+            scheduledRefreshEnabled,
+            720);
+
+    private static EgressProbeResult FailedProbe(string error) =>
+        new(false, null, null, null, null, null, null, DateTime.UtcNow, error);
+
+    private static EgressProbeResult SuccessfulWarpProbe(string ip) =>
+        new(true, ip, "US", null, null, "on", 12, DateTime.UtcNow, null);
 
     private static WarpProfile Profile(string profileId, string status, int hostPort) => new()
     {
@@ -579,6 +851,7 @@ public sealed class WarpLifecycleRegressionTests
 
         public Exception? StartError { get; set; }
         public Exception? StopError { get; set; }
+        public Exception? RestartError { get; set; }
         public Exception? RemoveContainerError { get; set; }
         public Exception? RemoveVolumeError { get; set; }
         public int CreateVolumeCalls { get; private set; }
@@ -587,6 +860,7 @@ public sealed class WarpLifecycleRegressionTests
         public IReadOnlyCollection<string> Volumes => _volumes.Keys.ToArray();
         public List<string> StartedContainerReferences { get; } = new();
         public List<string> StoppedContainerReferences { get; } = new();
+        public List<string> RestartedContainerReferences { get; } = new();
         public List<string> RemovedContainerReferences { get; } = new();
 
         public void SeedResources(
@@ -659,6 +933,17 @@ public sealed class WarpLifecycleRegressionTests
             if (StopError != null)
                 throw StopError;
             StoppedContainerReferences.Add(containerId);
+            return Task.CompletedTask;
+        }
+
+        public Task RestartContainerAsync(
+            string containerId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (RestartError != null)
+                throw RestartError;
+            RestartedContainerReferences.Add(containerId);
             return Task.CompletedTask;
         }
 
@@ -741,5 +1026,70 @@ public sealed class WarpLifecycleRegressionTests
         public Task RemoveClientAsync(int accountId) => Task.CompletedTask;
         public Task RemoveAllClientsAsync() => Task.CompletedTask;
         public bool IsClientConnected(int accountId) => false;
+    }
+
+    private sealed class TrackingClientPool : ITelegramClientPool
+    {
+        public List<int> RemovedAccountIds { get; } = new();
+        public int ActiveClientCount => 0;
+
+        public Task<Client> GetOrCreateClientAsync(
+            int accountId,
+            int apiId,
+            string apiHash,
+            string sessionPath,
+            string? sessionKey = null,
+            string? phoneNumber = null,
+            long? userId = null) =>
+            throw new NotSupportedException();
+
+        public Client? GetClient(int accountId) => null;
+
+        public Task RemoveClientAsync(int accountId)
+        {
+            RemovedAccountIds.Add(accountId);
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveAllClientsAsync() => Task.CompletedTask;
+        public bool IsClientConnected(int accountId) => false;
+    }
+
+    private sealed class SequenceProbeService : IProxyEgressProbeService
+    {
+        private readonly Queue<EgressProbeResult> _results;
+        private EgressProbeResult? _lastResult;
+        public int CallCount { get; private set; }
+
+        public SequenceProbeService(params EgressProbeResult[] results)
+        {
+            _results = new Queue<EgressProbeResult>(results);
+        }
+
+        public Task<EgressProbeResult> ProbePanelAsync(
+            CancellationToken cancellationToken = default) =>
+            NextAsync(cancellationToken);
+
+        public Task<EgressProbeResult> ProbeProxyAsync(
+            OutboundProxy proxy,
+            string stableAccountKey,
+            CancellationToken cancellationToken = default) =>
+            NextAsync(cancellationToken);
+
+        public Task<EgressProbeResult> ProbeProxyAsync(
+            ProxyConnectionOptions options,
+            bool requireWarp = false,
+            CancellationToken cancellationToken = default) =>
+            NextAsync(cancellationToken);
+
+        private Task<EgressProbeResult> NextAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CallCount++;
+            if (_results.TryDequeue(out var result))
+                _lastResult = result;
+            return Task.FromResult(_lastResult
+                ?? throw new InvalidOperationException("未配置出口检测结果"));
+        }
     }
 }

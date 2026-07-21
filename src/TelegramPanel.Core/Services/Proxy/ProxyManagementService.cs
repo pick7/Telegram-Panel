@@ -31,18 +31,22 @@ public sealed partial class ProxyManagementService
 
     private readonly AppDbContext _db;
     private readonly ITelegramClientPool _clientPool;
-    private readonly ProxyEgressProbeService _probeService;
+    private readonly IProxyEgressProbeService _probeService;
     private readonly WarpContainerManager _warpManager;
     private readonly ILogger<ProxyManagementService> _logger;
     private readonly IConfiguration? _configuration;
+    private readonly TemporaryWarpClaimStore? _temporaryWarpClaims;
+    private readonly IWarpProxyUsageGuard? _warpProxyUsageGuard;
 
     public ProxyManagementService(
         AppDbContext db,
         ITelegramClientPool clientPool,
-        ProxyEgressProbeService probeService,
+        IProxyEgressProbeService probeService,
         WarpContainerManager warpManager,
         ILogger<ProxyManagementService> logger,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        TemporaryWarpClaimStore? temporaryWarpClaims = null,
+        IWarpProxyUsageGuard? warpProxyUsageGuard = null)
     {
         _db = db;
         _clientPool = clientPool;
@@ -50,6 +54,8 @@ public sealed partial class ProxyManagementService
         _warpManager = warpManager;
         _logger = logger;
         _configuration = configuration;
+        _temporaryWarpClaims = temporaryWarpClaims;
+        _warpProxyUsageGuard = warpProxyUsageGuard;
     }
 
     public async Task<IReadOnlyList<OutboundProxy>> ListAsync(

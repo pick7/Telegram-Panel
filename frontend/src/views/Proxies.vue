@@ -43,12 +43,21 @@
         <el-button
           type="success"
           :icon="MagicStick"
-          :disabled="warpUnavailable"
+          :disabled="warpUnavailable || refreshingAllWarps"
           @click="openWarpCreate"
         >
           一键创建 WARP
         </el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="refreshAll">刷新列表</el-button>
+        <el-button
+          type="warning"
+          :icon="RefreshRight"
+          :loading="refreshingAllWarps"
+          :disabled="warpUnavailable || !hasEnabledWarp || refreshingAllWarps || refreshingIds.size > 0"
+          @click="refreshAllWarps"
+        >
+          立即刷新全部 WARP
+        </el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="refreshAll">刷新页面状态</el-button>
         <span class="toolbar-spacer" />
         <div class="warp-runtime">
           <span>WARP 运行环境</span>
@@ -56,6 +65,31 @@
         </div>
       </div>
       <div v-if="warpStatusError || warpStatus?.error" class="runtime-error">{{ warpStatusError || warpStatus?.error }}</div>
+      <div v-if="maintenance && warpStatus?.enabled" class="warp-maintenance" aria-label="WARP 自动维护状态">
+        <div class="maintenance-state">
+          <el-tag :type="maintenanceStatusType" size="small">
+            {{ maintenanceStatusText }}
+          </el-tag>
+          <span>每 {{ maintenance.healthCheckIntervalMinutes }} 分钟巡检</span>
+          <span>连续 {{ maintenance.failureThreshold }} 次失败后自动恢复</span>
+          <span>恢复冷却 {{ maintenance.recoveryCooldownMinutes }} 分钟</span>
+        </div>
+        <div class="maintenance-schedule">
+          <span v-if="maintenance.scheduledRefreshEnabled">
+            定时刷新：每 {{ formatDuration(maintenance.scheduledRefreshIntervalMinutes) }}
+          </span>
+          <span v-else>健康时保持当前出口，不主动更换 IP</span>
+          <span v-if="maintenance.lastRunAtUtc">最近巡检：{{ formatTime(maintenance.lastRunAtUtc, '-') }}</span>
+          <span v-if="maintenance.nextRunAtUtc">下次巡检：{{ formatTime(maintenance.nextRunAtUtc, '-') }}</span>
+          <span v-if="maintenance.lastRunAtUtc">
+            上次结果：{{ maintenance.checkedCount }} 个，正常 {{ maintenance.healthyCount }}，
+            已恢复 {{ maintenance.recoveredCount }}，异常 {{ maintenance.failedCount }}
+          </span>
+        </div>
+        <div v-if="maintenance.lastError" class="maintenance-error">
+          最近错误：{{ maintenance.lastError }}
+        </div>
+      </div>
     </el-card>
 
     <el-card shadow="never" class="page-card mt-4">
@@ -82,7 +116,15 @@
         </el-table-column>
         <el-table-column label="状态" width="92">
           <template #default="{ row }">
-            <el-tag :type="row.isEnabled ? 'success' : 'info'" size="small">
+            <template v-if="row.kind === 'warp'">
+              <el-tooltip :content="warpRuntimeHelp(row)" placement="top">
+                <el-tag :type="warpRuntimeStatusType(row.warpRuntimeStatus)" size="small">
+                  {{ warpRuntimeStatusLabel(row.warpRuntimeStatus) }}
+                </el-tag>
+              </el-tooltip>
+              <div class="cell-sub">期望{{ row.isEnabled ? '启用' : '停用' }}</div>
+            </template>
+            <el-tag v-else :type="row.isEnabled ? 'success' : 'info'" size="small">
               {{ row.isEnabled ? '已启用' : '已停用' }}
             </el-tag>
           </template>
@@ -113,23 +155,40 @@
               </el-tag>
             </el-tooltip>
             <div v-if="row.lastTestedAtUtc" class="cell-sub">{{ formatTime(row.lastTestedAtUtc, '-') }}</div>
+            <div v-if="row.kind === 'warp' && (row.warpConsecutiveFailures ?? 0) > 0" class="cell-sub failure-count">
+              连续失败 {{ row.warpConsecutiveFailures }} 次
+            </div>
+            <div v-if="row.kind === 'warp' && row.warpLastRecoveredAtUtc" class="cell-sub">
+              最近恢复 {{ formatTime(row.warpLastRecoveredAtUtc, '-') }}
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="绑定账号" width="94" align="center">
           <template #default="{ row }">{{ row.accountCount ?? 0 }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="126" fixed="right">
+        <el-table-column label="操作" width="158" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
-              <el-tooltip content="检测出口 IP" placement="top">
+              <el-tooltip content="检测出口 IP（不重启）" placement="top">
                 <el-button
                   link
                   type="primary"
                   :icon="VideoPlay"
                   :loading="testingIds.has(row.id)"
-                  :disabled="testingIds.has(row.id) || deletingIds.has(row.id) || !row.isEnabled"
+                  :disabled="refreshingAllWarps || testingIds.has(row.id) || refreshingIds.has(row.id) || deletingIds.has(row.id) || !row.isEnabled"
                   title="检测出口 IP"
                   @click="testProxy(row)"
+                />
+              </el-tooltip>
+              <el-tooltip v-if="row.kind === 'warp'" content="重启并恢复此 WARP" placement="top">
+                <el-button
+                  link
+                  type="warning"
+                  :icon="RefreshRight"
+                  :loading="refreshingIds.has(row.id)"
+                  :disabled="warpUnavailable || refreshingAllWarps || refreshingIds.has(row.id) || testingIds.has(row.id) || deletingIds.has(row.id) || !row.isEnabled"
+                  title="重启并恢复此 WARP"
+                  @click="refreshWarp(row)"
                 />
               </el-tooltip>
               <el-tooltip v-if="row.kind !== 'warp'" content="编辑代理" placement="top">
@@ -148,7 +207,7 @@
                   type="danger"
                   :icon="Delete"
                   :loading="deletingIds.has(row.id)"
-                  :disabled="deletingIds.has(row.id) || testingIds.has(row.id)"
+                  :disabled="refreshingAllWarps || deletingIds.has(row.id) || testingIds.has(row.id) || refreshingIds.has(row.id)"
                   title="删除代理"
                   @click="removeProxy(row)"
                 />
@@ -362,7 +421,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CirclePlus,
@@ -370,6 +429,7 @@ import {
   Edit,
   MagicStick,
   Refresh,
+  RefreshRight,
   Upload,
   VideoPlay,
 } from '@element-plus/icons-vue'
@@ -394,7 +454,11 @@ const panelEgressError = ref('')
 const warpStatus = ref<WarpRuntimeStatus | null>(null)
 const warpStatusError = ref('')
 const testingIds = reactive(new Set<number>())
+const refreshingIds = reactive(new Set<number>())
 const deletingIds = reactive(new Set<number>())
+const refreshingAllWarps = ref(false)
+const AUTO_STATUS_REFRESH_MS = 30_000
+let autoStatusRefreshTimer: ReturnType<typeof setInterval> | null = null
 let proxyListOperationToken = 0
 let panelEgressOperationToken = 0
 let warpStatusOperationToken = 0
@@ -451,6 +515,20 @@ const warpUnavailable = computed(() => !warpStatus.value
   || !warpStatus.value.platformSupported
   || !warpStatus.value.enabled
   || !warpStatus.value.dockerAvailable)
+
+const maintenance = computed(() => warpStatus.value?.maintenance ?? null)
+const hasEnabledWarp = computed(() => proxies.value.some((proxy) => proxy.kind === 'warp' && proxy.isEnabled))
+
+const maintenanceStatusText = computed(() => {
+  if (!maintenance.value?.enabled) return '自动维护未启用'
+  return maintenance.value.running ? '正在自动巡检' : '自动维护已启用'
+})
+
+const maintenanceStatusType = computed(() => {
+  if (!maintenance.value?.enabled) return 'info'
+  if (maintenance.value.lastError || maintenance.value.failedCount > 0) return 'warning'
+  return 'success'
+})
 
 const warpStatusText = computed(() => {
   if (warpStatusError.value) return '检测失败'
@@ -514,6 +592,41 @@ function protocolLabel(protocol: ProxyProtocol) {
   return 'HTTP'
 }
 
+function formatDuration(minutes: number) {
+  if (minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440} 天`
+  if (minutes > 0 && minutes % 60 === 0) return `${minutes / 60} 小时`
+  return `${minutes} 分钟`
+}
+
+function warpRuntimeStatusLabel(status?: string | null) {
+  const value = status?.trim().toLowerCase()
+  if (value === 'active' || value === 'healthy') return '正常'
+  if (value === 'degraded' || value === 'unhealthy') return '异常'
+  if (value === 'recovering' || value === 'restarting') return '恢复中'
+  if (value === 'starting' || value === 'creating') return '启动中'
+  if (value === 'stopped') return '已停止'
+  if (value === 'missing') return '容器丢失'
+  if (value === 'failed' || value === 'cleanup_pending') return '故障'
+  if (value === 'deleting' || value === 'deleted') return '删除中'
+  return '状态未知'
+}
+
+function warpRuntimeStatusType(status?: string | null) {
+  const value = status?.trim().toLowerCase()
+  if (value === 'active' || value === 'healthy') return 'success'
+  if (value === 'recovering' || value === 'restarting' || value === 'starting' || value === 'creating') return 'warning'
+  if (value === 'degraded' || value === 'unhealthy' || value === 'missing' || value === 'failed' || value === 'cleanup_pending') return 'danger'
+  return 'info'
+}
+
+function warpRuntimeHelp(proxy: OutboundProxy) {
+  const status = warpRuntimeStatusLabel(proxy.warpRuntimeStatus)
+  const failureText = (proxy.warpConsecutiveFailures ?? 0) > 0
+    ? `，已连续失败 ${proxy.warpConsecutiveFailures} 次`
+    : ''
+  return `最近维护状态：${status}${failureText}。期望状态：${proxy.isEnabled ? '启用' : '停用'}。`
+}
+
 function testStatusLabel(status?: string | null) {
   const value = status?.toLowerCase()
   if (value === 'success' || value === 'ok' || value === 'passed') return '可用'
@@ -572,9 +685,9 @@ function beforeWarpDialogClose(done: DialogCloseDone) {
   if (!warpDialog.creating) done()
 }
 
-async function loadProxies() {
+async function loadProxies(showLoading = true) {
   const operationToken = ++proxyListOperationToken
-  loading.value = true
+  if (showLoading) loading.value = true
   try {
     const result = await panelApi.proxies()
     if (operationToken === proxyListOperationToken) proxies.value = result
@@ -616,6 +729,60 @@ async function loadWarpStatus() {
 
 async function refreshAll() {
   await Promise.allSettled([loadProxies(), loadWarpStatus()])
+}
+
+async function refreshWarp(proxy: OutboundProxy) {
+  if (refreshingIds.has(proxy.id) || refreshingAllWarps.value) return
+  if ((proxy.accountCount ?? 0) > 0) {
+    try {
+      await ElMessageBox.confirm(
+        `刷新“${proxy.name}”会让已绑定的 ${proxy.accountCount} 个账号短暂重连；账号不会回退直连。是否继续？`,
+        '确认刷新 WARP',
+        { type: 'warning', confirmButtonText: '刷新并复测', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+
+  refreshingIds.add(proxy.id)
+  try {
+    const result = await panelApi.refreshWarpProxy(proxy.id)
+    if (result.success) ElMessage.success(result.summary || `WARP“${proxy.name}”已恢复`)
+    else ElMessage.error(result.error || result.summary || `WARP“${proxy.name}”恢复失败`)
+  } finally {
+    await Promise.allSettled([loadProxies(), loadWarpStatus()])
+    refreshingIds.delete(proxy.id)
+  }
+}
+
+async function refreshAllWarps() {
+  if (refreshingAllWarps.value || refreshingIds.size > 0 || !hasEnabledWarp.value) return
+  const enabledWarps = proxies.value.filter((proxy) => proxy.kind === 'warp' && proxy.isEnabled)
+  const affectedAccounts = enabledWarps.reduce((total, proxy) => total + (proxy.accountCount ?? 0), 0)
+  const accountHint = affectedAccounts > 0
+    ? `，${affectedAccounts} 个绑定账号会短暂重连，但不会回退直连`
+    : ''
+  try {
+    await ElMessageBox.confirm(
+      `将依次重启并复测 ${enabledWarps.length} 个 WARP${accountHint}。是否继续？`,
+      '确认刷新全部 WARP',
+      { type: 'warning', confirmButtonText: '全部刷新', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  refreshingAllWarps.value = true
+  try {
+    const result = await panelApi.refreshAllWarpProxies()
+    const summary = `已处理 ${result.checked} 个：正常 ${result.healthy}，恢复 ${result.recovered}，失败 ${result.failed}`
+    if (result.failed > 0) ElMessage.warning(summary)
+    else ElMessage.success(summary)
+  } finally {
+    await Promise.allSettled([loadProxies(), loadWarpStatus()])
+    refreshingAllWarps.value = false
+  }
 }
 
 function openCreate() {
@@ -843,6 +1010,18 @@ async function createWarp() {
 
 onMounted(() => {
   void Promise.allSettled([loadProxies(), loadPanelEgress(), loadWarpStatus()])
+  autoStatusRefreshTimer = setInterval(() => {
+    if (document.visibilityState !== 'visible'
+      || refreshingAllWarps.value
+      || refreshingIds.size > 0
+      || deletingIds.size > 0) return
+    void Promise.allSettled([loadProxies(false), loadWarpStatus()])
+  }, AUTO_STATUS_REFRESH_MS)
+})
+
+onBeforeUnmount(() => {
+  if (autoStatusRefreshTimer) clearInterval(autoStatusRefreshTimer)
+  autoStatusRefreshTimer = null
 })
 </script>
 
@@ -918,6 +1097,29 @@ onMounted(() => {
 .runtime-error {
   margin-top: 8px;
   text-align: right;
+}
+
+.warp-maintenance {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--tp-border);
+  color: var(--tp-muted);
+  font-size: 12px;
+}
+
+.maintenance-state,
+.maintenance-schedule {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.maintenance-error,
+.failure-count {
+  color: var(--el-color-danger);
 }
 
 .monospace {
@@ -1001,6 +1203,13 @@ onMounted(() => {
   .warp-runtime {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .maintenance-state,
+  .maintenance-schedule {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 }
 </style>

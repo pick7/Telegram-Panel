@@ -67,6 +67,37 @@ TP_WARP_PROXY_PROTOCOL=http
 WARP 镜像中的 GOST 端口同时支持 HTTP 和 SOCKS5。默认协议决定登录、导入和批量绑定
 自动创建 WARP 时宿主使用哪种握手；代理管理中的一键创建弹窗可以覆盖单次创建协议。
 
+## 自动巡检与故障恢复
+
+Docker 的 `unless-stopped` 只能处理容器进程退出，不能处理“容器仍显示 running，
+但 WARP 隧道或 GOST 已经卡死”。面板因此还会执行出口级自动维护：
+
+- 默认每 5 分钟检测所有期望启用的受管 WARP。
+- 连续失败 2 次后重启原容器，保留 WARP 数据卷，并最多复测 6 次。
+- 恢复失败后进入 30 分钟冷却，避免检测源抖动造成重启风暴。
+- 重启前后释放绑定账号的 Telegram 客户端；客户端只能沿原 WARP 路由重建，代理不可用时
+  会失败，不会回退为面板直连。
+- 正在用于账号导入、手机号登录或二维码登录的 WARP（包括已有 WARP 和一键新建 WARP）
+  会保持首次出口冻结；后台巡检、手动刷新、修改和删除都不会打断首次连接。
+- 代理页每 30 秒更新维护状态，也可手动刷新单个或全部 WARP。
+
+参考 tokens-pro 的“720 分钟定时刷新”也可以开启：
+
+```dotenv
+TP_WARP_AUTO_RECOVERY_ENABLED=true
+TP_WARP_HEALTH_CHECK_INTERVAL_MINUTES=5
+TP_WARP_FAILURE_THRESHOLD=2
+TP_WARP_RECOVERY_COOLDOWN_MINUTES=30
+TP_WARP_SCHEDULED_REFRESH_ENABLED=false
+TP_WARP_SCHEDULED_REFRESH_INTERVAL_MINUTES=720
+```
+
+故障自愈默认开启；健康出口的定时强制重启默认关闭，因为重启可能更换账号出口 IP。
+只有确实需要周期轮换时才把 `TP_WARP_SCHEDULED_REFRESH_ENABLED` 改为 `true`。
+
+参考项目界面中的 `WARP_SLEEP=2` 是 WARP 镜像内部启动等待参数，`GOST_ARGS=-L :1080`
+是代理监听参数；它们本身都不等于定时健康巡检。
+
 修改 `.env` 后重新创建面板容器：
 
 ```bash

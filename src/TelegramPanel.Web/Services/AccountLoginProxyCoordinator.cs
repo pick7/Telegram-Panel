@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
 using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Utils;
@@ -46,11 +46,12 @@ public sealed class AccountLoginProxyStateLease : IDisposable
 /// <summary>
 /// 跨请求保存手机号/二维码登录会话的代理选择。
 /// </summary>
-public sealed class AccountLoginProxyStateStore
+public sealed class AccountLoginProxyStateStore : IWarpProxyUsageGuard
 {
     private readonly object _stateGate = new();
     private readonly Dictionary<int, AccountLoginProxyState> _states = new();
     private readonly HashSet<int> _claimedLoginIds = new();
+    private readonly HashSet<int> _maintenanceWarpProxyIds = new();
     private readonly ConcurrentDictionary<int, int> _claimedWarpProxyIds = new();
     private readonly ConcurrentDictionary<string, int> _claimedPhoneLoginIds =
         new(StringComparer.Ordinal);
@@ -68,11 +69,47 @@ public sealed class AccountLoginProxyStateStore
     {
         if (proxyId <= 0)
             return false;
-        if (_claimedWarpProxyIds.ContainsKey(proxyId))
-            return true;
 
         lock (_stateGate)
-            return _states.Values.Any(x => x.OwnedWarpProxyId == proxyId);
+            return OwnsWarpProxyCore(proxyId);
+    }
+
+    public IDisposable? TryAcquireUsage(int proxyId)
+    {
+        if (proxyId <= 0)
+            return null;
+
+        lock (_stateGate)
+        {
+            if (_maintenanceWarpProxyIds.Contains(proxyId)
+                || OwnsWarpProxyCore(proxyId))
+            {
+                return null;
+            }
+
+            ClaimWarpProxy(proxyId);
+        }
+
+        return new WarpUsageLease(this, proxyId);
+    }
+
+    public IDisposable? TryAcquireMaintenance(int proxyId)
+    {
+        if (proxyId <= 0)
+            return null;
+
+        lock (_stateGate)
+        {
+            if (_maintenanceWarpProxyIds.Contains(proxyId)
+                || OwnsWarpProxyCore(proxyId))
+            {
+                return null;
+            }
+
+            _maintenanceWarpProxyIds.Add(proxyId);
+        }
+
+        return new WarpMaintenanceLease(this, proxyId);
     }
 
     public void ClaimWarpProxy(int proxyId)
@@ -106,6 +143,7 @@ public sealed class AccountLoginProxyStateStore
                 return;
         }
     }
+
     public bool TryClaimPhone(int loginId, string normalizedPhone)
     {
         if (loginId <= 0
@@ -147,15 +185,37 @@ public sealed class AccountLoginProxyStateStore
         }
     }
 
+    public bool TryAdd(AccountLoginProxyState state) =>
+        TryAdd(state, out _);
 
-    public bool TryAdd(AccountLoginProxyState state)
+    public bool TryAdd(AccountLoginProxyState state, out string? error)
     {
         ArgumentNullException.ThrowIfNull(state);
         lock (_stateGate)
         {
             if (_claimedLoginIds.Contains(state.LoginId))
+            {
+                error = "该登录会话正在处理，请稍后重试";
                 return false;
-            return _states.TryAdd(state.LoginId, state);
+            }
+
+            var warpProxyId = GetFrozenWarpProxyId(state);
+            if (warpProxyId.HasValue
+                && (_maintenanceWarpProxyIds.Contains(warpProxyId.Value)
+                    || OwnsWarpProxyCore(warpProxyId.Value)))
+            {
+                error = "所选 WARP 正在维护或被另一个首次连接流程使用，请稍后重试；登录出口未发生切换";
+                return false;
+            }
+
+            if (!_states.TryAdd(state.LoginId, state))
+            {
+                error = "该登录会话已有冻结路由，请先取消原会话";
+                return false;
+            }
+
+            error = null;
+            return true;
         }
     }
 
@@ -227,8 +287,7 @@ public sealed class AccountLoginProxyStateStore
             }
 
             _claimedLoginIds.Add(loginId);
-            var ownedWarpProxyId = current.OwnedWarpProxyId.GetValueOrDefault();
-            ClaimWarpProxy(ownedWarpProxyId);
+            ClaimWarpProxy(GetFrozenWarpProxyId(current).GetValueOrDefault());
             _states.Remove(loginId);
             state = current;
             return true;
@@ -251,8 +310,7 @@ public sealed class AccountLoginProxyStateStore
             }
 
             _claimedLoginIds.Add(candidate.Key);
-            var ownedWarpProxyId = candidate.Value.OwnedWarpProxyId.GetValueOrDefault();
-            ClaimWarpProxy(ownedWarpProxyId);
+            ClaimWarpProxy(GetFrozenWarpProxyId(candidate.Value).GetValueOrDefault());
             _states.Remove(candidate.Key);
             state = candidate.Value;
             return true;
@@ -272,12 +330,66 @@ public sealed class AccountLoginProxyStateStore
             }
 
             _claimedLoginIds.Add(candidate.Key);
-            var ownedWarpProxyId = candidate.Value.OwnedWarpProxyId.GetValueOrDefault();
-            ClaimWarpProxy(ownedWarpProxyId);
+            ClaimWarpProxy(GetFrozenWarpProxyId(candidate.Value).GetValueOrDefault());
             _states.Remove(candidate.Key);
             state = candidate.Value;
             return true;
         }
+    }
+
+    internal static int? GetFrozenWarpProxyId(AccountLoginProxyState state)
+    {
+        var proxy = state.Resolution.Proxy;
+        if (proxy is { ProxyId: > 0 }
+            && string.Equals(
+                proxy.Kind,
+                OutboundProxyKinds.Warp,
+                StringComparison.Ordinal))
+        {
+            return proxy.ProxyId;
+        }
+
+        return state.OwnedWarpProxyId;
+    }
+
+    private bool OwnsWarpProxyCore(int proxyId) =>
+        _claimedWarpProxyIds.ContainsKey(proxyId)
+        || _states.Values.Any(x => GetFrozenWarpProxyId(x) == proxyId);
+
+    private void ReleaseMaintenance(int proxyId)
+    {
+        lock (_stateGate)
+            _maintenanceWarpProxyIds.Remove(proxyId);
+    }
+
+    private sealed class WarpMaintenanceLease : IDisposable
+    {
+        private AccountLoginProxyStateStore? _owner;
+        private readonly int _proxyId;
+
+        public WarpMaintenanceLease(AccountLoginProxyStateStore owner, int proxyId)
+        {
+            _owner = owner;
+            _proxyId = proxyId;
+        }
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?.ReleaseMaintenance(_proxyId);
+    }
+
+    private sealed class WarpUsageLease : IDisposable
+    {
+        private AccountLoginProxyStateStore? _owner;
+        private readonly int _proxyId;
+
+        public WarpUsageLease(AccountLoginProxyStateStore owner, int proxyId)
+        {
+            _owner = owner;
+            _proxyId = proxyId;
+        }
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref _owner, null)?.ReleaseWarpProxyClaim(_proxyId);
     }
 }
 
@@ -427,85 +539,91 @@ public sealed class AccountLoginProxyCoordinator
                 break;
 
             case "global":
-            {
-                var globalProxy = GlobalTelegramProxyConfiguration.Build(_configuration)
-                                  ?? throw new InvalidOperationException(
-                                      "Telegram 全局代理尚未配置；请选择已有代理、一键创建 WARP，或明确选择直连");
-                binding = new AccountProxyBindingInput("global");
-                // 使用当前配置快照，而不是让临时登录 ID 再次动态解析全局设置。
-                resolution = new AccountProxyResolution(globalProxy, false);
-                break;
-            }
-
-            case "existing":
-            {
-                if (proxyId is not > 0)
-                    throw new ArgumentException("请选择已有代理");
-
-                var proxy = await _proxyManagement.GetAsync(
-                    proxyId.Value,
-                    cancellationToken: cancellationToken);
-                if (proxy is not { IsEnabled: true })
-                    throw new KeyNotFoundException("所选代理不存在或已停用");
-
-                temporaryResinKey = proxy.Kind == OutboundProxyKinds.Resin
-                    ? $"tg_login_{loginId}_{Guid.NewGuid():N}"
-                    : null;
-                var stableLoginKey = temporaryResinKey ?? $"tg_login_{loginId}";
-                var connection = AccountProxyResolver.BuildConnectionOptions(
-                    proxy,
-                    stableLoginKey);
-
-                if (proxy.Kind == OutboundProxyKinds.Resin)
                 {
-                    resinLease = new ResinLeaseControlSnapshot(
-                        proxy.Id,
-                        proxy.ResinAdminUrl,
-                        proxy.ResinAdminToken,
-                        proxy.ResinPlatform);
+                    var globalProxy = GlobalTelegramProxyConfiguration.Build(_configuration)
+                                      ?? throw new InvalidOperationException(
+                                          "Telegram 全局代理尚未配置；请选择已有代理、一键创建 WARP，或明确选择直连");
+                    binding = new AccountProxyBindingInput("global");
+                    // 使用当前配置快照，而不是让临时登录 ID 再次动态解析全局设置。
+                    resolution = new AccountProxyResolution(globalProxy, false);
+                    break;
                 }
 
-                binding = new AccountProxyBindingInput("existing", proxy.Id);
-                resolution = new AccountProxyResolution(connection, false);
-                break;
-            }
+            case "existing":
+                {
+                    if (proxyId is not > 0)
+                        throw new ArgumentException("请选择已有代理");
+
+                    var proxy = await _proxyManagement.GetAsync(
+                        proxyId.Value,
+                        cancellationToken: cancellationToken);
+                    if (proxy is not { IsEnabled: true })
+                        throw new KeyNotFoundException("所选代理不存在或已停用");
+                    if (proxy.Kind == OutboundProxyKinds.Warp
+                        && _temporaryWarpClaims.OwnsRequest(proxy.WarpProfile?.RequestId))
+                    {
+                        throw new InvalidOperationException(
+                            "所选 WARP 正被另一个账号首次连接流程使用，请稍后重试");
+                    }
+
+                    temporaryResinKey = proxy.Kind == OutboundProxyKinds.Resin
+                            ? $"tg_login_{loginId}_{Guid.NewGuid():N}"
+                            : null;
+                    var stableLoginKey = temporaryResinKey ?? $"tg_login_{loginId}";
+                    var connection = AccountProxyResolver.BuildConnectionOptions(
+                        proxy,
+                        stableLoginKey);
+
+                    if (proxy.Kind == OutboundProxyKinds.Resin)
+                    {
+                        resinLease = new ResinLeaseControlSnapshot(
+                            proxy.Id,
+                            proxy.ResinAdminUrl,
+                            proxy.ResinAdminToken,
+                            proxy.ResinPlatform);
+                    }
+
+                    binding = new AccountProxyBindingInput("existing", proxy.Id);
+                    resolution = new AccountProxyResolution(connection, false);
+                    break;
+                }
 
             case "warp_per_account":
-            {
-                var requestId = $"{ManagedWarpRequestPrefix}{loginId}.{Guid.NewGuid():N}";
-                var requestClaim = _temporaryWarpClaims.ClaimRequest(requestId);
-                try
                 {
-                    var warp = await _proxyManagement.CreateWarpAsync(
-                        $"WARP · 登录会话 {loginId}",
-                        requestId,
-                        cancellationToken);
+                    var requestId = $"{ManagedWarpRequestPrefix}{loginId}.{Guid.NewGuid():N}";
+                    var requestClaim = _temporaryWarpClaims.ClaimRequest(requestId);
                     try
                     {
-                        var connection = AccountProxyResolver.BuildConnectionOptions(
-                            warp,
-                            $"tg_login_{loginId}");
-                        binding = new AccountProxyBindingInput("existing", warp.Id);
-                        resolution = new AccountProxyResolution(connection, false);
-                        ownedWarpProxyId = warp.Id;
-                        warpRequestClaim = requestClaim;
+                        var warp = await _proxyManagement.CreateWarpAsync(
+                            $"WARP · 登录会话 {loginId}",
+                            requestId,
+                            cancellationToken);
+                        try
+                        {
+                            var connection = AccountProxyResolver.BuildConnectionOptions(
+                                warp,
+                                $"tg_login_{loginId}");
+                            binding = new AccountProxyBindingInput("existing", warp.Id);
+                            resolution = new AccountProxyResolution(connection, false);
+                            ownedWarpProxyId = warp.Id;
+                            warpRequestClaim = requestClaim;
+                        }
+                        catch
+                        {
+                            await DeleteOwnedWarpBestEffortAsync(
+                                warp.Id,
+                                CancellationToken.None);
+                            throw;
+                        }
                     }
                     catch
                     {
-                        await DeleteOwnedWarpBestEffortAsync(
-                            warp.Id,
-                            CancellationToken.None);
+                        requestClaim.Dispose();
                         throw;
                     }
-                }
-                catch
-                {
-                    requestClaim.Dispose();
-                    throw;
-                }
 
-                break;
-            }
+                    break;
+                }
 
             default:
                 throw new ArgumentException(
@@ -522,13 +640,14 @@ public sealed class AccountLoginProxyCoordinator
             DateTimeOffset.UtcNow);
         try
         {
-            if (!_store.TryAdd(state))
+            if (!_store.TryAdd(state, out var stateError))
             {
                 await ReleaseStateResourcesAsync(
                     state,
                     keepOwnedWarp: false,
                     CancellationToken.None);
-                throw new InvalidOperationException("该登录会话已有冻结路由，请先取消原会话");
+                throw new InvalidOperationException(
+                    stateError ?? "登录代理会话无法保存，请稍后重试");
             }
 
             return state;
@@ -568,8 +687,7 @@ public sealed class AccountLoginProxyCoordinator
             }
 
             _store.ReleaseLoginClaim(loginId);
-            if (state.OwnedWarpProxyId is > 0)
-                _store.ReleaseWarpProxyClaim(state.OwnedWarpProxyId.Value);
+            ReleaseFrozenWarpProxyClaim(state);
             throw;
         }
 
@@ -641,8 +759,7 @@ public sealed class AccountLoginProxyCoordinator
             }
             finally
             {
-                if (state.OwnedWarpProxyId is > 0)
-                    _store.ReleaseWarpProxyClaim(state.OwnedWarpProxyId.Value);
+                ReleaseFrozenWarpProxyClaim(state);
                 _store.ReleasePhoneClaim(loginId);
                 _store.ReleaseLoginClaim(loginId);
             }
@@ -685,8 +802,7 @@ public sealed class AccountLoginProxyCoordinator
         }
         finally
         {
-            if (state.OwnedWarpProxyId is > 0)
-                _store.ReleaseWarpProxyClaim(state.OwnedWarpProxyId.Value);
+            ReleaseFrozenWarpProxyClaim(state);
             if (completed)
                 _store.ReleasePhoneClaim(loginId);
             _store.ReleaseLoginClaim(loginId);
@@ -722,8 +838,7 @@ public sealed class AccountLoginProxyCoordinator
         }
         finally
         {
-            if (state.OwnedWarpProxyId is > 0)
-                _store.ReleaseWarpProxyClaim(state.OwnedWarpProxyId.Value);
+            ReleaseFrozenWarpProxyClaim(state);
             if (completed)
                 _store.ReleasePhoneClaim(state.LoginId);
             _store.ReleaseLoginClaim(state.LoginId);
@@ -734,6 +849,12 @@ public sealed class AccountLoginProxyCoordinator
     {
         await _accountService.CancelQrLoginStrictAsync(loginId);
         await _accountService.ReleaseClientStrictAsync(loginId);
+    }
+
+    private void ReleaseFrozenWarpProxyClaim(AccountLoginProxyState state)
+    {
+        if (AccountLoginProxyStateStore.GetFrozenWarpProxyId(state) is { } proxyId)
+            _store.ReleaseWarpProxyClaim(proxyId);
     }
 
     private async Task ReleaseStateResourcesAsync(

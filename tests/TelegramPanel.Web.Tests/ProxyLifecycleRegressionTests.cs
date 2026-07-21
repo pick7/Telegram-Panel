@@ -949,6 +949,54 @@ public sealed class ProxyLifecycleRegressionTests
     }
 
     [Fact]
+    public async Task 全池失效会拒绝并发创建的旧出口客户端写回()
+    {
+        var resolver = new BlockingProxyResolver();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Telegram:Proxy:Enabled"] = "true",
+                ["Telegram:Proxy:Protocol"] = "socks5",
+                ["Telegram:Proxy:Server"] = "127.0.0.1",
+                ["Telegram:Proxy:Port"] = "1080"
+            })
+            .Build();
+        using var pool = new TelegramClientPool(
+            configuration,
+            NullLogger<TelegramClientPool>.Instance,
+            new TelegramAccountUpdateHub(),
+            resolver,
+            new SessionPathResolver(configuration));
+        var sessionPath = Path.Combine(
+            Path.GetTempPath(),
+            $"telegram-panel-pool-generation-{Guid.NewGuid():N}.session");
+
+        try
+        {
+            var createTask = pool.GetOrCreateClientAsync(
+                9004,
+                12345,
+                "0123456789abcdef0123456789abcdef",
+                sessionPath,
+                sessionKey: "0123456789abcdef0123456789abcdef",
+                phoneNumber: "8613800000004");
+            await resolver.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await pool.RemoveAllClientsAsync();
+            resolver.Release();
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => createTask);
+            Assert.Contains("旧出口", error.Message);
+            Assert.Null(pool.GetClient(9004));
+        }
+        finally
+        {
+            resolver.Release();
+            TryDelete(sessionPath);
+        }
+    }
+
+    [Fact]
     public async Task 客户端池收到全局模式但配置缺失时会在构造客户端前闭锁()
     {
         var resolver = new FixedProxyResolver(new AccountProxyResolution(null, true));

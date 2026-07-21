@@ -26,6 +26,9 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     private readonly IAccountProxyResolver _proxyResolver;
     private readonly ISessionPathResolver _sessionPathResolver;
     private readonly object _lifecycleGate = new();
+    private readonly SemaphoreSlim _removeAllLock = new(1, 1);
+    private long _poolGeneration;
+    private bool _clientCreationBlocked;
     private volatile bool _disposed;
     private static int _wtelegramLogConfigured;
     private readonly ConcurrentDictionary<int, UpdateManager> _updateManagers = new();
@@ -107,22 +110,37 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 
         try
         {
-            // 双重检查
-            if (_clients.TryGetValue(accountId, out existingClient) && existingClient.User != null)
+            long creationGeneration;
+            lock (_lifecycleGate)
             {
-                if (proxyOverride != null)
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (_clientCreationBlocked)
                 {
                     throw new InvalidOperationException(
-                        $"登录临时 ID {accountId} 已被现有客户端占用，已阻止复用未知出口");
+                        "Telegram 客户端池正在严格清理旧出口，已阻止创建新连接");
                 }
 
-                return existingClient;
+                creationGeneration = _poolGeneration;
+
+                // 读取现有客户端必须和全池失效操作使用同一把生命周期锁。
+                // 这样返回发生在失效前时一定会进入清理快照，失效后则直接闭锁。
+                if (_clients.TryGetValue(accountId, out existingClient)
+                    && existingClient.User != null)
+                {
+                    if (proxyOverride != null)
+                    {
+                        throw new InvalidOperationException(
+                            $"登录临时 ID {accountId} 已被现有客户端占用，已阻止复用未知出口");
+                    }
+
+                    return existingClient;
+                }
             }
 
             // 客户端存在但未登录，移除并重新创建。这里不能调用
             // RemoveClientAsync，否则会在同一个账号锁上发生异步重入死锁。
             if (_clients.ContainsKey(accountId))
-                await RemoveClientCoreAsync(accountId);
+                await RemoveClientCoreAsync(accountId, throwOnDisposeFailure: true);
 
             _logger.LogInformation("Creating new Telegram client for account {AccountId}", accountId);
 
@@ -183,9 +201,11 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             };
 
             var accepted = false;
+            var staleGeneration = false;
             lock (_lifecycleGate)
             {
-                if (!_disposed)
+                staleGeneration = creationGeneration != _poolGeneration;
+                if (!_disposed && !_clientCreationBlocked && !staleGeneration)
                 {
                     _updateManagers[accountId] = updateManager;
                     _clients[accountId] = client;
@@ -196,6 +216,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             if (!accepted)
             {
                 await client.DisposeAsync();
+                if (!_disposed)
+                {
+                    throw new InvalidOperationException(
+                        staleGeneration
+                            ? "全局连接配置已刷新，本次旧出口客户端创建已取消"
+                            : "Telegram 客户端池正在严格清理旧出口，已阻止旧连接写回");
+                }
                 throw new ObjectDisposedException(nameof(TelegramClientPool));
             }
             return client;
@@ -208,10 +235,54 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
 
     public async Task RemoveAllClientsAsync()
     {
-        var accountIds = _clients.Keys.ToArray();
-        foreach (var accountId in accountIds)
+        await _removeAllLock.WaitAsync();
+        try
         {
-            await RemoveClientAsync(accountId);
+            int[] accountIds;
+            lock (_lifecycleGate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                _clientCreationBlocked = true;
+                _poolGeneration++;
+                accountIds = _clients.Keys.ToArray();
+            }
+
+            var failures = new List<Exception>();
+            foreach (var accountId in accountIds)
+            {
+                try
+                {
+                    await RemoveClientStrictAsync(accountId);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(ex);
+                }
+            }
+
+            lock (_lifecycleGate)
+            {
+                if (failures.Count == 0 && _clients.IsEmpty)
+                {
+                    _clientCreationBlocked = false;
+                }
+                else if (failures.Count == 0)
+                {
+                    failures.Add(new InvalidOperationException(
+                        "严格清理完成后仍检测到旧 Telegram 客户端"));
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"有 {failures.Count} 个旧 Telegram 客户端无法确认已断开，客户端池已保持闭锁",
+                    new AggregateException(failures));
+            }
+        }
+        finally
+        {
+            _removeAllLock.Release();
         }
     }
 
@@ -280,19 +351,10 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         Client? client;
         lock (_lifecycleGate)
         {
-            if (throwOnDisposeFailure)
-            {
-                // 严格释放必须在确认 DisposeAsync 成功后才能移除引用。
-                // 若释放失败，保留客户端以便下次重试，禁止调用方误以为旧出口已断开。
-                if (!_clients.TryGetValue(accountId, out client))
-                    return;
-            }
-            else
-            {
-                _updateManagers.TryRemove(accountId, out _);
-                if (!_clients.TryRemove(accountId, out client))
-                    return;
-            }
+            // 所有释放路径都必须先保留引用，直到 DisposeAsync 确认成功。
+            // 非严格清理可以不抛异常，但不能让随后执行的严格全池清理漏掉旧连接。
+            if (!_clients.TryGetValue(accountId, out client))
+                return;
         }
 
         _logger.LogInformation("Removing Telegram client for account {AccountId}", accountId);
@@ -300,16 +362,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         try
         {
             await client.DisposeAsync();
-            if (throwOnDisposeFailure)
+            lock (_lifecycleGate)
             {
-                lock (_lifecycleGate)
+                if (_clients.TryGetValue(accountId, out var current)
+                    && ReferenceEquals(current, client))
                 {
-                    if (_clients.TryGetValue(accountId, out var current)
-                        && ReferenceEquals(current, client))
-                    {
-                        _clients.TryRemove(accountId, out _);
-                        _updateManagers.TryRemove(accountId, out _);
-                    }
+                    _clients.TryRemove(accountId, out _);
+                    _updateManagers.TryRemove(accountId, out _);
                 }
             }
         }

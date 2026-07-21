@@ -134,6 +134,9 @@ ports:
 确认旧出口已停止后才提交新路由。任一步骤失败时账号保持停用，避免出现“先直连、后补代理”
 或内存客户端仍沿用旧 IP 的情况。
 
+Telegram 全局代理可以直接在“代理管理 → 全局代理”中启用并配置 HTTP、
+SOCKS5 或 MTProxy；保存后立即重载配置并清理客户端缓存，不需要手工编辑配置文件或重启。
+
 #### 启用 WARP 一键创建（可选）
 
 普通代理与 Resin 不需要 Docker Socket。只有需要面板创建独立 WARP 容器时，才显式叠加受管 WARP 配置：
@@ -152,6 +155,9 @@ TP_WARP_PROXY_PROTOCOL=socks5
 `TP_WARP_PROXY_PROTOCOL` 用于导入、登录和批量绑定自动创建 WARP 时的默认协议，可选
 `http` 或 `socks5`，未设置时默认 `http`。WARP 镜像的 GOST 监听端口同时支持
 HTTP 与 SOCKS5；代理管理中的一键创建弹窗还可以只覆盖本次创建的协议。
+
+**每创建一个 WARP 都会启动一个独立 Docker 容器并保留独立数据卷。**批量导入选择
+“每账号独立 WARP”时，N 个账号会创建 N 个容器；请按服务器内存和 CPU 余量控制数量。
 
 默认 `container` 模式不会占用宿主机端口。若自定义为 `published` 模式，面板会从
 `Proxy:Warp:HostPortStart`（默认 `42080`）开始向后寻找可用端口；即使端口在 Docker

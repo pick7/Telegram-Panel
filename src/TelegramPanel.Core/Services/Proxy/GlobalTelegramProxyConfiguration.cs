@@ -21,11 +21,18 @@ public static class GlobalTelegramProxyConfiguration
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
+        var enabledText = (configuration["Telegram:Proxy:Enabled"] ?? string.Empty).Trim();
+        bool? explicitlyEnabled = bool.TryParse(enabledText, out var enabled) ? enabled : null;
+        if (explicitlyEnabled == false)
+            return null;
+
         var host = (configuration["Telegram:Proxy:Server"] ?? string.Empty)
             .Trim()
             .Trim('[', ']');
         var portText = (configuration["Telegram:Proxy:Port"] ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(host) && string.IsNullOrWhiteSpace(portText))
+        if (explicitlyEnabled != true
+            && string.IsNullOrWhiteSpace(host)
+            && string.IsNullOrWhiteSpace(portText))
             return null;
         if (string.IsNullOrWhiteSpace(host)
             || !int.TryParse(portText, out var port)
@@ -35,16 +42,27 @@ public static class GlobalTelegramProxyConfiguration
         }
 
         var secret = NormalizeOptional(configuration["Telegram:Proxy:Secret"]);
+        var configuredProtocol = NormalizeOptional(configuration["Telegram:Proxy:Protocol"])
+            ?.ToLowerInvariant();
+        var protocol = configuredProtocol
+                       ?? (secret == null
+                           ? OutboundProxyProtocols.Socks5
+                           : OutboundProxyProtocols.MtProto);
+        if (!OutboundProxyProtocols.IsSupported(protocol))
+            throw new InvalidOperationException("Telegram 全局代理协议无效，仅支持 http、socks5 或 mtproto");
+        if (protocol == OutboundProxyProtocols.MtProto && secret == null)
+            throw new InvalidOperationException("Telegram 全局 MTProxy 缺少 Secret");
+
         return new ProxyConnectionOptions(
             0,
             "Telegram 全局代理",
             OutboundProxyKinds.Manual,
-            secret == null ? OutboundProxyProtocols.Socks5 : OutboundProxyProtocols.MtProto,
+            protocol,
             host,
             port,
             NormalizeOptional(configuration["Telegram:Proxy:Username"]),
             NormalizeOptional(configuration["Telegram:Proxy:Password"]),
-            secret);
+            protocol == OutboundProxyProtocols.MtProto ? secret : null);
     }
 
     private static string? NormalizeOptional(string? value) =>

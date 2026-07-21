@@ -40,6 +40,11 @@
       <div class="toolbar">
         <el-button type="primary" :icon="CirclePlus" @click="openCreate">新增代理</el-button>
         <el-button :icon="Upload" @click="openImportDialog">批量导入</el-button>
+        <el-tooltip :content="globalProxyHelp" placement="top">
+          <el-button :icon="Setting" :loading="globalProxyLoading" @click="openGlobalProxyDialog">
+            全局代理 · {{ globalProxyLabel }}
+          </el-button>
+        </el-tooltip>
         <el-button
           type="success"
           :icon="MagicStick"
@@ -64,6 +69,7 @@
           <el-tag :type="warpStatusType" size="small">{{ warpStatusText }}</el-tag>
         </div>
       </div>
+      <div v-if="globalProxyError" class="runtime-error">全局代理：{{ globalProxyError }}</div>
       <div v-if="warpStatusError || warpStatus?.error" class="runtime-error">{{ warpStatusError || warpStatus?.error }}</div>
       <div v-if="maintenance && warpStatus?.enabled" class="warp-maintenance" aria-label="WARP 自动维护状态">
         <div class="maintenance-state">
@@ -91,6 +97,104 @@
         </div>
       </div>
     </el-card>
+
+    <el-dialog
+      v-model="globalProxyDialog.visible"
+      title="账号全局代理设置"
+      width="min(560px, calc(100vw - 24px))"
+      :before-close="beforeGlobalProxyDialogClose"
+      :close-on-click-modal="!globalProxyDialog.saving"
+      :close-on-press-escape="!globalProxyDialog.saving"
+      :show-close="!globalProxyDialog.saving"
+      @closed="resetGlobalProxyDialog"
+    >
+      <el-alert
+        class="mb-3"
+        type="info"
+        :closable="false"
+        show-icon
+        title="这是账号选择“全局代理”时使用的统一出口"
+        description="保存后会清理现有 Telegram 客户端连接；账号下次连接会从一开始使用新代理，不会先直连再切换。账号专属代理仍然优先。"
+      />
+      <el-form :model="globalProxyDialog.form" label-position="top" :disabled="globalProxyDialog.saving">
+        <el-switch v-model="globalProxyDialog.form.enabled" active-text="启用账号全局代理" />
+        <template v-if="globalProxyDialog.form.enabled">
+          <el-form-item label="代理协议" class="mt-3" required>
+            <el-radio-group v-model="globalProxyDialog.form.protocol">
+              <el-radio-button value="http">HTTP</el-radio-button>
+              <el-radio-button value="socks5">SOCKS5</el-radio-button>
+              <el-radio-button value="mtproto">MTProxy</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <div class="form-grid">
+            <el-form-item label="代理主机" required>
+              <el-input v-model="globalProxyDialog.form.server" maxlength="253" placeholder="proxy.example.com" />
+            </el-form-item>
+            <el-form-item label="端口" required>
+              <el-input-number
+                v-model="globalProxyDialog.form.port"
+                :min="1"
+                :max="65535"
+                controls-position="right"
+                class="full"
+              />
+            </el-form-item>
+            <el-form-item v-if="globalProxyDialog.form.protocol !== 'mtproto'" label="用户名">
+              <el-input
+                v-model="globalProxyDialog.form.username"
+                autocomplete="off"
+                maxlength="255"
+                placeholder="留空表示不使用用户名"
+              />
+            </el-form-item>
+            <el-form-item v-if="globalProxyDialog.form.protocol !== 'mtproto'" label="密码">
+              <div class="credential-field">
+                <el-input
+                  v-model="globalProxyDialog.form.password"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  maxlength="255"
+                  :disabled="globalProxyDialog.form.clearPassword"
+                  :placeholder="globalProxyDialog.hasPassword
+                    ? '留空保持原密码'
+                    : '留空表示不使用密码'"
+                />
+                <el-checkbox
+                  v-if="globalProxyDialog.hasPassword"
+                  v-model="globalProxyDialog.form.clearPassword"
+                >
+                  清除已保存的密码
+                </el-checkbox>
+              </div>
+            </el-form-item>
+          </div>
+          <el-form-item v-if="globalProxyDialog.form.protocol === 'mtproto'" label="MTProxy Secret" required>
+            <el-input
+              v-model="globalProxyDialog.form.secret"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              maxlength="500"
+              :placeholder="globalProxyDialog.hasSecret ? '留空保持原 Secret' : '请输入 MTProxy Secret'"
+            />
+          </el-form-item>
+        </template>
+        <el-alert
+          v-else
+          class="mt-3"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="停用后，选择“全局代理”的账号将无法连接"
+          description="系统会保持失败闭锁，不会静默回退到面板直连。请先给这些账号切换代理或明确选择直连。"
+        />
+      </el-form>
+      <template #footer>
+        <el-button :disabled="globalProxyDialog.saving" @click="closeGlobalProxyDialog">取消</el-button>
+        <el-button type="primary" :loading="globalProxyDialog.saving" @click="saveGlobalProxy">保存</el-button>
+      </template>
+    </el-dialog>
 
     <el-card shadow="never" class="page-card mt-4">
       <el-table v-loading="loading" :data="proxies" stripe row-key="id" class="proxy-table">
@@ -390,6 +494,14 @@
       :show-close="!warpDialog.creating"
     >
       <el-form label-position="top" :disabled="warpDialog.creating">
+        <el-alert
+          class="mb-3"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="每创建一个 WARP，都会启动一个独立 Docker 容器"
+          description="每个容器还会保留独立数据卷，并持续占用服务器内存与少量 CPU；请根据服务器资源控制创建数量。"
+        />
         <el-form-item label="代理名称">
           <el-input v-model="warpDialog.name" maxlength="80" placeholder="留空自动命名" />
         </el-form-item>
@@ -430,16 +542,19 @@ import {
   MagicStick,
   Refresh,
   RefreshRight,
+  Setting,
   Upload,
   VideoPlay,
 } from '@element-plus/icons-vue'
 import { panelApi } from '@/api/panel'
 import type {
+  GlobalProxySettings,
   NetworkEgress,
   OutboundProxy,
   ProxyKind,
   ProxyProtocol,
   SaveOutboundProxyRequest,
+  SaveGlobalProxySettingsRequest,
   WarpProxyProtocol,
   WarpRuntimeStatus,
 } from '@/api/types'
@@ -451,6 +566,9 @@ const egressLoading = ref(false)
 const proxies = ref<OutboundProxy[]>([])
 const panelEgress = ref<NetworkEgress | null>(null)
 const panelEgressError = ref('')
+const globalProxy = ref<GlobalProxySettings | null>(null)
+const globalProxyLoading = ref(false)
+const globalProxyError = ref('')
 const warpStatus = ref<WarpRuntimeStatus | null>(null)
 const warpStatusError = ref('')
 const testingIds = reactive(new Set<number>())
@@ -461,12 +579,32 @@ const AUTO_STATUS_REFRESH_MS = 30_000
 let autoStatusRefreshTimer: ReturnType<typeof setInterval> | null = null
 let proxyListOperationToken = 0
 let panelEgressOperationToken = 0
+let globalProxyOperationToken = 0
 let warpStatusOperationToken = 0
 let proxySaveOperationToken = 0
 let proxyImportOperationToken = 0
 let warpCreateOperationToken = 0
 
 type DialogCloseDone = () => void
+
+const blankGlobalProxyForm = (): SaveGlobalProxySettingsRequest => ({
+  enabled: false,
+  protocol: 'socks5',
+  server: '',
+  port: 1080,
+  username: '',
+  password: '',
+  secret: '',
+  clearPassword: false,
+})
+
+const globalProxyDialog = reactive({
+  visible: false,
+  saving: false,
+  hasPassword: false,
+  hasSecret: false,
+  form: blankGlobalProxyForm(),
+})
 
 const blankProxyForm = (): SaveOutboundProxyRequest => ({
   name: '',
@@ -518,6 +656,17 @@ const warpUnavailable = computed(() => !warpStatus.value
 
 const maintenance = computed(() => warpStatus.value?.maintenance ?? null)
 const hasEnabledWarp = computed(() => proxies.value.some((proxy) => proxy.kind === 'warp' && proxy.isEnabled))
+const globalProxyLabel = computed(() => {
+  if (globalProxyLoading.value && !globalProxy.value) return '读取中'
+  if (globalProxyError.value) return '读取失败'
+  if (!globalProxy.value?.enabled) return '未启用'
+  return protocolLabel(globalProxy.value.protocol)
+})
+const globalProxyHelp = computed(() => {
+  if (globalProxyError.value) return globalProxyError.value
+  if (!globalProxy.value?.enabled) return '尚未启用账号全局代理，点击进行配置'
+  return `${protocolLabel(globalProxy.value.protocol)} · ${globalProxy.value.server}:${globalProxy.value.port}`
+})
 
 const maintenanceStatusText = computed(() => {
   if (!maintenance.value?.enabled) return '自动维护未启用'
@@ -675,6 +824,12 @@ function beforeProxyDialogClose(done: DialogCloseDone) {
   done()
 }
 
+function beforeGlobalProxyDialogClose(done: DialogCloseDone) {
+  if (globalProxyDialog.saving) return
+  resetGlobalProxyDialog()
+  done()
+}
+
 function beforeImportDialogClose(done: DialogCloseDone) {
   if (importDialog.importing) return
   resetImportDialog()
@@ -713,6 +868,25 @@ async function loadPanelEgress() {
   }
 }
 
+async function loadGlobalProxy(showLoading = true) {
+  const operationToken = ++globalProxyOperationToken
+  if (showLoading) globalProxyLoading.value = true
+  globalProxyError.value = ''
+  try {
+    const result = await panelApi.globalProxySettings()
+    if (operationToken !== globalProxyOperationToken) return false
+    globalProxy.value = result
+    return true
+  } catch (error) {
+    if (operationToken === globalProxyOperationToken) {
+      globalProxyError.value = error instanceof Error ? error.message : '无法读取全局代理配置'
+    }
+    return false
+  } finally {
+    if (operationToken === globalProxyOperationToken) globalProxyLoading.value = false
+  }
+}
+
 async function loadWarpStatus() {
   const operationToken = ++warpStatusOperationToken
   warpStatusError.value = ''
@@ -728,7 +902,7 @@ async function loadWarpStatus() {
 }
 
 async function refreshAll() {
-  await Promise.allSettled([loadProxies(), loadWarpStatus()])
+  await Promise.allSettled([loadProxies(), loadGlobalProxy(), loadWarpStatus()])
 }
 
 async function refreshWarp(proxy: OutboundProxy) {
@@ -782,6 +956,75 @@ async function refreshAllWarps() {
   } finally {
     await Promise.allSettled([loadProxies(), loadWarpStatus()])
     refreshingAllWarps.value = false
+  }
+}
+
+async function openGlobalProxyDialog() {
+  if (globalProxyDialog.saving) return
+  if (!await loadGlobalProxy()) {
+    ElMessage.error(globalProxyError.value || '无法读取全局代理配置，请稍后重试')
+    return
+  }
+  const current = globalProxy.value
+  globalProxyDialog.hasPassword = Boolean(current?.hasPassword)
+  globalProxyDialog.hasSecret = Boolean(current?.hasSecret)
+  globalProxyDialog.form = current
+    ? {
+        enabled: current.enabled,
+        protocol: current.protocol,
+        server: current.server || '',
+        port: current.port || 1080,
+        username: current.username || '',
+        password: '',
+        secret: '',
+        clearPassword: false,
+      }
+    : blankGlobalProxyForm()
+  globalProxyDialog.visible = true
+}
+
+function resetGlobalProxyDialog() {
+  globalProxyDialog.hasPassword = false
+  globalProxyDialog.hasSecret = false
+  globalProxyDialog.form = blankGlobalProxyForm()
+}
+
+function closeGlobalProxyDialog() {
+  if (globalProxyDialog.saving) return
+  resetGlobalProxyDialog()
+  globalProxyDialog.visible = false
+}
+
+async function saveGlobalProxy() {
+  if (globalProxyDialog.saving) return
+  const form = { ...globalProxyDialog.form }
+  if (form.enabled) {
+    if (!form.server.trim() || form.port < 1 || form.port > 65535) {
+      ElMessage.warning('请填写有效的全局代理主机和端口')
+      return
+    }
+    if (form.protocol === 'mtproto' && !form.secret.trim() && !globalProxyDialog.hasSecret) {
+      ElMessage.warning('请填写 MTProxy Secret')
+      return
+    }
+  }
+
+  const payload: SaveGlobalProxySettingsRequest = {
+    ...form,
+    server: form.server.trim(),
+    username: form.username.trim(),
+    password: form.password.trim(),
+    secret: form.secret.trim(),
+  }
+  globalProxyDialog.saving = true
+  try {
+    const result = await panelApi.saveGlobalProxySettings(payload)
+    ElMessage.success(result.message || (payload.enabled ? '全局代理已保存' : '全局代理已停用'))
+    globalProxyDialog.visible = false
+    resetGlobalProxyDialog()
+    await loadGlobalProxy()
+  } finally {
+    globalProxyDialog.saving = false
   }
 }
 
@@ -1009,7 +1252,7 @@ async function createWarp() {
 }
 
 onMounted(() => {
-  void Promise.allSettled([loadProxies(), loadPanelEgress(), loadWarpStatus()])
+  void Promise.allSettled([loadProxies(), loadPanelEgress(), loadGlobalProxy(), loadWarpStatus()])
   autoStatusRefreshTimer = setInterval(() => {
     if (document.visibilityState !== 'visible'
       || refreshingAllWarps.value

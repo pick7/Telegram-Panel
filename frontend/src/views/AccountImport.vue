@@ -58,6 +58,9 @@
       <div v-else-if="proxyStrategy === 'global'" class="proxy-route-notice warning">
         仅在已配置全局代理时可用；未配置会在首次连接前拒绝，请改选已有代理、WARP 或明确直连。
       </div>
+      <div v-else-if="proxyStrategy === 'warp_per_account'" class="proxy-route-notice warning">
+        每个账号都会创建一个独立 Docker 容器和数据卷；批量导入会按账号数量持续占用服务器内存与 CPU。
+      </div>
     </section>
 
     <el-card shadow="never" class="page-card import-card import-card-primary">

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -134,6 +135,8 @@ public static class PanelAdminApiEndpoints
         secured.MapPost("/version-info/apply", ApplyVersionUpdateAsync);
         secured.MapPost("/system/restart", RestartSystemAsync);
         secured.MapPost("/settings/telegram-api", SaveTelegramApiSettingsAsync);
+        secured.MapGet("/settings/global-proxy", GetGlobalProxySettings);
+        secured.MapPost("/settings/global-proxy", SaveGlobalProxySettingsAsync);
         secured.MapPost("/settings/cloud-mail", SaveCloudMailSettingsAsync);
         secured.MapPost("/settings/cloud-mail/token", GenerateCloudMailTokenAsync);
         secured.MapPost("/settings/ai", SaveAiSettingsAsync);
@@ -2204,6 +2207,7 @@ public static class PanelAdminApiEndpoints
             LocalConfigPath: localPath,
             LocalConfigExists: File.Exists(localPath),
             Telegram: new TelegramApiSettingsDto(configuration["Telegram:ApiId"] ?? "", configuration["Telegram:ApiHash"] ?? ""),
+            GlobalProxy: ReadGlobalProxySettings(configuration),
             CloudMail: new CloudMailSettingsDto(configuration["CloudMail:BaseUrl"] ?? "", configuration["CloudMail:Domain"] ?? "", configuration["CloudMail:Token"] ?? ""),
             Ai: new AiSettingsDto(
                 configuration["AI:OpenAI:Endpoint"] ?? "",
@@ -2271,6 +2275,146 @@ public static class PanelAdminApiEndpoints
         await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
         await telegramClientPool.RemoveAllClientsAsync();
         return Results.Ok(new OperationResultDto(true, "API 配置已保存，Telegram 客户端缓存已清理"));
+    }
+
+    private static GlobalProxySettingsDto ReadGlobalProxySettings(IConfiguration configuration)
+    {
+        var server = (configuration["Telegram:Proxy:Server"] ?? string.Empty).Trim();
+        var portText = (configuration["Telegram:Proxy:Port"] ?? string.Empty).Trim();
+        var secret = (configuration["Telegram:Proxy:Secret"] ?? string.Empty).Trim();
+        var configuredProtocol = (configuration["Telegram:Proxy:Protocol"] ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant();
+        bool? configuredEnabled = bool.TryParse(
+            configuration["Telegram:Proxy:Enabled"],
+            out var enabled)
+            ? enabled
+            : null;
+        var protocol = OutboundProxyProtocols.IsSupported(configuredProtocol)
+            ? configuredProtocol
+            : string.IsNullOrWhiteSpace(secret)
+                ? OutboundProxyProtocols.Socks5
+                : OutboundProxyProtocols.MtProto;
+
+        return new GlobalProxySettingsDto(
+            Enabled: configuredEnabled
+                     ?? (!string.IsNullOrWhiteSpace(server) || !string.IsNullOrWhiteSpace(portText)),
+            Protocol: protocol,
+            Server: server,
+            Port: int.TryParse(portText, out var port) ? port : 0,
+            Username: configuration["Telegram:Proxy:Username"] ?? string.Empty,
+            HasPassword: protocol != OutboundProxyProtocols.MtProto
+                         && !string.IsNullOrWhiteSpace(configuration["Telegram:Proxy:Password"]),
+            HasSecret: protocol == OutboundProxyProtocols.MtProto
+                       && !string.IsNullOrWhiteSpace(secret));
+    }
+
+    private static IResult GetGlobalProxySettings(IConfiguration configuration) =>
+        Results.Ok(ReadGlobalProxySettings(configuration));
+
+    internal static async Task<IResult> SaveGlobalProxySettingsAsync(
+        SaveGlobalProxySettingsRequestDto request,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        ITelegramClientPool telegramClientPool,
+        CancellationToken cancellationToken)
+    {
+        var root = await LoadLocalConfigRootAsync(LocalConfigFile.ResolvePath(configuration, environment));
+        var telegram = EnsureObject(root, "Telegram");
+
+        if (!request.Enabled)
+        {
+            var disabledProxy = EnsureObject(telegram, "Proxy");
+            disabledProxy["Enabled"] = false;
+            await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
+            ReloadConfiguration(configuration);
+            await telegramClientPool.RemoveAllClientsAsync();
+            return Results.Ok(new OperationResultDto(true, "全局代理已关闭，Telegram 客户端缓存已清理"));
+        }
+
+        var protocol = (request.Protocol ?? string.Empty).Trim().ToLowerInvariant();
+        if (!OutboundProxyProtocols.IsSupported(protocol))
+            return Results.BadRequest(new OperationResultDto(false, "全局代理协议仅支持 http、socks5 或 mtproto"));
+
+        var server = (request.Server ?? string.Empty).Trim().Trim('[', ']');
+        if (server.Length is 0 or > 253
+            || server.Any(char.IsControl)
+            || server.Any(char.IsWhiteSpace)
+            || server.Contains('/')
+            || server.Contains('@'))
+        {
+            return Results.BadRequest(new OperationResultDto(false, "全局代理主机格式无效"));
+        }
+        server = server.ToLowerInvariant();
+        if (request.Port is < 1 or > 65535)
+            return Results.BadRequest(new OperationResultDto(false, "全局代理端口必须在 1-65535 之间"));
+
+        var username = (request.Username ?? string.Empty).Trim();
+        var current = ReadGlobalProxySettings(configuration);
+        var submittedPassword = (request.Password ?? string.Empty).Trim();
+        if (Encoding.UTF8.GetByteCount(username) > 255
+            || Encoding.UTF8.GetByteCount(submittedPassword) > 255)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                "全局代理用户名或密码不能超过 255 个 UTF-8 字节"));
+        }
+
+        var submittedSecret = (request.Secret ?? string.Empty).Trim();
+        if (submittedSecret.Length > 500)
+            return Results.BadRequest(new OperationResultDto(false, "MTProxy Secret 不能超过 500 个字符"));
+        if (protocol == OutboundProxyProtocols.MtProto
+            && string.IsNullOrWhiteSpace(submittedSecret)
+            && !current.HasSecret)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "MTProxy 必须填写 Secret"));
+        }
+
+        var proxy = EnsureObject(telegram, "Proxy");
+        proxy["Enabled"] = true;
+        proxy["Protocol"] = protocol;
+        proxy["Server"] = server;
+        proxy["Port"] = request.Port;
+        if (protocol == OutboundProxyProtocols.MtProto)
+        {
+            proxy.Remove("Username");
+            proxy.Remove("Password");
+            if (!string.IsNullOrWhiteSpace(submittedSecret))
+                proxy["Secret"] = submittedSecret;
+        }
+        else
+        {
+            proxy["Username"] = username;
+            if (request.ClearPassword)
+            {
+                // 写入空值才能覆盖仍存在的环境变量凭据。
+                proxy["Password"] = string.Empty;
+            }
+            else if (!string.IsNullOrWhiteSpace(submittedPassword))
+            {
+                proxy["Password"] = submittedPassword;
+            }
+            else if (current.Protocol == OutboundProxyProtocols.MtProto)
+            {
+                // 从 MTProxy 切换时不要激活此前被忽略的上游密码。
+                proxy["Password"] = string.Empty;
+            }
+
+            // 留空保持时不读取 IConfiguration 中的敏感值，避免把环境变量
+            // 密码物化到 appsettings.local.json；本地已有字段会原样保留。
+            proxy.Remove("Secret");
+        }
+
+        await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
+        ReloadConfiguration(configuration);
+        await telegramClientPool.RemoveAllClientsAsync();
+        return Results.Ok(new OperationResultDto(true, "全局代理配置已保存，Telegram 客户端缓存已清理"));
+    }
+
+    private static void ReloadConfiguration(IConfiguration configuration)
+    {
+        if (configuration is IConfigurationRoot root)
+            root.Reload();
     }
 
     private static async Task<IResult> SaveCloudMailSettingsAsync(CloudMailSettingsDto request, IConfiguration configuration, IWebHostEnvironment environment, CancellationToken cancellationToken)
@@ -7342,6 +7486,7 @@ public sealed record SettingsDto(
     string LocalConfigPath,
     bool LocalConfigExists,
     TelegramApiSettingsDto Telegram,
+    GlobalProxySettingsDto GlobalProxy,
     CloudMailSettingsDto CloudMail,
     AiSettingsDto Ai,
     BatchSettingsDto Batch,
@@ -7378,6 +7523,23 @@ public sealed record VersionApplyResultDto(
     string? LatestVersion);
 
 public sealed record TelegramApiSettingsDto(string ApiId, string ApiHash);
+public sealed record GlobalProxySettingsDto(
+    bool Enabled,
+    string? Protocol,
+    string? Server,
+    int Port,
+    string? Username,
+    bool HasPassword,
+    bool HasSecret);
+public sealed record SaveGlobalProxySettingsRequestDto(
+    bool Enabled,
+    string? Protocol,
+    string? Server,
+    int Port,
+    string? Username,
+    string? Password,
+    string? Secret,
+    bool ClearPassword = false);
 public sealed record CloudMailSettingsDto(string BaseUrl, string Domain, string Token);
 public sealed record GenerateCloudMailTokenRequestDto(string? BaseUrl, string? AdminEmail, string? AdminPassword);
 public sealed record CloudMailTokenResultDto(string Token);

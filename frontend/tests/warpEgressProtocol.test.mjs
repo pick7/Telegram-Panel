@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const proxiesSource = await readFile(new URL('../src/views/Proxies.vue', import.meta.url), 'utf8')
+const accountLoginSource = await readFile(new URL('../src/views/AccountLogin.vue', import.meta.url), 'utf8')
+const accountImportSource = await readFile(new URL('../src/views/AccountImport.vue', import.meta.url), 'utf8')
 const dashboardSource = await readFile(new URL('../src/views/Dashboard.vue', import.meta.url), 'utf8')
 const typesSource = await readFile(new URL('../src/api/types.ts', import.meta.url), 'utf8')
 const egressUtilSource = await readFile(new URL('../src/utils/networkEgress.ts', import.meta.url), 'utf8')
@@ -31,4 +33,13 @@ test('一键创建 WARP 支持默认协议和单次 HTTP SOCKS5 覆盖', () => {
   assert.match(proxiesSource, /value="socks5">SOCKS5/)
   assert.match(proxiesSource, /warpStatus\.value\?\.defaultProtocol === 'socks5'/)
   assert.match(proxiesSource, /protocol: warpDialog\.protocol/)
+})
+
+test('一键创建 WARP 明确提示独立容器的资源消耗', () => {
+  assert.match(proxiesSource, /每创建一个 WARP，都会启动一个独立 Docker 容器/)
+  assert.match(proxiesSource, /持续占用服务器内存与少量 CPU/)
+  assert.match(proxiesSource, /根据服务器资源控制创建数量/)
+  assert.match(accountLoginSource, /本次登录会创建一个独立 Docker 容器和数据卷/)
+  assert.match(accountImportSource, /每个账号都会创建一个独立 Docker 容器和数据卷/)
+  assert.match(accountImportSource, /批量导入会按账号数量持续占用服务器内存与 CPU/)
 })

@@ -55,7 +55,8 @@ public interface ITelegramClientPool
     Task RemoveClientStrictAsync(int accountId) => RemoveClientAsync(accountId);
 
     /// <summary>
-    /// 移除并断开所有客户端连接（用于配置变更后强制重建）
+    /// 严格移除并断开所有客户端连接（用于配置变更后强制重建）。
+    /// 实现必须阻止旧配置下正在创建的客户端写回，并在任一释放失败时报告错误。
     /// </summary>
     Task RemoveAllClientsAsync();
 

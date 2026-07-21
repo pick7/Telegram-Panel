@@ -41,6 +41,8 @@ import type {
   ExternalApiDefinition,
   GroupDetail,
   GroupListItem,
+  GlobalProxySettings,
+  SaveGlobalProxySettingsRequest,
   LinkResult,
   OperationAccount,
   PagedResult,
@@ -281,6 +283,10 @@ export const panelApi = {
   settings: () => api.get<SettingsPayload>('/settings').then((r) => r.data),
   saveTelegramApiSettings: (payload: TelegramApiSettings) =>
     api.post<OperationResult>('/settings/telegram-api', payload).then((r) => r.data),
+  globalProxySettings: () =>
+    api.get<GlobalProxySettings>('/settings/global-proxy').then((r) => r.data),
+  saveGlobalProxySettings: (payload: SaveGlobalProxySettingsRequest) =>
+    api.post<OperationResult>('/settings/global-proxy', payload).then((r) => r.data),
   saveCloudMailSettings: (payload: CloudMailSettings) =>
     api.post<OperationResult>('/settings/cloud-mail', payload).then((r) => r.data),
   generateCloudMailToken: (payload: { baseUrl: string; adminEmail: string; adminPassword: string }) =>

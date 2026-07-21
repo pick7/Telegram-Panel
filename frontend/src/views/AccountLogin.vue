@@ -61,6 +61,9 @@
         <div v-else-if="activeLoginId > 0" class="login-proxy-notice success">
           当前登录会话的出口已锁定；验证码、二维码和二级密码验证都会继续使用同一路由。
         </div>
+        <div v-else-if="proxyStrategy === 'warp_per_account'" class="login-proxy-notice warning">
+          本次登录会创建一个独立 Docker 容器和数据卷，并持续占用服务器内存与少量 CPU。
+        </div>
       </section>
 
       <template v-if="loginMode === 'qr'">

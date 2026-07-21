@@ -359,6 +359,7 @@ export interface SettingsPayload {
   localConfigPath: string
   localConfigExists: boolean
   telegram: TelegramApiSettings
+  globalProxy: GlobalProxySettings
   cloudMail: CloudMailSettings
   ai: AiSettings
   batch: BatchSettings
@@ -373,6 +374,27 @@ export interface SettingsPayload {
 export interface TelegramApiSettings {
   apiId: string
   apiHash: string
+}
+
+export interface GlobalProxySettings {
+  enabled: boolean
+  protocol: ProxyProtocol
+  server: string
+  port: number
+  username: string
+  hasPassword: boolean
+  hasSecret: boolean
+}
+
+export interface SaveGlobalProxySettingsRequest {
+  enabled: boolean
+  protocol: ProxyProtocol
+  server: string
+  port: number
+  username: string
+  password: string
+  secret: string
+  clearPassword: boolean
 }
 
 export interface CloudMailSettings {

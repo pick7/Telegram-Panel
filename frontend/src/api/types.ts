@@ -497,6 +497,7 @@ export interface VersionInfo {
   notes?: string | null
   checkedAtUtc: string
   isDocker: boolean
+  updateMode: UpdateMode
   canApply: boolean
   blockedReason?: string | null
   assetName?: string | null
@@ -509,6 +510,14 @@ export interface VersionApplyResult {
   restartScheduled: boolean
   latestTag?: string | null
   latestVersion?: string | null
+}
+
+export type UpdateMode = 'auto' | 'image' | 'binary'
+
+export interface UpdateModeResult {
+  success: boolean
+  mode: UpdateMode
+  message: string
 }
 
 export interface ImportResult {

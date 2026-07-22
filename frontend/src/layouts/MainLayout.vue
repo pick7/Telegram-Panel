@@ -128,6 +128,18 @@
       <el-descriptions :column="1" border size="small">
         <el-descriptions-item label="版本">v{{ versionInfo?.currentVersion || version || '-' }}</el-descriptions-item>
         <el-descriptions-item label="运行环境">{{ versionInfo?.isDocker ? 'Docker' : '非 Docker' }}</el-descriptions-item>
+        <el-descriptions-item label="更新方式">
+          <el-radio-group
+            v-model="versionDialog.updateMode"
+            size="small"
+            :disabled="versionDialog.modeSaving"
+            @change="saveUpdateMode"
+          >
+            <el-radio-button label="auto">自动选择</el-radio-button>
+            <el-radio-button label="image">Docker 镜像</el-radio-button>
+            <el-radio-button label="binary">容器内二进制</el-radio-button>
+          </el-radio-group>
+        </el-descriptions-item>
       </el-descriptions>
 
       <el-link class="mt-3" type="primary" href="https://github.com/moeacgx/Telegram-Panel" target="_blank">
@@ -205,7 +217,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { panelApi } from '@/api/panel'
-import type { ModuleNavItem, VersionInfo } from '@/api/types'
+import type { ModuleNavItem, UpdateMode, VersionInfo } from '@/api/types'
 import { formatTime } from '@/utils/format'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MenuIcon from '@/components/MenuIcon.vue'
@@ -226,6 +238,8 @@ const versionDialog = ref({
   loading: false,
   checking: false,
   updating: false,
+  modeSaving: false,
+  updateMode: 'auto' as UpdateMode,
 })
 
 const pageTitle = computed(() => (route.meta.title as string) || '')
@@ -441,11 +455,30 @@ async function refreshVersionInfo(forceRefresh: boolean) {
 
   try {
     versionInfo.value = forceRefresh ? await panelApi.checkVersionInfo() : await panelApi.versionInfo()
+    versionDialog.value.updateMode = versionInfo.value.updateMode || 'auto'
   } catch {
     if (forceRefresh || versionDialog.value.visible) ElMessage.warning('检查版本信息失败')
   } finally {
     versionDialog.value.checking = false
     versionDialog.value.loading = false
+  }
+}
+
+async function saveUpdateMode(mode: UpdateMode) {
+  if (versionDialog.value.modeSaving) return
+
+  versionDialog.value.modeSaving = true
+  try {
+    const result = await panelApi.updateVersionMode(mode)
+    versionDialog.value.updateMode = result.mode
+    ElMessage.success(result.message)
+    await refreshVersionInfo(true)
+    ElMessage.warning('更新方式已保存，重启面板后生效')
+  } catch {
+    await refreshVersionInfo(true)
+    ElMessage.error('更新方式保存失败')
+  } finally {
+    versionDialog.value.modeSaving = false
   }
 }
 

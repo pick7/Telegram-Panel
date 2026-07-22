@@ -82,7 +82,7 @@
       File="$(PublishDir)version.txt"
       Lines="$(InformationalVersion)"
       Overwrite="true"
-      Encoding="UTF-8" />
+      Encoding="ASCII" />
   </Target>
 
 </Project>

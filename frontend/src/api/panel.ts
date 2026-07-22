@@ -75,6 +75,7 @@ import type {
   TwoFactorRecoveryEmailStatus,
   VersionApplyResult,
   VersionInfo,
+  UpdateModeResult,
   SystemRestartResult,
   NumberPreset,
   NetworkEgress,
@@ -331,6 +332,8 @@ export const panelApi = {
   checkVersionInfo: () => api.post<VersionInfo>('/version-info/check').then((r) => r.data),
   applyVersionUpdate: () =>
     api.post<VersionApplyResult>('/version-info/apply', {}, { timeout: 300_000 }).then((r) => r.data),
+  updateVersionMode: (mode: 'auto' | 'image' | 'binary') =>
+    api.post<UpdateModeResult>('/version-info/mode', { mode }).then((r) => r.data),
   restartPanel: () =>
     api.post<SystemRestartResult>('/system/restart').then((r) => r.data),
 

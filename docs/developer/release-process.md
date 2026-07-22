@@ -45,6 +45,14 @@ ghcr.io/moeacgx/telegram-panel:dev-latest
 4. 重建 `telegram-panel` 容器；
 5. 检查容器状态、最近日志、`/ui/dashboard` 和 `/api/panel/auth/me`。
 
+入口脚本会比较镜像内的 `version.txt` 与持久化自更新目录 `/data/app-current/version.txt`：
+
+- 镜像版本更高时，优先启动镜像版本，并将旧的持久化程序目录归档为 `/data/app-obsolete-*`；
+- 持久化自更新版本更高时，继续优先使用已确认启动成功的自更新版本；
+- 旧版本包没有 `version.txt` 时保持兼容行为，仍按启动确认标记选择目录。
+
+因此，升级 Docker 镜像后如果页面仍显示旧版本，应先查看容器日志中的版本选择记录和 `/data/app-obsolete-*`，确认是否存在旧自更新目录残留。
+
 部署完成不等于验收完成。验收时还要实际操作本次改动涉及的页面、API、后台任务或代理链路，并记录：
 
 - `dev` 提交 SHA 和实际镜像标签；

@@ -14,9 +14,45 @@ UPDATED_APP_MARKER="$UPDATED_APP_DIR/.telegram-panel-self-update"
 UPDATE_PENDING_MARKER="$UPDATED_APP_DIR/.telegram-panel-update-pending"
 UPDATE_ATTEMPTED_MARKER="$UPDATED_APP_DIR/.telegram-panel-update-attempted"
 UPDATE_CONFIRMED_MARKER="$UPDATED_APP_DIR/.telegram-panel-update-confirmed"
+IMAGE_VERSION_FILE="$DEFAULT_APP_DIR/version.txt"
+UPDATED_VERSION_FILE="$UPDATED_APP_DIR/version.txt"
 
 log() {
   printf '[telegram-panel-entrypoint] %s\n' "$*" >&2
+}
+
+read_version_file() {
+  if [ -f "$1" ]; then
+    tr -d '\r\n' < "$1"
+  fi
+}
+
+version_is_greater() {
+  # 发布版本是三段式语义版本；忽略 v 前缀和预发布/构建元数据。
+  left="${1#v}"
+  right="${2#v}"
+  left="${left%%+*}"
+  left="${left%%-*}"
+  right="${right%%+*}"
+  right="${right%%-*}"
+
+  awk -F. '
+    NR == 1 {
+      if (NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) exit 1
+      left1 = $1 + 0; left2 = $2 + 0; left3 = $3 + 0
+      next
+    }
+    NR == 2 {
+      if (NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) exit 1
+      if (($1 + 0) != left1) exit (($1 + 0) > left1 ? 1 : 0)
+      if (($2 + 0) != left2) exit (($2 + 0) > left2 ? 1 : 0)
+      exit (($3 + 0) > left3 ? 0 : 1)
+    }
+    { exit 1 }
+  ' <<EOF
+$left
+$right
+EOF
 }
 
 mkdir -p "$DATA_DIR" "$DATA_DIR/sessions" "$DATA_DIR/logs"
@@ -27,7 +63,21 @@ fi
 APP_DIR="$DEFAULT_APP_DIR"
 if [ -f "$UPDATED_APP_DIR/$APP_ENTRY" ]; then
   if [ -f "$UPDATE_CONFIRMED_MARKER" ]; then
-    APP_DIR="$UPDATED_APP_DIR"
+    IMAGE_VERSION="$(read_version_file "$IMAGE_VERSION_FILE")"
+    UPDATED_VERSION="$(read_version_file "$UPDATED_VERSION_FILE")"
+    if [ -n "$IMAGE_VERSION" ] && [ -n "$UPDATED_VERSION" ] \
+      && version_is_greater "$IMAGE_VERSION" "$UPDATED_VERSION"; then
+      OBSOLETE_APP_DIR="$DATA_DIR/app-obsolete-$(date +%Y%m%d%H%M%S)-$$"
+      if mv "$UPDATED_APP_DIR" "$OBSOLETE_APP_DIR"; then
+        APP_DIR="$DEFAULT_APP_DIR"
+        log "镜像版本 v$IMAGE_VERSION 高于持久化版本 v$UPDATED_VERSION，已归档旧版本并使用镜像目录"
+      else
+        APP_DIR="$DEFAULT_APP_DIR"
+        log "无法归档旧持久化版本，为避免阻塞镜像升级，使用镜像目录：$DEFAULT_APP_DIR"
+      fi
+    else
+      APP_DIR="$UPDATED_APP_DIR"
+    fi
   elif [ -f "$UPDATE_ATTEMPTED_MARKER" ]; then
     FAILED_APP_DIR="$DATA_DIR/app-failed-$(date +%Y%m%d%H%M%S)-$$"
     log "检测到新版本上次启动未确认，正在归档失败版本：$FAILED_APP_DIR"

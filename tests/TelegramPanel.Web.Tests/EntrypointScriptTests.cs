@@ -129,6 +129,67 @@ public sealed class EntrypointScriptTests
         }
     }
 
+    [Fact]
+    public void Entrypoint_PrefersNewerImageOverConfirmedOlderSelfUpdate()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            Directory.CreateDirectory(imageApp);
+            CreateRunnableVersion(imageApp, "1.31.38");
+            CreateRunnableVersion(current, "1.31.37");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(imageApp), File.ReadAllText(resultPath).Trim());
+            Assert.False(Directory.Exists(current));
+            var obsolete = Assert.Single(Directory.GetDirectories(data, "app-obsolete-*"));
+            Assert.Equal("1.31.37", File.ReadAllText(Path.Combine(obsolete, "version.txt")));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_PrefersNewerConfirmedSelfUpdateOverOlderImage()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            Directory.CreateDirectory(imageApp);
+            CreateRunnableVersion(imageApp, "1.31.37");
+            CreateRunnableVersion(current, "1.31.38");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(current), File.ReadAllText(resultPath).Trim());
+            Assert.True(Directory.Exists(current));
+            Assert.Empty(Directory.GetDirectories(data, "app-obsolete-*"));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
     private static void RunEntrypoint(string data, string imageApp, string resultPath)
     {
         var scriptPath = FindRepositoryFile(Path.Combine("docker", "entrypoint.sh"));

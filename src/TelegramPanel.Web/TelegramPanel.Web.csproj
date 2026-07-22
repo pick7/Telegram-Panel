@@ -77,4 +77,12 @@
     <None Remove="appsettings.local.json" />
   </ItemGroup>
 
+  <Target Name="WritePublishedVersionFile" AfterTargets="Publish">
+    <WriteLinesToFile
+      File="$(PublishDir)version.txt"
+      Lines="$(InformationalVersion)"
+      Overwrite="true"
+      Encoding="UTF-8" />
+  </Target>
+
 </Project>

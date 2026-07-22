@@ -195,7 +195,7 @@ public sealed class PersistentStorageBootstrapperTests
     }
 
     [Fact]
-    public void Initialize_RestoresCandidateWithMostAccountsOverEmptySchemaAndBacksUpTarget()
+    public void Initialize_RestoresNewestCandidateWithAccountsAndBacksUpTarget()
     {
         var root = CreateTempDirectory();
         try
@@ -211,20 +211,62 @@ public sealed class PersistentStorageBootstrapperTests
 
             var targetPath = Path.Combine(persistentRoot, "telegram_panel.db");
             CreateAccountsDatabase(targetPath, 0);
-            CreateAccountsDatabase(Path.Combine(newerRoot, "telegram_panel.db"), 1);
-            CreateAccountsDatabase(Path.Combine(olderRoot, "telegram_panel.db"), 3);
+            var newerPath = Path.Combine(newerRoot, "telegram_panel.db");
+            var olderPath = Path.Combine(olderRoot, "telegram_panel.db");
+            CreateAccountsDatabase(newerPath, 1);
+            CreateAccountsDatabase(olderPath, 3);
+            var now = DateTime.UtcNow;
+            File.SetLastWriteTimeUtc(newerPath, now.AddMinutes(-1));
+            File.SetLastWriteTimeUtc(olderPath, now.AddMinutes(-2));
 
             var paths = PersistentStorageBootstrapper.Initialize(
                 CreateConfiguration(persistentRoot),
                 new TestEnvironment(currentRoot));
 
-            Assert.Equal(3, ReadAccountCount(paths.DatabasePath));
+            Assert.Equal(1, ReadAccountCount(paths.DatabasePath));
             var backups = Directory.GetFiles(
                 persistentRoot,
                 "telegram_panel.db.invalid-*",
                 SearchOption.TopDirectoryOnly);
             Assert.Single(backups);
             Assert.Equal(0, ReadAccountCount(backups[0]));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_PrefersCandidateWithAccountsOverNewerAuxiliaryData()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var currentRoot = Path.Combine(root, "app-current");
+            var auxiliaryRoot = Path.Combine(root, "app-previous-newer");
+            var accountsRoot = Path.Combine(root, "app-previous-older");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(currentRoot);
+            Directory.CreateDirectory(auxiliaryRoot);
+            Directory.CreateDirectory(accountsRoot);
+            Directory.CreateDirectory(persistentRoot);
+
+            var targetPath = Path.Combine(persistentRoot, "telegram_panel.db");
+            var auxiliaryPath = Path.Combine(auxiliaryRoot, "telegram_panel.db");
+            var accountsPath = Path.Combine(accountsRoot, "telegram_panel.db");
+            CreateAccountsDatabase(targetPath, 0);
+            CreateSqliteDatabase(auxiliaryPath, "newer-auxiliary-data");
+            CreateAccountsDatabase(accountsPath, 2);
+            var now = DateTime.UtcNow;
+            File.SetLastWriteTimeUtc(auxiliaryPath, now.AddMinutes(-1));
+            File.SetLastWriteTimeUtc(accountsPath, now.AddMinutes(-2));
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(currentRoot));
+
+            Assert.Equal(2, ReadAccountCount(paths.DatabasePath));
         }
         finally
         {

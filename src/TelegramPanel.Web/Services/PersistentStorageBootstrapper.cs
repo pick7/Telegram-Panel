@@ -246,12 +246,14 @@ public static class PersistentStorageBootstrapper
                 report?.Invoke($"跳过没有业务数据的旧数据库候选：{candidate}");
         }
 
-        // 不能依赖目录新旧顺序：旧更新器可能已经生成了空 schema，
-        // 必须优先选择仍含账号的快照；同样保留其它业务数据作为兜底。
+        // 不能依赖目录枚举顺序：先选择仍含账号的快照，再以其它业务数据兜底。
+        // 同类快照按最近写入时间恢复，不能用账号数量推断新旧，否则会复活已删除账号。
         rankedCandidates = rankedCandidates
-            .OrderByDescending(item => item.AccountCount)
+            .OrderByDescending(item => item.AccountCount > 0)
             .ThenByDescending(item => item.HasAccountsTable)
             .ThenByDescending(item => item.LastWriteTimeUtc)
+            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Path, StringComparer.Ordinal)
             .ToList();
 
         if (rankedCandidates.Count == 0)

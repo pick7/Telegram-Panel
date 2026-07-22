@@ -143,6 +143,10 @@ public sealed class EntrypointScriptTests
             var current = Path.Combine(data, "app-current");
             Directory.CreateDirectory(imageApp);
             CreateRunnableVersion(imageApp, "1.31.38");
+            File.WriteAllText(
+                Path.Combine(imageApp, "version.txt"),
+                "1.31.38",
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
             CreateRunnableVersion(current, "1.31.37");
             File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
 

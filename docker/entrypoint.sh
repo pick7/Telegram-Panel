@@ -23,7 +23,8 @@ log() {
 
 read_version_file() {
   if [ -f "$1" ]; then
-    tr -d '\r\n' < "$1"
+    # 兼容旧发布产物可能带有 UTF-8 BOM 的版本文件。
+    sed '1s/^\357\273\277//' "$1" | tr -d '\r\n'
   fi
 }
 

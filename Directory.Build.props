@@ -1,4 +1,9 @@
 <Project>
+  <ItemGroup>
+    <Compile Remove="**/.tmp/**/*.cs" />
+    <Compile Remove="**/artifacts/**/*.cs" />
+  </ItemGroup>
+
   <PropertyGroup>
     <!-- 集中管理项目版本号 -->
     <!-- 版本格式: 主版本.次版本.修订号 -->

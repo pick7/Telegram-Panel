@@ -9,6 +9,16 @@ public interface IBatchTaskRepository : IRepository<BatchTask>
 {
     Task<BatchTask?> GetFreshByIdAsync(int id);
     Task UpdateFreshAsync(BatchTask entity);
+    Task<bool> TryStartAsync(int id, DateTime startedAt, CancellationToken cancellationToken = default);
+    Task<bool> TryPauseAsync(int id, CancellationToken cancellationToken = default);
+    Task<bool> TryResumeAsync(int id, CancellationToken cancellationToken = default);
+    Task<bool> TryCancelAsync(int id, DateTime completedAt, CancellationToken cancellationToken = default);
+    Task<bool> TryCompleteAsync(int id, bool success, DateTime completedAt, CancellationToken cancellationToken = default);
+    Task<bool> TryRequeueAsync(int id, CancellationToken cancellationToken = default);
+    Task UpdateProgressColumnsAsync(int id, int completed, int failed, CancellationToken cancellationToken = default);
+    Task UpdateConfigColumnAsync(int id, string? config, CancellationToken cancellationToken = default);
+    Task UpdateDraftColumnsAsync(int id, int total, string? config, CancellationToken cancellationToken = default);
+    Task<bool> TryUpdateEditableDraftAsync(int id, int total, string? config, CancellationToken cancellationToken = default);
     Task<IEnumerable<BatchTask>> GetByStatusAsync(string status);
     Task<IEnumerable<BatchTask>> GetRunningTasksAsync();
     Task<IReadOnlyList<BatchTask>> GetActiveTasksAsync(CancellationToken cancellationToken = default);

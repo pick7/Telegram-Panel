@@ -60,21 +60,25 @@ public sealed class ModuleTaskCreationCatalogTests
                 EditorComponentType = validEditorType
             });
 
-        var contributions = CreateContributions(module, builtIn: false);
+        var externalContributions = CreateContributions(module, builtIn: false);
 
-        Assert.Equal(6, contributions.Tasks.Count);
-        Assert.Equal(6, contributions.TaskTypeToDefinition.Count);
-        Assert.Equal("/ext/test/settings", contributions.TaskTypeToDefinition["route-only"].Definition.CreateRoute);
+        Assert.Equal(6, externalContributions.Tasks.Count);
+        Assert.Equal(6, externalContributions.TaskTypeToDefinition.Count);
+        Assert.Equal("/ext/test/settings", externalContributions.TaskTypeToDefinition["route-only"].Definition.CreateRoute);
 
-        var creatable = Assert.Single(contributions.CreatableTasks);
+        Assert.Empty(externalContributions.CreatableTasks);
+        Assert.All(externalContributions.Tasks, task => Assert.False(task.CanCreate));
+
+        var builtInContributions = CreateContributions(module, builtIn: true);
+        var creatable = Assert.Single(builtInContributions.CreatableTasks);
         Assert.Equal("editor-backed", creatable.Definition.TaskType);
         Assert.True(creatable.CanCreate);
 
-        Assert.False(contributions.TaskTypeToDefinition["route-only"].CanCreate);
-        Assert.False(contributions.TaskTypeToDefinition["metadata-only"].CanCreate);
-        Assert.False(contributions.TaskTypeToDefinition["not-a-component"].CanCreate);
-        Assert.False(contributions.TaskTypeToDefinition["invalid-contract"].CanCreate);
-        Assert.False(contributions.TaskTypeToDefinition["route-and-editor"].CanCreate);
+        Assert.False(builtInContributions.TaskTypeToDefinition["route-only"].CanCreate);
+        Assert.False(builtInContributions.TaskTypeToDefinition["metadata-only"].CanCreate);
+        Assert.False(builtInContributions.TaskTypeToDefinition["not-a-component"].CanCreate);
+        Assert.False(builtInContributions.TaskTypeToDefinition["invalid-contract"].CanCreate);
+        Assert.False(builtInContributions.TaskTypeToDefinition["route-and-editor"].CanCreate);
     }
 
     [Fact]

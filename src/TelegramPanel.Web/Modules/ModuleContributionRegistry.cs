@@ -23,7 +23,9 @@ public sealed class ModuleContributionRegistry
                     var registered = new RegisteredTaskDefinition(m, normalized);
                     tasks.Add(registered with
                     {
-                        CanCreate = string.IsNullOrWhiteSpace(normalized.CreateRoute)
+                        // 仅内置模块且明确提供有效编辑器时，才允许任务中心直接创建。
+                        CanCreate = registered.Module.BuiltIn
+                            && string.IsNullOrWhiteSpace(normalized.CreateRoute)
                             && TelegramPanel.Web.Services.ModuleTaskEditorComponentResolver.ResolveCreateEditor(registered) != null
                     });
                 }

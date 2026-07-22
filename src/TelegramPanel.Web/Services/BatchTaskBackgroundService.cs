@@ -18,15 +18,18 @@ public sealed class BatchTaskBackgroundService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<BatchTaskBackgroundService> _logger;
     private readonly IConfiguration _configuration;
+    private readonly BatchTaskExecutionControlService _executionControl;
     private readonly ConcurrentDictionary<int, Task> _runningTasks = new();
 
     public BatchTaskBackgroundService(
         IServiceScopeFactory scopeFactory,
         IConfiguration configuration,
+        BatchTaskExecutionControlService executionControl,
         ILogger<BatchTaskBackgroundService> logger)
     {
         _scopeFactory = scopeFactory;
         _configuration = configuration;
+        _executionControl = executionControl;
         _logger = logger;
     }
 
@@ -89,7 +92,7 @@ public sealed class BatchTaskBackgroundService : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var taskManagement = scope.ServiceProvider.GetRequiredService<BatchTaskManagementService>();
-        var requeued = await taskManagement.RequeueRunningTasksAsync();
+        var requeued = await taskManagement.RequeueRunningTasksAsync(cancellationToken: cancellationToken);
         if (requeued > 0)
         {
             _logger.LogInformation("Recovered {Count} interrupted running batch tasks and set them back to pending", requeued);
@@ -120,38 +123,56 @@ public sealed class BatchTaskBackgroundService : BackgroundService
 
         var pending = (await taskManagement.GetTasksByStatusAsync("pending"))
             .Where(t => supportedTaskTypes.Contains(t.TaskType))
+            .Where(t => !_runningTasks.ContainsKey(t.Id))
             .OrderBy(t => t.CreatedAt)
             .FirstOrDefault();
 
         if (pending == null)
             return false;
 
-        await taskManagement.StartTaskAsync(pending.Id);
+        var execution = await _executionControl.TryStartExecutionAsync(pending.Id, cancellationToken);
+        if (execution == null)
+            return false;
+
         _logger.LogInformation("Batch task started: {TaskId} {TaskType}", pending.Id, pending.TaskType);
 
         // 独立 scope 执行：避免阻塞轮询 loop，实现并发跑多个任务
-        var running = RunTaskAsync(pending.Id, cancellationToken);
-        _runningTasks[pending.Id] = running;
+        try
+        {
+            var running = RunTaskAsync(pending.Id, execution, cancellationToken);
+            _runningTasks[pending.Id] = running;
+        }
+        catch
+        {
+            _executionControl.CompleteExecution(execution);
+            throw;
+        }
+
         return true;
     }
 
-    private async Task RunTaskAsync(int taskId, CancellationToken cancellationToken)
+    private async Task RunTaskAsync(
+        int taskId,
+        BatchTaskExecutionLease execution,
+        CancellationToken stoppingToken)
     {
+        var executionToken = execution.CancellationToken;
+        using var executionContext = _executionControl.EnterExecutionContext(execution);
         try
         {
             using var scope = _scopeFactory.CreateScope();
             var taskManagement = scope.ServiceProvider.GetRequiredService<BatchTaskManagementService>();
 
             var pending = await taskManagement.GetTaskAsync(taskId);
-            if (pending == null)
+            if (pending == null || pending.Status != "running")
                 return;
 
+            executionToken.ThrowIfCancellationRequested();
             var completed = pending.Completed;
             var failed = pending.Failed;
 
             try
             {
-                // 模块扩展任务：从 DI 中查找对应 TaskType 的执行器
                 var handler = scope.ServiceProvider
                     .GetServices<IModuleTaskHandler>()
                     .FirstOrDefault(h => string.Equals(h.TaskType, pending.TaskType, StringComparison.OrdinalIgnoreCase));
@@ -166,7 +187,8 @@ public sealed class BatchTaskBackgroundService : BackgroundService
                 }
 
                 var host = new DbBackedModuleTaskExecutionHost(pending, taskManagement, scope.ServiceProvider);
-                await handler.ExecuteAsync(host, cancellationToken);
+                await handler.ExecuteAsync(host, executionToken);
+                executionToken.ThrowIfCancellationRequested();
 
                 var after = await taskManagement.GetTaskAsync(pending.Id);
                 if (after != null)
@@ -175,14 +197,15 @@ public sealed class BatchTaskBackgroundService : BackgroundService
                     failed = after.Failed;
                 }
 
-                // 如果任务被用户取消（状态变为 canceled），则不覆盖它
                 var latest = await taskManagement.GetTaskAsync(pending.Id);
                 if (latest != null && latest.Status != "running")
                     return;
 
                 if (latest != null && IsPersistentTask(latest))
                 {
-                    var requeued = await taskManagement.RequeueRunningTasksAsync(t => t.Id == pending.Id);
+                    var requeued = await taskManagement.RequeueRunningTasksAsync(
+                        t => t.Id == pending.Id,
+                        executionToken);
                     _logger.LogWarning(
                         "Persistent batch task returned without explicit completion; requeued instead of completing: {TaskId} {TaskType} (requeued={Requeued})",
                         pending.Id,
@@ -195,11 +218,16 @@ public sealed class BatchTaskBackgroundService : BackgroundService
                 _logger.LogInformation("Batch task completed: {TaskId} {TaskType} (completed={Completed}, failed={Failed})",
                     pending.Id, pending.TaskType, completed, failed);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (executionToken.IsCancellationRequested)
             {
-                // 宿主停机/容器重启时不要把正在执行的任务写成失败。
-                // 保持 running 状态，下一次启动由 RecoverInterruptedTasksAsync 重新排队。
-                _logger.LogInformation("Batch task interrupted by shutdown: {TaskId} {TaskType}", pending.Id, pending.TaskType);
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation("Batch task interrupted by shutdown: {TaskId} {TaskType}", pending.Id, pending.TaskType);
+                }
+                else
+                {
+                    _logger.LogInformation("Batch task execution stopped after pause: {TaskId} {TaskType}", pending.Id, pending.TaskType);
+                }
             }
             catch (Exception ex)
             {
@@ -211,13 +239,13 @@ public sealed class BatchTaskBackgroundService : BackgroundService
                 }
                 catch
                 {
-                    // ignore secondary failures
+                    // 忽略二次收尾错误。
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (executionToken.IsCancellationRequested)
         {
-            // ignore
+            // 宿主停机或暂停时由上层状态屏障负责收尾。
         }
         catch (Exception ex)
         {
@@ -226,6 +254,7 @@ public sealed class BatchTaskBackgroundService : BackgroundService
         finally
         {
             _runningTasks.TryRemove(taskId, out _);
+            _executionControl.CompleteExecution(execution);
         }
     }
 

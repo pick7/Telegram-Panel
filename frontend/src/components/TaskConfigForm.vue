@@ -279,81 +279,6 @@
       />
     </template>
 
-    <template v-else-if="taskType === 'user_message_report'">
-      <el-alert
-        title="该任务会按账号分类轮流对指定消息、频道或群组执行举报；最多举报次数为 0 表示不设上限。"
-        type="info"
-        :closable="false"
-        class="mb-3"
-      />
-      <el-alert
-        title="消息举报会匹配 Telegram 返回的举报选项；直接举报频道/群组时会使用固定举报原因。"
-        type="warning"
-        :closable="false"
-        class="mb-3"
-      />
-      <el-form-item label="账号分类">
-        <el-select v-model="forms.messageReport.categoryIds" multiple collapse-tags collapse-tags-tooltip class="full" placeholder="请选择执行账号分类">
-          <el-option v-for="item in accountCategories" :key="item.id" :label="categoryLabel(item)" :value="item.id" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="举报目标">
-        <el-input
-          v-model="forms.messageReport.messageLinksText"
-          type="textarea"
-          :rows="6"
-          placeholder="每行一个目标：消息链接、频道/群组链接、@username、username、-100 开头 ID 等"
-        />
-      </el-form-item>
-      <el-row :gutter="12">
-        <el-col :span="8">
-          <el-form-item label="最小间隔">
-            <el-input-number v-model="forms.messageReport.delayMinSeconds" :min="0" :max="86400" class="full" />
-          </el-form-item>
-        </el-col>
-        <el-col :span="8">
-          <el-form-item label="最大间隔">
-            <el-input-number v-model="forms.messageReport.delayMaxSeconds" :min="0" :max="86400" class="full" />
-          </el-form-item>
-        </el-col>
-        <el-col :span="8">
-          <el-form-item label="最多举报">
-            <el-input-number v-model="forms.messageReport.maxReports" :min="0" :max="1000000" class="full" />
-          </el-form-item>
-        </el-col>
-      </el-row>
-      <el-form-item label="举报类型">
-        <el-select v-model="forms.messageReport.reportPreset" class="full">
-          <el-option label="垃圾 / 骚扰" value="spam" />
-          <el-option label="暴力 / 威胁" value="violence" />
-          <el-option label="色情 / 淫秽" value="pornography" />
-          <el-option label="儿童虐待" value="child_abuse" />
-          <el-option label="版权侵权" value="copyright" />
-          <el-option label="违禁药物" value="illegal_drugs" />
-          <el-option label="隐私 / 个人信息" value="personal_details" />
-          <el-option label="其他" value="other" />
-          <el-option label="直接选第一个选项" value="first_available" />
-          <el-option label="自定义关键词" value="custom" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="自定义关键词">
-        <el-input
-          v-model="forms.messageReport.customKeywordsText"
-          type="textarea"
-          :rows="4"
-          placeholder="每行一个关键词；选择“自定义关键词”时必填"
-        />
-      </el-form-item>
-      <el-form-item label="举报文案">
-        <el-input
-          v-model="forms.messageReport.commentText"
-          type="textarea"
-          :rows="4"
-          placeholder="可选。支持 {消息链接}、{聊天标题}、{消息ID}、{time} 和文本字典变量"
-        />
-      </el-form-item>
-      <div class="form-hint">可用文本变量：{{ messageReportVariableHint }}</div>
-    </template>
 
     <el-alert v-if="draft.validationError" :title="draft.validationError" type="warning" :closable="false" class="mt-2" />
   </div>
@@ -366,7 +291,6 @@ import type { UploadFile } from 'element-plus'
 import { panelApi } from '@/api/panel'
 import type { AccountCategory, DataDictionary, OperationAccount, SimpleCategory } from '@/api/types'
 
-type SupportedTaskType = 'user_chat_active' | 'channel_group_private_create' | 'channel_group_publicize' | 'user_message_report'
 type AvatarSource = 'none' | 'fixed' | 'dictionary'
 type AutomationKind = 'privateCreate' | 'publicize'
 
@@ -406,7 +330,6 @@ const forms = reactive({
   userChatActive: defaultUserChatActiveForm(),
   privateCreate: defaultPrivateCreateForm(),
   publicize: defaultPublicizeForm(),
-  messageReport: defaultMessageReportForm(),
 })
 
 const textDictionaryNames = computed(() =>
@@ -425,11 +348,6 @@ const imageDictionaryNames = computed(() =>
 
 const textVariableHint = computed(() => {
   const names = ['{time}', ...textDictionaryNames.value.map((x) => `{${x}}`)]
-  return names.join('、')
-})
-
-const messageReportVariableHint = computed(() => {
-  const names = ['{消息链接}', '{聊天标题}', '{消息ID}', '{time}', ...textDictionaryNames.value.map((x) => `{${x}}`)]
   return names.join('、')
 })
 
@@ -484,7 +402,6 @@ function resetForms() {
   Object.assign(forms.userChatActive, defaultUserChatActiveForm())
   Object.assign(forms.privateCreate, defaultPrivateCreateForm())
   Object.assign(forms.publicize, defaultPublicizeForm())
-  Object.assign(forms.messageReport, defaultMessageReportForm())
 }
 
 function applyInitialConfig() {
@@ -566,17 +483,6 @@ function applyInitialConfig() {
     return
   }
 
-  if (props.taskType === 'user_message_report') {
-    const form = forms.messageReport
-    form.categoryIds = normalizeIds(cfg.category_ids, readNumber(cfg.category_id))
-    form.messageLinksText = readStringArray(cfg.message_links).join('\n')
-    form.delayMinSeconds = millisecondsToSeconds(readNumber(cfg.delay_min_ms, 15000))
-    form.delayMaxSeconds = millisecondsToSeconds(readNumber(cfg.delay_max_ms, 45000))
-    form.maxReports = Math.max(0, readNumber(cfg.max_reports, 0))
-    form.reportPreset = normalizeReportPreset(readString(cfg.report_preset, 'spam'))
-    form.customKeywordsText = readStringArray(cfg.option_keywords).join('\n')
-    form.commentText = readString(cfg.comment)
-  }
 }
 
 function pushDraft() {
@@ -590,8 +496,6 @@ function pushDraft() {
       next = buildPrivateCreateDraft()
     } else if (props.taskType === 'channel_group_publicize') {
       next = buildPublicizeDraft()
-    } else if (props.taskType === 'user_message_report') {
-      next = buildMessageReportDraft()
     } else {
       next = invalidDraft('该任务类型没有专用配置表单')
     }
@@ -741,39 +645,6 @@ function buildPublicizeDraft(): TaskConfigDraft {
   return validDraft(automationTotal(categoryIds, form.perAccountBatchSize), config)
 }
 
-function buildMessageReportDraft(): TaskConfigDraft {
-  const form = forms.messageReport
-  const categoryIds = normalizedSelectedIds(form.categoryIds)
-  const selectedCategories = selectedAccountCategories(categoryIds)
-  const messageLinks = uniqueLines(form.messageLinksText)
-  const optionKeywords = uniqueLines(form.customKeywordsText)
-  const reportPreset = normalizeReportPreset(form.reportPreset)
-  const comment = form.commentText.trim()
-
-  if (categoryIds.length === 0 || selectedCategories.length === 0) throw new Error('请至少选择一个执行账号分类')
-  if (messageLinks.length === 0) throw new Error('请至少填写一条举报目标')
-  if (form.delayMinSeconds < 0 || form.delayMaxSeconds < 0) throw new Error('间隔不能为负数')
-  if (form.delayMaxSeconds < form.delayMinSeconds) throw new Error('最大间隔不能小于最小间隔')
-  if (form.maxReports < 0) throw new Error('最多举报次数不能小于 0')
-  if (reportPreset === 'custom' && optionKeywords.length === 0) throw new Error('选择“自定义关键词”时，至少填写一个关键词')
-  validateMessageReportComment(comment)
-
-  const config = {
-    category_id: selectedCategories[0].id,
-    category_name: selectedCategories[0].name,
-    category_ids: categoryIds,
-    category_names: selectedCategories.map((x) => x.name),
-    message_links: messageLinks,
-    delay_min_ms: secondsToMilliseconds(form.delayMinSeconds),
-    delay_max_ms: secondsToMilliseconds(form.delayMaxSeconds),
-    max_reports: Math.max(0, form.maxReports),
-    report_preset: reportPreset,
-    option_keywords: optionKeywords,
-    comment: comment || null,
-  }
-
-  return validDraft(Math.max(0, form.maxReports), config)
-}
 
 async function uploadAvatar(kind: AutomationKind, file: UploadFile) {
   const raw = file.raw
@@ -932,18 +803,6 @@ function defaultPublicizeForm() {
   }
 }
 
-function defaultMessageReportForm() {
-  return {
-    categoryIds: [] as number[],
-    messageLinksText: '',
-    delayMinSeconds: 15,
-    delayMaxSeconds: 45,
-    maxReports: 0,
-    reportPreset: 'spam',
-    customKeywordsText: '',
-    commentText: '',
-  }
-}
 
 function parseLines(value: string) {
   return value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)
@@ -1034,53 +893,6 @@ function normalizeObjectType(value: string) {
 function normalizeAvatarSource(value: string): AvatarSource {
   if (value === 'fixed' || value === 'dictionary') return value
   return 'none'
-}
-
-function normalizeReportPreset(value: string) {
-  const normalized = value.trim().toLowerCase()
-  const allowed = new Set([
-    'spam',
-    'violence',
-    'pornography',
-    'child_abuse',
-    'copyright',
-    'illegal_drugs',
-    'personal_details',
-    'other',
-    'first_available',
-    'custom',
-  ])
-  return allowed.has(normalized) ? normalized : 'spam'
-}
-
-function validateMessageReportComment(comment: string) {
-  if (!comment.trim()) return
-  const allowed = new Set([
-    'time',
-    '消息链接',
-    'message_link',
-    '聊天标题',
-    'chat_title',
-    '消息ID',
-    'message_id',
-    ...textDictionaryNames.value,
-  ].map((x) => x.toLowerCase()))
-  for (const token of extractTemplateTokens(comment)) {
-    if (!allowed.has(token.toLowerCase())) {
-      throw new Error(`举报文案变量无效：{${token}}`)
-    }
-  }
-}
-
-function extractTemplateTokens(value: string) {
-  const tokens: string[] = []
-  const regex = /\{([^{}]+)\}/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(value)) !== null) {
-    const token = (match[1] || '').trim()
-    if (token) tokens.push(token)
-  }
-  return Array.from(new Set(tokens))
 }
 
 function dictionaryToken(name: string) {

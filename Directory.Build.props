@@ -1,8 +1,7 @@
 <Project>
-  <ItemGroup>
-    <Compile Remove="**/.tmp/**/*.cs" />
-    <Compile Remove="**/artifacts/**/*.cs" />
-  </ItemGroup>
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/.tmp/**;**/artifacts/**</DefaultItemExcludes>
+  </PropertyGroup>
 
   <PropertyGroup>
     <!-- 集中管理项目版本号 -->

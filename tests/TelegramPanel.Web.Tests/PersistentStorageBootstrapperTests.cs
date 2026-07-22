@@ -2,6 +2,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
 using TelegramPanel.Web.Services;
 using Xunit;
 
@@ -192,6 +195,100 @@ public sealed class PersistentStorageBootstrapperTests
     }
 
     [Fact]
+    public void Initialize_RestoresCandidateWithMostAccountsOverEmptySchemaAndBacksUpTarget()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var currentRoot = Path.Combine(root, "app-current");
+            var newerRoot = Path.Combine(root, "app-previous-newer");
+            var olderRoot = Path.Combine(root, "app-previous-older");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(currentRoot);
+            Directory.CreateDirectory(newerRoot);
+            Directory.CreateDirectory(olderRoot);
+            Directory.CreateDirectory(persistentRoot);
+
+            var targetPath = Path.Combine(persistentRoot, "telegram_panel.db");
+            CreateAccountsDatabase(targetPath, 0);
+            CreateAccountsDatabase(Path.Combine(newerRoot, "telegram_panel.db"), 1);
+            CreateAccountsDatabase(Path.Combine(olderRoot, "telegram_panel.db"), 3);
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(currentRoot));
+
+            Assert.Equal(3, ReadAccountCount(paths.DatabasePath));
+            var backups = Directory.GetFiles(
+                persistentRoot,
+                "telegram_panel.db.invalid-*",
+                SearchOption.TopDirectoryOnly);
+            Assert.Single(backups);
+            Assert.Equal(0, ReadAccountCount(backups[0]));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_KeepsValidEmptyDatabaseWhenOnlyLegacyCandidateIsInvalid()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+            CreateAccountsDatabase(Path.Combine(persistentRoot, "telegram_panel.db"), 0);
+            File.WriteAllText(
+                Path.Combine(legacyRoot, "telegram_panel.db"),
+                "broken-legacy-database");
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(legacyRoot));
+
+            Assert.Equal(0, ReadAccountCount(paths.DatabasePath));
+            Assert.Empty(Directory.GetFiles(
+                persistentRoot,
+                "telegram_panel.db.invalid-*",
+                SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_RestoresHyphenatedDatabaseFromWritableRoot()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var currentRoot = Path.Combine(root, "app-current");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(currentRoot);
+            Directory.CreateDirectory(persistentRoot);
+            CreateAccountsDatabase(Path.Combine(persistentRoot, "telegram-panel.db"), 4);
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(currentRoot));
+
+            Assert.Equal(4, ReadAccountCount(paths.DatabasePath));
+            Assert.Equal(4, ReadAccountCount(Path.Combine(persistentRoot, "telegram-panel.db")));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
     public void Initialize_ReplacesZeroLengthCredentialsAndPreservesInvalidTarget()
     {
         var root = CreateTempDirectory();
@@ -218,6 +315,240 @@ public sealed class PersistentStorageBootstrapperTests
                 SearchOption.TopDirectoryOnly);
             var preservedTarget = Assert.Single(preservedTargets);
             Assert.Equal(0, new FileInfo(preservedTarget).Length);
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, 32, "legacy-user")]
+    [InlineData(false, 16, "legacy-user")]
+    [InlineData(false, 32, " legacy-user ")]
+    public void Initialize_RejectsCredentialCandidatesThatRuntimeCannotAuthenticate(
+        bool lowercaseUsername,
+        int hashLength,
+        string username)
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+            var candidate = CreateCredentialJson(
+                username,
+                "legacy-password",
+                mustChangePassword: false,
+                hashLength: hashLength);
+            if (lowercaseUsername)
+            {
+                candidate = candidate.Replace(
+                    "\"Username\":",
+                    "\"username\":",
+                    StringComparison.Ordinal);
+            }
+            File.WriteAllText(Path.Combine(legacyRoot, "admin_auth.json"), candidate);
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            File.WriteAllBytes(targetPath, Array.Empty<byte>());
+
+            Assert.Throws<InvalidDataException>(() =>
+                PersistentStorageBootstrapper.Initialize(
+                    CreateConfiguration(persistentRoot),
+                    new TestEnvironment(legacyRoot)));
+            Assert.Equal(0, new FileInfo(targetPath).Length);
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_ReplacesGeneratedDefaultCredentialsAndPreservesSource()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var currentRoot = Path.Combine(root, "app-current");
+            var previousRoot = Path.Combine(root, "app-previous");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(currentRoot);
+            Directory.CreateDirectory(previousRoot);
+            Directory.CreateDirectory(persistentRoot);
+
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            var sourcePath = Path.Combine(previousRoot, "admin_auth.json");
+            File.WriteAllText(
+                targetPath,
+                CreateCredentialJson("tgpanel", "tgpanel123", mustChangePassword: true));
+            File.WriteAllText(
+                sourcePath,
+                CreateCredentialJson("restored-user", "restored-password", mustChangePassword: false));
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(currentRoot));
+
+            Assert.Equal("restored-user", ReadCredentialUsername(paths.CredentialsPath));
+            Assert.Equal("restored-user", ReadCredentialUsername(sourcePath));
+            var backups = Directory.GetFiles(
+                persistentRoot,
+                "admin_auth.json.invalid-*",
+                SearchOption.TopDirectoryOnly);
+            Assert.Single(backups);
+            Assert.Equal("tgpanel", ReadCredentialUsername(backups[0]));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Initialize_DoesNotOverwriteUserModifiedCredentials(bool mustChangePassword)
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+            File.WriteAllText(
+                Path.Combine(legacyRoot, "admin_auth.json"),
+                CreateCredentialJson("legacy-user", "legacy-password", mustChangePassword: false));
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            File.WriteAllText(
+                targetPath,
+                CreateCredentialJson("current-user", "current-password", mustChangePassword));
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(legacyRoot));
+
+            Assert.Equal("current-user", ReadCredentialUsername(paths.CredentialsPath));
+            Assert.Empty(Directory.GetFiles(
+                persistentRoot,
+                "admin_auth.json.invalid-*",
+                SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_KeepsValidDefaultCredentialsWhenOnlyLegacyCandidateIsInvalid()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            File.WriteAllText(
+                targetPath,
+                CreateCredentialJson("tgpanel", "tgpanel123", mustChangePassword: true));
+            File.WriteAllText(
+                Path.Combine(legacyRoot, "admin_auth.json"),
+                "{ invalid-json");
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(legacyRoot));
+
+            Assert.Equal("tgpanel", ReadCredentialUsername(paths.CredentialsPath));
+            Assert.Empty(Directory.GetFiles(
+                persistentRoot,
+                "admin_auth.json.invalid-*",
+                SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Initialize_DoesNotPromoteDefaultCandidateFromDifferentInitialConfiguration()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            File.WriteAllText(
+                targetPath,
+                CreateCredentialJson("tgpanel", "tgpanel123", mustChangePassword: true));
+            File.WriteAllText(
+                Path.Combine(legacyRoot, "admin_auth.json"),
+                CreateCredentialJson("old-tgpanel", "old-password", mustChangePassword: true));
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(legacyRoot));
+
+            Assert.Equal("tgpanel", ReadCredentialUsername(paths.CredentialsPath));
+            Assert.Empty(Directory.GetFiles(
+                persistentRoot,
+                "admin_auth.json.invalid-*",
+                SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Theory]
+    [InlineData("Version")]
+    [InlineData("CreatedAtUtc")]
+    [InlineData("UpdatedAtUtc")]
+    public void Initialize_DoesNotPromoteCredentialCandidateWithInvalidRuntimeField(
+        string field)
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var legacyRoot = Path.Combine(root, "old-app");
+            var persistentRoot = Path.Combine(root, "data");
+            Directory.CreateDirectory(legacyRoot);
+            Directory.CreateDirectory(persistentRoot);
+            var targetPath = Path.Combine(persistentRoot, "admin_auth.json");
+            File.WriteAllText(
+                targetPath,
+                CreateCredentialJson("tgpanel", "tgpanel123", mustChangePassword: true));
+
+            var candidate = JsonNode.Parse(CreateCredentialJson(
+                "legacy-user",
+                "legacy-password",
+                mustChangePassword: false))!.AsObject();
+            candidate[field] = "invalid";
+            File.WriteAllText(
+                Path.Combine(legacyRoot, "admin_auth.json"),
+                candidate.ToJsonString());
+
+            var paths = PersistentStorageBootstrapper.Initialize(
+                CreateConfiguration(persistentRoot),
+                new TestEnvironment(legacyRoot));
+
+            Assert.Equal("tgpanel", ReadCredentialUsername(paths.CredentialsPath));
+            Assert.Empty(Directory.GetFiles(
+                persistentRoot,
+                "admin_auth.json.invalid-*",
+                SearchOption.TopDirectoryOnly));
         }
         finally
         {
@@ -372,6 +703,30 @@ public sealed class PersistentStorageBootstrapperTests
         insert.ExecuteNonQuery();
     }
 
+    private static void CreateAccountsDatabase(string path, int accountCount)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        connection.Open();
+        ExecuteNonQuery(connection, "CREATE TABLE Accounts (Id INTEGER NOT NULL PRIMARY KEY);");
+        for (var index = 1; index <= accountCount; index++)
+        {
+            using var insert = connection.CreateCommand();
+            insert.CommandText = "INSERT INTO Accounts (Id) VALUES ($id);";
+            insert.Parameters.AddWithValue("$id", index);
+            insert.ExecuteNonQuery();
+        }
+    }
+
+    private static long ReadAccountCount(string path)
+    {
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM Accounts;";
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
     private static string ReadDatabaseMarker(string path)
     {
         using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
@@ -390,14 +745,31 @@ public sealed class PersistentStorageBootstrapperTests
 
     private static string CreateCredentialJson(string username)
     {
+        return CreateCredentialJson(username, "unused-password", mustChangePassword: false);
+    }
+
+    private static string CreateCredentialJson(
+        string username,
+        string password,
+        bool mustChangePassword,
+        int hashLength = 32)
+    {
+        var salt = Enumerable.Range(1, 16).Select(value => (byte)value).ToArray();
+        const int iterations = 1_000;
+        var hash = Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password),
+            salt,
+            iterations,
+            HashAlgorithmName.SHA256,
+            hashLength);
         return System.Text.Json.JsonSerializer.Serialize(new
         {
             Version = 1,
             Username = username,
-            SaltBase64 = Convert.ToBase64String(Enumerable.Range(1, 16).Select(value => (byte)value).ToArray()),
-            HashBase64 = Convert.ToBase64String(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()),
-            Iterations = 150_000,
-            MustChangePassword = false,
+            SaltBase64 = Convert.ToBase64String(salt),
+            HashBase64 = Convert.ToBase64String(hash),
+            Iterations = iterations,
+            MustChangePassword = mustChangePassword,
             CreatedAtUtc = DateTime.UnixEpoch,
             UpdatedAtUtc = DateTime.UnixEpoch
         });

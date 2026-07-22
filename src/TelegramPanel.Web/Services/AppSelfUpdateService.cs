@@ -19,6 +19,7 @@ public sealed class AppSelfUpdateService
     private readonly IMemoryCache _cache;
     private readonly IOptionsMonitor<UpdateCheckOptions> _updateOptions;
     private readonly IOptionsMonitor<SelfUpdateOptions> _selfUpdateOptions;
+    private readonly UpdateModeStore _updateModeStore;
     private readonly IConfiguration _configuration;
     private readonly IWebHostEnvironment _environment;
     private readonly AppRestartService _restartService;
@@ -30,6 +31,7 @@ public sealed class AppSelfUpdateService
         IMemoryCache cache,
         IOptionsMonitor<UpdateCheckOptions> updateOptions,
         IOptionsMonitor<SelfUpdateOptions> selfUpdateOptions,
+        UpdateModeStore updateModeStore,
         IConfiguration configuration,
         IWebHostEnvironment environment,
         AppRestartService restartService,
@@ -39,6 +41,7 @@ public sealed class AppSelfUpdateService
         _cache = cache;
         _updateOptions = updateOptions;
         _selfUpdateOptions = selfUpdateOptions;
+        _updateModeStore = updateModeStore;
         _configuration = configuration;
         _environment = environment;
         _restartService = restartService;
@@ -53,7 +56,7 @@ public sealed class AppSelfUpdateService
         var updateOptions = _updateOptions.CurrentValue;
         var selfUpdateOptions = _selfUpdateOptions.CurrentValue;
         var isDocker = IsRunningInDocker();
-        var updateMode = SelfUpdateOptions.NormalizeMode(selfUpdateOptions.Mode);
+        var updateMode = _updateModeStore.GetMode(selfUpdateOptions.Mode);
 
         if (updateMode == SelfUpdateOptions.ImageMode)
         {
@@ -153,7 +156,7 @@ public sealed class AppSelfUpdateService
     public async Task<AppSelfUpdateApplyResult> ApplyLatestAsync(CancellationToken cancellationToken = default)
     {
         var options = _selfUpdateOptions.CurrentValue;
-        var updateMode = SelfUpdateOptions.NormalizeMode(options.Mode);
+        var updateMode = _updateModeStore.GetMode(options.Mode);
         if (updateMode == SelfUpdateOptions.ImageMode)
             return AppSelfUpdateApplyResult.Failed("当前为 Docker 镜像更新模式，请通过 TP_IMAGE 切换镜像并重建容器");
 

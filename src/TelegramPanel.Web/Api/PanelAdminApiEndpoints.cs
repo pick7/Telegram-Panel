@@ -133,6 +133,7 @@ public static class PanelAdminApiEndpoints
         secured.MapGet("/version-info", GetVersionInfoAsync);
         secured.MapPost("/version-info/check", CheckVersionInfoAsync);
         secured.MapPost("/version-info/apply", ApplyVersionUpdateAsync);
+        secured.MapPost("/version-info/mode", SaveUpdateModeAsync);
         secured.MapPost("/system/restart", RestartSystemAsync);
         secured.MapPost("/settings/telegram-api", SaveTelegramApiSettingsAsync);
         secured.MapGet("/settings/global-proxy", GetGlobalProxySettingsAsync);
@@ -2270,6 +2271,22 @@ public static class PanelAdminApiEndpoints
         return result.Success
             ? Results.Ok(ToDto(result))
             : Results.BadRequest(ToDto(result));
+    }
+
+    private static async Task<IResult> SaveUpdateModeAsync(
+        UpdateModeRequestDto request,
+        UpdateModeStore updateModeStore,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        var mode = SelfUpdateOptions.NormalizeMode(request.Mode);
+        var root = await LoadLocalConfigRootAsync(LocalConfigFile.ResolvePath(configuration, environment));
+        var selfUpdate = EnsureObject(root, "SelfUpdate");
+        selfUpdate["Mode"] = mode;
+        await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
+        await updateModeStore.SetModeAsync(mode, cancellationToken);
+        return Results.Ok(new UpdateModeResultDto(true, mode, "更新方式已保存，重启面板后生效"));
     }
 
     private static async Task<IResult> SaveTelegramApiSettingsAsync(
@@ -5526,6 +5543,7 @@ public static class PanelAdminApiEndpoints
             info.Notes,
             info.CheckedAtUtc,
             info.IsDocker,
+            info.UpdateMode,
             info.CanApply,
             info.BlockedReason,
             info.AssetName,
@@ -7772,6 +7790,7 @@ public sealed record VersionInfoDto(
     string? Notes,
     DateTimeOffset CheckedAtUtc,
     bool IsDocker,
+    string UpdateMode,
     bool CanApply,
     string? BlockedReason,
     string? AssetName,
@@ -7783,6 +7802,9 @@ public sealed record VersionApplyResultDto(
     bool RestartScheduled,
     string? LatestTag,
     string? LatestVersion);
+
+public sealed record UpdateModeRequestDto(string? Mode);
+public sealed record UpdateModeResultDto(bool Success, string Mode, string Message);
 
 public sealed record TelegramApiSettingsDto(string ApiId, string ApiHash);
 public sealed record GlobalProxySettingsDto(

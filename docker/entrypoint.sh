@@ -17,7 +17,12 @@ UPDATE_ATTEMPTED_MARKER="$UPDATED_APP_DIR/.telegram-panel-update-attempted"
 UPDATE_CONFIRMED_MARKER="$UPDATED_APP_DIR/.telegram-panel-update-confirmed"
 IMAGE_VERSION_FILE="$DEFAULT_APP_DIR/version.txt"
 UPDATED_VERSION_FILE="$UPDATED_APP_DIR/version.txt"
-UPDATE_MODE="$(printf '%s' "${TELEGRAM_PANEL_UPDATE_MODE:-auto}" | tr '[:upper:]' '[:lower:]')"
+UPDATE_MODE_SOURCE="${TELEGRAM_PANEL_UPDATE_MODE:-auto}"
+UPDATE_MODE_FILE="$DATA_DIR/update-mode.txt"
+if [ -f "$UPDATE_MODE_FILE" ]; then
+  UPDATE_MODE_SOURCE="$(cat "$UPDATE_MODE_FILE")"
+fi
+UPDATE_MODE="$(printf '%s' "$UPDATE_MODE_SOURCE" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')"
 case "$UPDATE_MODE" in
   image|binary|auto) ;;
   *) UPDATE_MODE=auto ;;

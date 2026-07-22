@@ -24,8 +24,13 @@ log() {
 
 read_version_file() {
   if [ -f "$1" ]; then
-    # 兼容旧发布产物可能带有 UTF-8 BOM 的版本文件。
-    sed '1s/^\357\273\277//' "$1" | tr -d '\r\n'
+    # 兼容旧发布产物可能带有 UTF-8 BOM 的版本文件，不依赖 sed 扩展语法。
+    version="$(cat "$1")"
+    bom="$(printf '\357\273\277')"
+    case "$version" in
+      "$bom"*) version="${version#"$bom"}" ;;
+    esac
+    printf '%s' "$version" | tr -d '\r\n'
   fi
 }
 
@@ -48,7 +53,8 @@ version_is_greater() {
       if (NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) exit 1
       if (($1 + 0) != left1) exit (($1 + 0) > left1 ? 1 : 0)
       if (($2 + 0) != left2) exit (($2 + 0) > left2 ? 1 : 0)
-      exit (($3 + 0) > left3 ? 0 : 1)
+      if (($3 + 0) != left3) exit (($3 + 0) > left3 ? 1 : 0)
+      exit 1
     }
     { exit 1 }
   ' <<EOF

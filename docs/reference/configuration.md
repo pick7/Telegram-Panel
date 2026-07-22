@@ -48,9 +48,22 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 
 - `ConnectionStrings__DefaultConnection`：SQLite 路径（默认 `/data/telegram-panel.db`）
 - `Telegram__SessionsPath`：session 目录（默认 `/data/sessions`）
+- `Telegram__Proxy__Enabled`：显式启用或关闭 Telegram 全局代理
+- `Telegram__Proxy__SourceMode`：`manual`（手动地址）或 `existing`（引用代理表中的代理）
+- `Telegram__Proxy__ProxyId`：`SourceMode=existing` 时引用的代理 ID
+- `Telegram__Proxy__Protocol`：全局代理协议，支持 `http`、`socks5`、`mtproto`
 - `Telegram__Proxy__Server` / `Telegram__Proxy__Port`：Telegram 全局代理地址和端口
 - `Telegram__Proxy__Username` / `Telegram__Proxy__Password`：SOCKS5 代理认证（可选）
-- `Telegram__Proxy__Secret`：MTProxy Secret（可选；与用户名/密码二选一）
+- `Telegram__Proxy__Secret`：MTProxy Secret（仅 `mtproto` 使用）
+- `Proxy__Warp__Enabled`：允许面板管理独立 WARP 容器
+- `Proxy__Warp__Network`：WARP 容器加入的 Docker 网络
+- `Proxy__Warp__Protocol`：自动创建 WARP 时默认使用 `http` 或 `socks5`
+- `Proxy__Warp__Maintenance__Enabled`：启用受管 WARP 出口巡检与故障恢复
+- `Proxy__Warp__Maintenance__HealthCheckIntervalMinutes`：巡检周期，默认 5 分钟
+- `Proxy__Warp__Maintenance__FailureThreshold`：连续失败恢复阈值，默认 2 次
+- `Proxy__Warp__Maintenance__RecoveryCooldownMinutes`：失败恢复冷却，默认 30 分钟
+- `Proxy__Warp__Maintenance__ScheduledRefreshEnabled`：是否定时重启健康出口，默认关闭
+- `Proxy__Warp__Maintenance__ScheduledRefreshIntervalMinutes`：健康出口定时刷新周期，默认 720 分钟
 - `AdminAuth__CredentialsPath`：后台密码文件（默认 `/data/admin_auth.json`）
 - `Sync__AutoSyncEnabled`：账号创建的频道/群组自动同步（默认关闭）
 - `Telegram__BotAutoSyncEnabled`：Bot 频道自动同步（默认关闭）
@@ -67,14 +80,31 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `ChannelAdminPresets:Presets`：批量设置管理员的“用户名列表预设”（名称 -> usernames）
 - `ChannelInvitePresets:Presets`：批量邀请成员的“用户名列表预设”（名称 -> usernames）
 
-## Telegram 全局代理
+## 账号代理优先于全局代理
 
-在 `appsettings.local.json` 中配置后重启主程序，所有新建或重新连接的 Telegram 客户端都会使用该代理：
+代理管理中的 HTTP、SOCKS5、MTProxy、WARP 和 Resin 可以绑定到单个或多个账号。
+账号的 Telegram 客户端、后台任务和模块操作都会复用这条账号路由。完整操作说明见
+[代理管理与账号出口](../guides/proxy-management.md)。
+
+路由优先级由账号明确选择决定：
+
+- **已有代理**：使用账号绑定的代理。
+- **全局设置**：继承下面的 `Telegram:Proxy`。
+- **直连**：明确绕过账号代理和全局代理。
+
+## 配置 Telegram 全局代理
+
+推荐在后台 **代理管理 → 全局代理** 中配置。支持 HTTP、SOCKS5 和 MTProxy；
+保存后会立即重载 `appsettings.local.json` 并清理 Telegram 客户端缓存，无需重启。
+
+也可以手工配置，默认继承“全局设置”的账号会使用该代理：
 
 ```json
 {
   "Telegram": {
     "Proxy": {
+      "Enabled": true,
+      "Protocol": "socks5",
       "Server": "127.0.0.1",
       "Port": 40000,
       "Username": "",
@@ -85,10 +115,42 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 }
 ```
 
-- 普通 SOCKS5 代理按需填写 `Username`、`Password`。
+- `Protocol` 可填写 `http`、`socks5` 或 `mtproto`；旧配置未填写时会按 `Secret` 兼容推断。
+- HTTP / SOCKS5 按需填写 `Username`、`Password`。
 - MTProxy 填写 `Secret`，不需要用户名和密码。
+- `Enabled=false` 会显式关闭全局代理，即使环境变量仍保留旧地址也不会重新启用。
+- `SourceMode=existing` 时必须同时设置有效的 `ProxyId`；代理停用或删除后会闭锁连接，
+  不会静默回退为面板直连。后台代理管理页会自动写入这两个字段。
+- 后台停用时会保留已保存的连接参数；凭据不会回显，编辑留空表示保持原值。
+- 账号管理中的“已有代理”优先于全局设置；“直连”会明确绕过全局代理；“全局设置”可恢复继承该配置。升级前已有账号默认继续继承全局设置。
 - Docker 部署的配置文件位于宿主机 `docker-data/appsettings.local.json`。容器内的 `127.0.0.1` 指向容器自身；访问宿主机代理时应使用容器可访问的宿主机地址（Docker Desktop 通常可用 `host.docker.internal`），并确保代理监听地址和防火墙允许容器连接。
-- 修改配置后必须重启主程序，以释放已缓存的 Telegram 客户端并按新代理重新连接。
+- 手工编辑配置文件后应重启主程序；从后台保存时会自动重载并释放缓存客户端。
+
+## 配置受管 WARP 默认值
+
+使用 `docker-compose.warp.yml` 时，在 `.env` 设置：
+
+```dotenv
+TP_WARP_DOCKER_NETWORK=telegram-panel_default
+TP_WARP_PROXY_PROTOCOL=http
+TP_WARP_AUTO_RECOVERY_ENABLED=true
+TP_WARP_HEALTH_CHECK_INTERVAL_MINUTES=5
+TP_WARP_FAILURE_THRESHOLD=2
+TP_WARP_RECOVERY_COOLDOWN_MINUTES=30
+TP_WARP_SCHEDULED_REFRESH_ENABLED=false
+TP_WARP_SCHEDULED_REFRESH_INTERVAL_MINUTES=720
+```
+
+Compose 会映射为 `Proxy:Warp:Network` 和 `Proxy:Warp:Protocol`。修改后需要使用包含
+`docker-compose.warp.yml` 的命令重新创建容器。代理管理中的一键创建弹窗可以覆盖单次
+创建协议；导入、登录和批量绑定自动创建 WARP 时使用这里的默认值。
+
+默认 `Proxy:Warp:ProxyHostMode=container` 不发布宿主端口。自定义为 `published` 时，
+`Proxy:Warp:HostPortStart` 默认从 `42080` 起步；已占用或 Docker 绑定时发生冲突的端口会
+自动跳过并递增重试，失败重建不会删除已经创建的 WARP 数据卷。
+
+自动恢复会保留原数据卷，只重启容器并重新检测出口。健康出口的周期刷新默认关闭，
+因为它可能改变账号公网 IP；需要与 tokens-pro 相同的 720 分钟刷新行为时再显式开启。
 
 ## Bot 启用/停用（每个 Bot）
 

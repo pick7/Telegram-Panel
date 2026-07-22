@@ -22,4 +22,8 @@
     <ProjectReference Include="..\TelegramPanel.Data\TelegramPanel.Data.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="TelegramPanel.Web" />
+  </ItemGroup>
+
 </Project>

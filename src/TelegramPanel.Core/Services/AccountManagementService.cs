@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
@@ -16,6 +17,7 @@ public class AccountManagementService
     private readonly IChannelRepository _channelRepository;
     private readonly IGroupRepository _groupRepository;
     private readonly ITelegramClientPool _clientPool;
+    private readonly ProxyManagementService _proxyManagement;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AccountManagementService> _logger;
     private readonly ISessionPathResolver _sessionPathResolver;
@@ -27,12 +29,14 @@ public class AccountManagementService
         ITelegramClientPool clientPool,
         IConfiguration configuration,
         ILogger<AccountManagementService> logger,
+        ProxyManagementService proxyManagement,
         ISessionPathResolver sessionPathResolver)
     {
         _accountRepository = accountRepository;
         _channelRepository = channelRepository;
         _groupRepository = groupRepository;
         _clientPool = clientPool;
+        _proxyManagement = proxyManagement;
         _configuration = configuration;
         _logger = logger;
         _sessionPathResolver = sessionPathResolver;
@@ -146,20 +150,17 @@ public class AccountManagementService
         await _accountRepository.UpdateAsync(account);
     }
 
-    public async Task DeleteAccountAsync(int id)
+    public async Task DeleteAccountAsync(
+        int id,
+        CancellationToken cancellationToken = default)
     {
+        await using var mutationLease =
+            await _proxyManagement.AcquireMutationLeaseAsync(cancellationToken);
         var account = await _accountRepository.GetByIdAsync(id);
         if (account != null)
         {
-            try
-            {
-                // 先断开客户端，释放 session 文件锁
-                await _clientPool.RemoveClientAsync(account.Id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to remove client for account {AccountId} before deletion", account.Id);
-            }
+            // 解绑、资源回收和删除必须共享同一代理变更锁，避免窗口期被并发重新绑定。
+            await ReleaseAccountBindingAsync(mutationLease, account, cancellationToken);
 
             TryDeleteAccountFiles(account);
             await _accountRepository.DeleteAsync(account);
@@ -173,18 +174,14 @@ public class AccountManagementService
     /// </summary>
     public async Task PurgeAccountAsync(int id, CancellationToken cancellationToken = default)
     {
+        await using var mutationLease =
+            await _proxyManagement.AcquireMutationLeaseAsync(cancellationToken);
         var account = await _accountRepository.GetByIdAsync(id);
         if (account == null)
             return;
 
-        try
-        {
-            await _clientPool.RemoveClientAsync(account.Id);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to remove client for account {AccountId} before purge", account.Id);
-        }
+        // 代理资源清理可能失败；必须在销毁 session 前完成，确保失败后账号仍可重试。
+        await ReleaseAccountBindingAsync(mutationLease, account, cancellationToken);
 
         var sessionCandidates = ResolveSessionFileCandidates(account).ToList();
         var existingSessionFiles = sessionCandidates
@@ -221,6 +218,19 @@ public class AccountManagementService
         // session 删除成功后，再尽力清理其它关联文件（json/备份等）
         TryDeleteAccountFiles(account);
         await _accountRepository.DeleteAsync(account);
+    }
+
+    private async Task ReleaseAccountBindingAsync(
+        ProxyManagementService.MutationLease mutationLease,
+        Account account,
+        CancellationToken cancellationToken)
+    {
+        await _proxyManagement.ReleaseAccountBindingWithinMutationAsync(
+            mutationLease,
+            account.Id,
+            account.ProxyId ?? 0,
+            deactivateAccount: true,
+            cancellationToken);
     }
 
     private void TryDeleteAccountFiles(Account account)

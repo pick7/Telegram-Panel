@@ -72,7 +72,10 @@ public sealed class ScheduledTaskBackgroundService : BackgroundService
                 var lastBatchTask = await batchTaskManagement.GetTaskAsync(scheduledTask.LastBatchTaskId.Value);
                 if (lastBatchTask != null && lastBatchTask.Status is "pending" or "running" or "paused")
                 {
-                    _logger.LogInformation("计划任务 {ScheduledTaskId} 上次执行尚未结束，本轮跳过", scheduledTask.Id);
+                    _logger.LogInformation(
+                        "计划任务 {ScheduledTaskName}（{ScheduledTaskId}）上次执行尚未结束，本轮跳过",
+                        scheduledTask.Name,
+                        scheduledTask.Id);
                     await scheduledTaskService.AdvanceNextRunAsync(scheduledTask.Id, nowUtc, cancellationToken);
                     continue;
                 }
@@ -88,7 +91,12 @@ public sealed class ScheduledTaskBackgroundService : BackgroundService
             };
 
             var created = await batchTaskManagement.CreateTaskAsync(task);
-            _logger.LogInformation("计划任务触发：schedule={ScheduledTaskId}, batch={BatchTaskId}, type={TaskType}", scheduledTask.Id, created.Id, created.TaskType);
+            _logger.LogInformation(
+                "计划任务触发：name={ScheduledTaskName}, schedule={ScheduledTaskId}, batch={BatchTaskId}, type={TaskType}",
+                scheduledTask.Name,
+                scheduledTask.Id,
+                created.Id,
+                created.TaskType);
             await scheduledTaskService.MarkTriggeredAsync(scheduledTask.Id, nowUtc, created.Id, cancellationToken);
         }
     }

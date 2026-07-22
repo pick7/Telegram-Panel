@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using TelegramPanel.Core.Models;
 using TL;
 using WTelegram;
 
@@ -30,7 +31,9 @@ public static class SessionDataConverter
         int apiId,
         string apiHash,
         string sqliteSessionPath,
-        ILogger logger)
+        ILogger logger,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -41,7 +44,7 @@ public static class SessionDataConverter
             var jsonPath = TryFindAnySessionJsonPath(phone, absoluteSqliteSessionPath);
             if (!string.IsNullOrWhiteSpace(jsonPath) && File.Exists(jsonPath))
             {
-                var jsonText = await File.ReadAllTextAsync(jsonPath);
+                var jsonText = await File.ReadAllTextAsync(jsonPath, cancellationToken);
                 using var doc = JsonDocument.Parse(jsonText);
 
                 JsonElement sessionProp;
@@ -67,7 +70,9 @@ public static class SessionDataConverter
                             targetSessionPath: absoluteSqliteSessionPath,
                             phone: phone,
                             userId: userId,
-                            logger: logger);
+                            logger: logger,
+                            proxy: proxy,
+                            cancellationToken: cancellationToken);
 
                         if (converted.Ok)
                         {
@@ -88,7 +93,9 @@ public static class SessionDataConverter
                 targetSessionPath: absoluteSqliteSessionPath,
                 phone: phone,
                 userId: null,
-                logger: logger);
+                logger: logger,
+                proxy: proxy,
+                cancellationToken: cancellationToken);
 
             if (sqliteConverted.Ok)
                 logger.LogInformation("Converted sqlite session for {Phone} using sqlite content", phone);
@@ -111,9 +118,10 @@ public static class SessionDataConverter
         string targetSessionPath,
         string phone,
         long? userId,
-        ILogger logger)
+        ILogger logger,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
     {
-        string? backupPath = null;
         try
         {
             if (string.IsNullOrWhiteSpace(sessionString))
@@ -129,46 +137,35 @@ public static class SessionDataConverter
             if (!TryParseTelethonStringSession(sessionString.Trim(), out var telethon))
                 return SessionConvertResult.Fail("session_string 无法解析为 Telethon StringSession（可能格式不兼容或已损坏）");
 
-            // 先备份旧 sqlite session，再生成 WTelegram session 覆盖原路径
-            if (File.Exists(absoluteTargetSessionPath))
-            {
-                var suffix = LooksLikeSqliteSession(absoluteTargetSessionPath) ? "sqlite.bak" : "bak";
-                backupPath = BuildBackupPath(absoluteTargetSessionPath, suffix);
-                Directory.CreateDirectory(Path.GetDirectoryName(backupPath) ?? Directory.GetCurrentDirectory());
-                File.Move(absoluteTargetSessionPath, backupPath, overwrite: true);
-            }
-
             var sessionsDir = Path.GetDirectoryName(absoluteTargetSessionPath) ?? Directory.GetCurrentDirectory();
             Directory.CreateDirectory(sessionsDir);
+            using var replacement = AtomicSessionFileReplacement.Create(absoluteTargetSessionPath);
 
-            // 使用 WTelegram 的 Session 存储格式生成可用 session 文件（加密 JSON）
+            // 先在同目录候选文件中完成写入和联网验证，旧目标在验证成功前保持不变。
             var written = await WriteWTelegramSessionFileAsync(
                 apiId: apiId,
                 apiHash: apiHash,
-                sessionPath: absoluteTargetSessionPath,
+                sessionPath: replacement.StagingPath,
                 phoneDigits: normalizedPhone,
                 userId: userId,
                 dcId: telethon.DcId,
                 ipAddress: telethon.IpAddress,
                 port: telethon.Port,
                 authKey: telethon.AuthKey,
-                logger: logger
+                logger: logger,
+                proxy: proxy,
+                cancellationToken: cancellationToken
             );
             if (!written.Ok)
                 return written;
 
+            replacement.Apply();
+            replacement.Commit();
             return SessionConvertResult.Success();
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to create WTelegram session from session_string");
-            try { if (File.Exists(targetSessionPath)) File.Delete(targetSessionPath); } catch { }
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(backupPath) && File.Exists(backupPath) && !File.Exists(targetSessionPath))
-                    File.Move(backupPath, targetSessionPath, overwrite: true);
-            }
-            catch { }
             return SessionConvertResult.Fail($"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -197,9 +194,10 @@ public static class SessionDataConverter
         string targetSessionPath,
         string phone,
         long? userId,
-        ILogger logger)
+        ILogger logger,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
     {
-        string? backupPath = null;
         try
         {
             var absoluteSqlitePath = Path.GetFullPath(sqliteSessionPath);
@@ -217,42 +215,33 @@ public static class SessionDataConverter
             if (string.IsNullOrWhiteSpace(normalizedPhone))
                 return SessionConvertResult.Fail("无法从手机号/文件名解析出 phoneDigits");
 
-            if (File.Exists(absoluteTarget))
-            {
-                var suffix = LooksLikeSqliteSession(absoluteTarget) ? "sqlite.bak" : "bak";
-                backupPath = BuildBackupPath(absoluteTarget, suffix);
-                Directory.CreateDirectory(Path.GetDirectoryName(backupPath) ?? Directory.GetCurrentDirectory());
-                File.Move(absoluteTarget, backupPath, overwrite: true);
-            }
+            using var replacement = AtomicSessionFileReplacement.Create(absoluteTarget);
 
             var written = await WriteWTelegramSessionFileAsync(
                 apiId: apiId,
                 apiHash: apiHash,
-                sessionPath: absoluteTarget,
+                sessionPath: replacement.StagingPath,
                 phoneDigits: normalizedPhone ?? string.Empty,
                 userId: userId,
                 dcId: telethon.DcId,
                 ipAddress: telethon.IpAddress,
                 port: telethon.Port,
                 authKey: telethon.AuthKey,
-                logger: logger
+                logger: logger,
+                proxy: proxy,
+                cancellationToken: cancellationToken
             );
 
             if (!written.Ok)
                 return written;
 
+            replacement.Apply();
+            replacement.Commit();
             return SessionConvertResult.Success();
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to create WTelegram session from telethon sqlite session");
-            try { if (File.Exists(targetSessionPath)) File.Delete(targetSessionPath); } catch { }
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(backupPath) && File.Exists(backupPath) && !File.Exists(targetSessionPath))
-                    File.Move(backupPath, targetSessionPath, overwrite: true);
-            }
-            catch { }
             return SessionConvertResult.Fail($"{ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -266,7 +255,9 @@ public static class SessionDataConverter
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             {
                 DataSource = sqliteSessionPath,
-                Mode = SqliteOpenMode.ReadOnly
+                Mode = SqliteOpenMode.ReadOnly,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false
             }.ToString());
             connection.Open();
 
@@ -296,7 +287,7 @@ public static class SessionDataConverter
                 return false;
             }
 
-            if (port <= 0)
+            if (port is < 1 or > ushort.MaxValue)
             {
                 reason = $"port 无效：{port}";
                 return false;
@@ -637,7 +628,9 @@ public static class SessionDataConverter
         string ipAddress,
         ushort port,
         byte[] authKey,
-        ILogger logger)
+        ILogger logger,
+        ProxyConnectionOptions? proxy = null,
+        CancellationToken cancellationToken = default)
     {
         string Config(string what) => what switch
         {
@@ -714,6 +707,8 @@ public static class SessionDataConverter
         await using var probe = new Client(Config);
         try
         {
+            TelegramImportProxyConfigurator.Apply(probe, proxy, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             await probe.ConnectAsync();
             var users = await probe.Users_GetUsers(InputUser.Self);
             var self = users.OfType<User>().FirstOrDefault();
@@ -751,15 +746,6 @@ public static class SessionDataConverter
             logger.LogWarning(ex, "WTelegram session validation failed for {Phone}", phoneDigits);
             return SessionConvertResult.Fail($"验证失败：{ex.GetType().Name}: {ex.Message}");
         }
-    }
-
-    private static string BuildBackupPath(string originalPath, string suffix)
-    {
-        var fullPath = Path.GetFullPath(originalPath);
-        var dir = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
-        var name = Path.GetFileNameWithoutExtension(fullPath);
-        var ext = Path.GetExtension(fullPath);
-        return Path.Combine(dir, $"{name}.{suffix}{ext}");
     }
 
     private static string? TryFindRepoRoot()
@@ -823,5 +809,4 @@ public static class SessionDataConverter
         return digits.ToString();
     }
 
-    // 备份逻辑在 TryCreateWTelegramSessionFromSessionStringAsync 内集中处理
 }

@@ -7,6 +7,7 @@ using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Data.Entities;
 using TL;
 using WTelegram;
@@ -23,6 +24,7 @@ public class AccountTelegramToolsService
     private readonly AccountManagementService _accountManagement;
     private readonly ITelegramClientPool _clientPool;
     private readonly IConfiguration _configuration;
+    private readonly IAccountProxyResolver _proxyResolver;
     private readonly ILogger<AccountTelegramToolsService> _logger;
     private readonly TelegramAccountUpdateHub _updateHub;
     private readonly ISessionPathResolver _sessionPathResolver;
@@ -31,6 +33,7 @@ public class AccountTelegramToolsService
         AccountManagementService accountManagement,
         ITelegramClientPool clientPool,
         IConfiguration configuration,
+        IAccountProxyResolver proxyResolver,
         ILogger<AccountTelegramToolsService> logger,
         TelegramAccountUpdateHub updateHub,
         ISessionPathResolver sessionPathResolver)
@@ -38,6 +41,7 @@ public class AccountTelegramToolsService
         _accountManagement = accountManagement;
         _clientPool = clientPool;
         _configuration = configuration;
+        _proxyResolver = proxyResolver;
         _logger = logger;
         _updateHub = updateHub;
         _sessionPathResolver = sessionPathResolver;
@@ -484,16 +488,16 @@ public class AccountTelegramToolsService
                     return (true, "二级密码已重置成功（现在可以直接重新设置二级密码）", null);
 
                 case TL.Account_ResetPasswordRequestedWait wait:
-                {
-                    var untilUtc = ToUtcDateTimeOffset(wait.until_date);
-                    return (true, $"已提交重置申请，请等待至 {untilUtc:yyyy-MM-dd HH:mm:ss} UTC 后再完成重置/重新设置二级密码", untilUtc);
-                }
+                    {
+                        var untilUtc = ToUtcDateTimeOffset(wait.until_date);
+                        return (true, $"已提交重置申请，请等待至 {untilUtc:yyyy-MM-dd HH:mm:ss} UTC 后再完成重置/重新设置二级密码", untilUtc);
+                    }
 
                 case TL.Account_ResetPasswordFailedWait failed:
-                {
-                    var retryUtc = ToUtcDateTimeOffset(failed.retry_date);
-                    return (false, $"近期有被取消的重置申请，需等待至 {retryUtc:yyyy-MM-dd HH:mm:ss} UTC 后才能再次申请", retryUtc);
-                }
+                    {
+                        var retryUtc = ToUtcDateTimeOffset(failed.retry_date);
+                        return (false, $"近期有被取消的重置申请，需等待至 {retryUtc:yyyy-MM-dd HH:mm:ss} UTC 后才能再次申请", retryUtc);
+                    }
 
                 default:
                     return (false, $"未知返回类型：{result.GetType().Name}", null);
@@ -1311,29 +1315,29 @@ public class AccountTelegramToolsService
             switch (chat)
             {
                 case TL.Channel channel when channel.IsActive:
-                {
-                    var rawId = channel.id;
-                    var botApiId = BuildChannelBotApiChatId(rawId);
-                    if (normalizedId != rawId && normalizedId != botApiId)
-                        continue;
+                    {
+                        var rawId = channel.id;
+                        var botApiId = BuildChannelBotApiChatId(rawId);
+                        if (normalizedId != rawId && normalizedId != botApiId)
+                            continue;
 
-                    return new ResolvedChatTarget(
-                        channel.ToInputPeer(),
-                        NormalizeChatTitle(channel.title, rawId.ToString(CultureInfo.InvariantCulture)),
-                        botApiId.ToString(CultureInfo.InvariantCulture));
-                }
+                        return new ResolvedChatTarget(
+                            channel.ToInputPeer(),
+                            NormalizeChatTitle(channel.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                            botApiId.ToString(CultureInfo.InvariantCulture));
+                    }
                 case TL.Chat basic when basic.IsActive:
-                {
-                    var rawId = basic.id;
-                    var negativeId = -rawId;
-                    if (normalizedId != rawId && normalizedId != negativeId)
-                        continue;
+                    {
+                        var rawId = basic.id;
+                        var negativeId = -rawId;
+                        if (normalizedId != rawId && normalizedId != negativeId)
+                            continue;
 
-                    return new ResolvedChatTarget(
-                        basic.ToInputPeer(),
-                        NormalizeChatTitle(basic.title, rawId.ToString(CultureInfo.InvariantCulture)),
-                        rawId.ToString(CultureInfo.InvariantCulture));
-                }
+                        return new ResolvedChatTarget(
+                            basic.ToInputPeer(),
+                            NormalizeChatTitle(basic.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                            rawId.ToString(CultureInfo.InvariantCulture));
+                    }
             }
         }
 
@@ -2014,16 +2018,27 @@ public class AccountTelegramToolsService
             throw new InvalidOperationException("账号缺少 SessionPath，无法创建 Telegram 客户端");
 
         var absoluteSessionPath = _sessionPathResolver.Resolve(account.SessionPath);
+        // 先释放可能仍会保存旧 Session 的客户端，避免其在转换完成后覆盖新文件。
+        await _clientPool.RemoveClientAsync(accountId);
         if (File.Exists(absoluteSessionPath) && SessionDataConverter.LooksLikeSqliteSession(absoluteSessionPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var proxyResolution = await _proxyResolver.ResolveAsync(accountId, cancellationToken);
+            var proxy = proxyResolution.Proxy
+                ?? (proxyResolution.UseGlobalProxy
+                    ? throw new InvalidOperationException(
+                        "全局代理路由未在 Session 转换前解析，已阻止降级为直连")
+                    : null);
+
             var converted = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
                 phone: account.Phone,
-                apiId: account.ApiId,
-                apiHash: account.ApiHash,
+                apiId: apiId,
+                apiHash: apiHash,
                 sqliteSessionPath: absoluteSessionPath,
-                logger: _logger
+                logger: _logger,
+                proxy: proxy,
+                cancellationToken: cancellationToken
             );
 
             if (!converted.Ok)
@@ -2034,7 +2049,6 @@ public class AccountTelegramToolsService
             }
         }
 
-        await _clientPool.RemoveClientAsync(accountId);
         cancellationToken.ThrowIfCancellationRequested();
 
         var client = await _clientPool.GetOrCreateClientAsync(

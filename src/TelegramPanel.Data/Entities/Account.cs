@@ -36,6 +36,8 @@ public class Account
     public string ApiHash { get; set; } = null!;
     public bool IsActive { get; set; } = true;
     public int? CategoryId { get; set; }
+    public int? ProxyId { get; set; }
+    public bool UseGlobalProxy { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime LastSyncAt { get; set; } = DateTime.UtcNow;
 
@@ -93,6 +95,7 @@ public class Account
 
     // 导航属性
     public AccountCategory? Category { get; set; }
+    public OutboundProxy? Proxy { get; set; }
     public ICollection<Channel> Channels { get; set; } = new List<Channel>();
     public ICollection<AccountChannel> AccountChannels { get; set; } = new List<AccountChannel>();
     public ICollection<Group> Groups { get; set; } = new List<Group>();

@@ -1,15 +1,19 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc;
 using TelegramPanel.Web.ExternalApi;
 using TelegramPanel.Core.BatchTasks;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Services.Proxy;
 using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Core.Utils;
 using TelegramPanel.Data.Entities;
@@ -23,6 +27,8 @@ namespace TelegramPanel.Web.Api;
 public static class PanelAdminApiEndpoints
 {
     private const string AccountRiskConfirmationRequiredCode = "ACCOUNT_RISK_CONFIRMATION_REQUIRED";
+    internal const long AccountImportZipMaxFileSize = 200L * 1024 * 1024;
+    internal const long AccountImportZipMaxRequestSize = AccountImportZipMaxFileSize + 1024 * 1024;
 
     public static void MapPanelAdminApi(this WebApplication app, bool requireAdminAuth)
     {
@@ -55,6 +61,8 @@ public static class PanelAdminApiEndpoints
         var secured = api.MapGroup("");
         if (requireAdminAuth)
             secured.RequireAuthorization();
+
+        secured.MapProxyManagementApi();
 
         secured.MapGet("/summary", GetSummaryAsync);
 
@@ -104,7 +112,9 @@ public static class PanelAdminApiEndpoints
         secured.MapPost("/accounts/{id:int}/login-email", SetLoginEmailAsync);
         secured.MapPost("/accounts/{id:int}/login-email/confirm", ConfirmLoginEmailAsync);
         secured.MapPost("/accounts/batch/recovery-email", BatchChangeTwoFactorRecoveryEmailAsync);
-        secured.MapPost("/accounts/import/zip", ImportAccountsZipAsync).DisableAntiforgery();
+        ConfigureAccountImportZipLimits(
+            secured.MapPost("/accounts/import/zip", ImportAccountsZipAsync)
+                .DisableAntiforgery());
         secured.MapPost("/accounts/import/session-files", ImportAccountsSessionFilesAsync).DisableAntiforgery();
         secured.MapPost("/accounts/import/string-session", ImportAccountsStringSessionAsync);
         secured.MapPost("/accounts/login/start", StartAccountLoginAsync);
@@ -125,6 +135,8 @@ public static class PanelAdminApiEndpoints
         secured.MapPost("/version-info/apply", ApplyVersionUpdateAsync);
         secured.MapPost("/system/restart", RestartSystemAsync);
         secured.MapPost("/settings/telegram-api", SaveTelegramApiSettingsAsync);
+        secured.MapGet("/settings/global-proxy", GetGlobalProxySettingsAsync);
+        secured.MapPost("/settings/global-proxy", SaveGlobalProxySettingsEndpointAsync);
         secured.MapPost("/settings/cloud-mail", SaveCloudMailSettingsAsync);
         secured.MapPost("/settings/cloud-mail/token", GenerateCloudMailTokenAsync);
         secured.MapPost("/settings/ai", SaveAiSettingsAsync);
@@ -302,6 +314,37 @@ public static class PanelAdminApiEndpoints
         secured.MapGet("/external-apis/bots/{botId:int}/chats", GetExternalApiBotChatsAsync);
 
         secured.MapGet("/module-nav", GetModuleNavAsync);
+    }
+
+    internal static RouteHandlerBuilder ConfigureAccountImportZipLimits(
+        RouteHandlerBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        // 业务允许 200MB 文件；请求体额外预留 multipart 边界和表单字段空间。
+        return builder
+            .WithMetadata(new RequestSizeLimitAttribute(AccountImportZipMaxRequestSize))
+            .WithFormOptions(
+                multipartBodyLengthLimit: AccountImportZipMaxRequestSize);
+    }
+
+    internal static FormOptions PrepareAccountImportZipRequest(
+        HttpRequest httpRequest)
+    {
+        ArgumentNullException.ThrowIfNull(httpRequest);
+
+        var requestSizeFeature = httpRequest.HttpContext.Features
+            .Get<IHttpMaxRequestBodySizeFeature>();
+        if (requestSizeFeature is { IsReadOnly: false })
+        {
+            requestSizeFeature.MaxRequestBodySize =
+                AccountImportZipMaxRequestSize;
+        }
+
+        return new FormOptions
+        {
+            MultipartBodyLengthLimit = AccountImportZipMaxRequestSize
+        };
     }
 
     private static async Task<IResult> LoginAsync(
@@ -997,51 +1040,51 @@ public static class PanelAdminApiEndpoints
                 switch (mode)
                 {
                     case "nickname":
-                    {
-                        var template = nicknameTemplates[index % nicknameTemplates.Count];
-                        var resolvedNickname = (await templateRendering.RenderTextTemplateAsync(template, cancellationToken)).Trim();
-                        if (string.IsNullOrWhiteSpace(resolvedNickname))
-                            throw new InvalidOperationException("生成的昵称为空，请检查模板或字典内容");
-
-                        usedNicknames.TryGetValue(resolvedNickname, out var usedCount);
-                        usedNicknames[resolvedNickname] = usedCount + 1;
-                        var nickname = BuildNickname(
-                            resolvedNickname,
-                            account?.Phone ?? string.Empty,
-                            request.AppendPhoneLast4WhenDuplicate == true && usedCount > 0);
-
-                        var (ok, err) = await accountTools.UpdateUserProfileAsync(id, nickname, null, cancellationToken);
-                        if (ok && account != null)
                         {
-                            account.Nickname = nickname;
-                            await accountManagement.UpdateAccountAsync(account);
+                            var template = nicknameTemplates[index % nicknameTemplates.Count];
+                            var resolvedNickname = (await templateRendering.RenderTextTemplateAsync(template, cancellationToken)).Trim();
+                            if (string.IsNullOrWhiteSpace(resolvedNickname))
+                                throw new InvalidOperationException("生成的昵称为空，请检查模板或字典内容");
+
+                            usedNicknames.TryGetValue(resolvedNickname, out var usedCount);
+                            usedNicknames[resolvedNickname] = usedCount + 1;
+                            var nickname = BuildNickname(
+                                resolvedNickname,
+                                account?.Phone ?? string.Empty,
+                                request.AppendPhoneLast4WhenDuplicate == true && usedCount > 0);
+
+                            var (ok, err) = await accountTools.UpdateUserProfileAsync(id, nickname, null, cancellationToken);
+                            if (ok && account != null)
+                            {
+                                account.Nickname = nickname;
+                                await accountManagement.UpdateAccountAsync(account);
+                            }
+                            results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? $"昵称已修改：{nickname}" : "修改失败", err));
+                            break;
                         }
-                        results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? $"昵称已修改：{nickname}" : "修改失败", err));
-                        break;
-                    }
                     case "bio":
-                    {
-                        var (ok, err) = await accountTools.UpdateUserProfileAsync(id, null, request.Bio ?? string.Empty, cancellationToken);
-                        results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? "Bio 已修改" : "修改失败", err));
-                        break;
-                    }
-                    case "username":
-                    {
-                        var indexedTemplate = BuildIndexedValue(usernameTemplate, account, id, index);
-                        var renderedTemplate = await templateRendering.RenderTextTemplateAsync(indexedTemplate, cancellationToken);
-                        var username = BuildIndexedValue(renderedTemplate, account, id, index);
-                        if (!TryPrepareUsername(username, generatedUsernames, out var preparedUsername, out var prepareError))
-                            throw new InvalidOperationException(prepareError ?? "生成用户名失败");
-
-                        var (ok, err, normalized) = await accountTools.UpdateUsernameAsync(id, preparedUsername, cancellationToken);
-                        if (ok && account != null)
                         {
-                            account.Username = normalized;
-                            await accountManagement.UpdateAccountAsync(account);
+                            var (ok, err) = await accountTools.UpdateUserProfileAsync(id, null, request.Bio ?? string.Empty, cancellationToken);
+                            results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? "Bio 已修改" : "修改失败", err));
+                            break;
                         }
-                        results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? $"用户名已修改：{preparedUsername}" : "修改失败", err));
-                        break;
-                    }
+                    case "username":
+                        {
+                            var indexedTemplate = BuildIndexedValue(usernameTemplate, account, id, index);
+                            var renderedTemplate = await templateRendering.RenderTextTemplateAsync(indexedTemplate, cancellationToken);
+                            var username = BuildIndexedValue(renderedTemplate, account, id, index);
+                            if (!TryPrepareUsername(username, generatedUsernames, out var preparedUsername, out var prepareError))
+                                throw new InvalidOperationException(prepareError ?? "生成用户名失败");
+
+                            var (ok, err, normalized) = await accountTools.UpdateUsernameAsync(id, preparedUsername, cancellationToken);
+                            if (ok && account != null)
+                            {
+                                account.Username = normalized;
+                                await accountManagement.UpdateAccountAsync(account);
+                            }
+                            results.Add(new AccountOperationItemDto(id, account?.DisplayPhone, ok, ok ? $"用户名已修改：{preparedUsername}" : "修改失败", err));
+                            break;
+                        }
                     default:
                         throw new InvalidOperationException("批量资料模式无效");
                 }
@@ -1606,30 +1649,81 @@ public static class PanelAdminApiEndpoints
         HttpRequest httpRequest,
         AccountImportService importService,
         AccountManagementService accountManagement,
+        ProxyManagementService proxyManagement,
         CancellationToken cancellationToken)
     {
         if (!httpRequest.HasFormContentType)
             return Results.BadRequest(new OperationResultDto(false, "请使用 multipart/form-data 上传 zip 文件"));
 
-        var form = await httpRequest.ReadFormAsync(cancellationToken);
+        var formOptions = PrepareAccountImportZipRequest(httpRequest);
+        var form = await httpRequest.ReadFormAsync(
+            formOptions,
+            cancellationToken);
         var file = form.Files.GetFile("file");
         if (file == null)
             return Results.BadRequest(new OperationResultDto(false, "请先选择 Zip 压缩包"));
-        if (file.Length > 200L * 1024 * 1024)
+        if (file.Length > AccountImportZipMaxFileSize)
             return Results.BadRequest(new OperationResultDto(false, "Zip 压缩包不能超过 200MB"));
 
         var categoryId = ParseNullableInt(form["categoryId"]);
         var twoFactorPassword = NormalizeNullable(form["twoFactorPassword"]);
+        var proxyStrategy = form["proxyStrategy"].ToString().Trim().ToLowerInvariant();
+        var usesPerAccountProxyBatch = proxyStrategy == "proxy_per_account";
+        var perAccountProxyText = usesPerAccountProxyBatch
+            ? form["proxyText"].ToString()
+            : null;
+        AccountProxyBindingInput? proxyBinding = null;
+        if (usesPerAccountProxyBatch)
+        {
+            if (string.IsNullOrWhiteSpace(perAccountProxyText))
+            {
+                return Results.BadRequest(new OperationResultDto(
+                    false,
+                    "请填写逐账号批量代理，每行一个代理地址"));
+            }
+            if (perAccountProxyText.Length > ProxyManagementService.MaxPerAccountProxyTextLength)
+            {
+                return Results.BadRequest(new OperationResultDto(
+                    false,
+                    "批量代理文本不能超过 100000 个字符"));
+            }
+        }
+        else
+        {
+            proxyBinding = ParseImportProxyBinding(proxyStrategy, form["proxyId"]);
+            if (proxyBinding == null)
+            {
+                return Results.BadRequest(new OperationResultDto(
+                    false,
+                    "请先明确选择账号首次连接出口：已有代理、逐账号批量代理、独立 WARP、已配置的全局代理或明确直连"));
+            }
+            await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
+        }
 
         await using var stream = file.OpenReadStream();
-        var results = await importService.ImportFromZipStreamAsync(file.FileName, stream, categoryId, twoFactorPassword);
-        return Results.Ok(await BuildImportResponseAsync(results, accountManagement));
+        try
+        {
+            var results = await importService.ImportFromZipStreamAsync(
+                file.FileName,
+                stream,
+                categoryId,
+                twoFactorPassword,
+                proxyBinding,
+                cancellationToken,
+                perAccountProxyText);
+            return Results.Ok(await BuildImportResponseAsync(results, accountManagement));
+        }
+        catch (AccountImportProxyBatchException ex)
+        {
+            return Results.BadRequest(new OperationResultDto(false, ex.Message));
+        }
     }
 
     private static async Task<IResult> ImportAccountsSessionFilesAsync(
         HttpRequest httpRequest,
         AccountImportService importService,
         AccountManagementService accountManagement,
+        ProxyManagementService proxyManagement,
         IConfiguration configuration,
         CancellationToken cancellationToken)
     {
@@ -1647,13 +1741,37 @@ public static class PanelAdminApiEndpoints
             return Results.BadRequest(new OperationResultDto(false, "单个 Session 文件不能超过 10MB"));
 
         var categoryId = ParseNullableInt(form["categoryId"]);
+        var proxyBinding = ParseImportProxyBinding(form["proxyStrategy"], form["proxyId"]);
+        if (proxyBinding == null)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                "请先明确选择账号首次连接出口：已有代理、独立 WARP、已配置的全局代理或明确直连；逐账号批量代理仅支持 Zip 导入"));
+        }
+        if (string.Equals(
+                proxyBinding.Strategy,
+                "warp_per_account",
+                StringComparison.OrdinalIgnoreCase)
+            && files.Count > AccountImportService.MaxPerAccountWarpBatchSize)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                $"逐账号 WARP 单次最多处理 {AccountImportService.MaxPerAccountWarpBatchSize} 个账号"));
+        }
+        await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
         var importFiles = new List<AccountImportFile>();
         foreach (var file in files)
             importFiles.Add(new AccountImportFile(file.FileName, file.OpenReadStream()));
 
         try
         {
-            var results = await importService.ImportFromSessionFileStreamsAsync(importFiles, apiId, apiHash, categoryId);
+            var results = await importService.ImportFromSessionFileStreamsAsync(
+                importFiles,
+                apiId,
+                apiHash,
+                categoryId,
+                proxyBinding,
+                cancellationToken);
             return Results.Ok(await BuildImportResponseAsync(results, accountManagement));
         }
         finally
@@ -1667,7 +1785,9 @@ public static class PanelAdminApiEndpoints
         ImportStringSessionRequestDto request,
         AccountImportService importService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        ProxyManagementService proxyManagement,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (!TryGetTelegramApi(configuration, out var apiId, out var apiHash, out var apiError))
             return Results.BadRequest(new OperationResultDto(false, apiError));
@@ -1676,7 +1796,22 @@ public static class PanelAdminApiEndpoints
         if (string.IsNullOrWhiteSpace(sessionString))
             return Results.BadRequest(new OperationResultDto(false, "请填写 StringSession"));
 
-        var result = await importService.ImportFromStringSessionAsync(sessionString, apiId, apiHash, request.CategoryId);
+        var proxyBinding = ParseImportProxyBinding(request.ProxyStrategy, request.ProxyId?.ToString());
+        if (proxyBinding == null)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                "请先明确选择账号首次连接出口：已有代理、独立 WARP、已配置的全局代理或明确直连；逐账号批量代理仅支持 Zip 导入"));
+        }
+        await proxyManagement.ValidateBindingInputAsync(proxyBinding, cancellationToken);
+
+        var result = await importService.ImportFromStringSessionAsync(
+            sessionString,
+            apiId,
+            apiHash,
+            request.CategoryId,
+            proxyBinding,
+            cancellationToken);
         return Results.Ok(await BuildImportResponseAsync(new[] { result }, accountManagement));
     }
 
@@ -1684,7 +1819,9 @@ public static class PanelAdminApiEndpoints
         StartAccountLoginRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (!TryGetTelegramApi(configuration, out _, out _, out var apiError))
             return Results.BadRequest(new OperationResultDto(false, apiError));
@@ -1693,46 +1830,247 @@ public static class PanelAdminApiEndpoints
         if (string.IsNullOrWhiteSpace(phone))
             return Results.BadRequest(new OperationResultDto(false, "请输入手机号（包含国家代码）"));
 
-        var loginId = request.LoginId > 0 ? request.LoginId : Random.Shared.Next(1, int.MaxValue);
-        var result = await accountService.StartLoginAsync(loginId, phone);
-        return await BuildLoginResponseAsync(loginId, result, accountService, accountManagement, configuration);
+        var reuseLoginId = request.LoginId > 0 && loginProxy.HasState(request.LoginId);
+        var loginId = reuseLoginId
+            ? request.LoginId
+            : await ResolveLoginIdAsync(
+                request.LoginId,
+                loginProxy,
+                accountManagement);
+        AccountLoginProxyStateLease? reuseLease = null;
+        AccountLoginProxyState proxyState;
+        try
+        {
+            if (reuseLoginId)
+            {
+                reuseLease = loginProxy.ClaimFrozenState(
+                    loginId,
+                    request.ProxyStrategy,
+                    request.ProxyId);
+                try
+                {
+                    await accountService.ReleaseClientStrictAsync(loginId);
+                }
+                catch (Exception ex)
+                {
+                    reuseLease.Dispose();
+                    reuseLease = null;
+                    return Results.BadRequest(new AccountLoginResponseDto(
+                        false,
+                        loginId,
+                        null,
+                        $"旧登录客户端无法安全停止，已保留冻结路由并阻止重新发送验证码：{ex.Message}",
+                        null));
+                }
+
+                proxyState = reuseLease.State;
+            }
+            else
+            {
+                proxyState = await loginProxy.PrepareAsync(
+                    loginId,
+                    request.ProxyStrategy,
+                    request.ProxyId,
+                    cancellationToken);
+            }
+        }
+        catch (Exception ex) when (IsLoginProxyInputError(ex))
+        {
+            reuseLease?.Dispose();
+            return Results.BadRequest(new AccountLoginResponseDto(
+                false,
+                loginId,
+                null,
+                ex.Message,
+                null));
+        }
+
+        try
+        {
+            await loginProxy.QuiesceExistingAccountAsync(loginId, phone, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            reuseLease?.Dispose();
+            if (!reuseLoginId)
+                await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+            return Results.BadRequest(new AccountLoginResponseDto(
+                false,
+                loginId,
+                null,
+                ex.Message,
+                null));
+        }
+
+        LoginResult result;
+        try
+        {
+            result = await accountService.StartLoginAsync(
+                loginId,
+                phone,
+                proxyState.Resolution);
+        }
+        catch (Exception ex) when (IsLoginProxyInputError(ex))
+        {
+            reuseLease?.Dispose();
+            if (!reuseLoginId)
+                await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+            return Results.BadRequest(new AccountLoginResponseDto(
+                false,
+                loginId,
+                null,
+                ex.Message,
+                null));
+        }
+        catch
+        {
+            reuseLease?.Dispose();
+            if (!reuseLoginId)
+                await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+            throw;
+        }
+
+        reuseLease?.Dispose();
+        return await BuildLoginResponseAsync(
+            loginId,
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            cancellationToken: cancellationToken);
     }
 
     private static async Task<IResult> StartAccountQrLoginAsync(
         StartAccountQrLoginRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (!TryGetTelegramApi(configuration, out _, out _, out var apiError))
             return Results.Ok(new AccountQrLoginResponseDto(false, request.LoginId, "failed", apiError, null, null, null));
 
-        var loginId = request.LoginId > 0 ? request.LoginId : Random.Shared.Next(1, int.MaxValue);
-        var result = await accountService.StartQrLoginAsync(loginId);
-        return await BuildQrLoginResponseAsync(result, accountService, accountManagement, configuration);
+        var reuseLoginId = request.LoginId > 0 && loginProxy.HasState(request.LoginId);
+        var loginId = reuseLoginId
+            ? request.LoginId
+            : await ResolveLoginIdAsync(
+                request.LoginId,
+                loginProxy,
+                accountManagement);
+        AccountLoginProxyStateLease? reuseLease = null;
+        AccountLoginProxyState proxyState;
+        try
+        {
+            if (reuseLoginId)
+            {
+                reuseLease = loginProxy.ClaimFrozenState(
+                    loginId,
+                    request.ProxyStrategy,
+                    request.ProxyId);
+                try
+                {
+                    await accountService.CancelQrLoginStrictAsync(loginId);
+                }
+                catch (Exception ex)
+                {
+                    reuseLease.Dispose();
+                    reuseLease = null;
+                    return Results.Ok(new AccountQrLoginResponseDto(
+                        false,
+                        loginId,
+                        "failed",
+                        $"旧二维码登录客户端无法安全停止，已保留冻结路由并阻止重新生成：{ex.Message}",
+                        null,
+                        null,
+                        null));
+                }
+
+                proxyState = reuseLease.State;
+            }
+            else
+            {
+                proxyState = await loginProxy.PrepareAsync(
+                    loginId,
+                    request.ProxyStrategy,
+                    request.ProxyId,
+                    cancellationToken);
+            }
+        }
+        catch (Exception ex) when (IsLoginProxyInputError(ex))
+        {
+            reuseLease?.Dispose();
+            return Results.Ok(new AccountQrLoginResponseDto(
+                false,
+                loginId,
+                "failed",
+                ex.Message,
+                null,
+                null,
+                null));
+        }
+
+        QrLoginResult result;
+        try
+        {
+            result = await accountService.StartQrLoginAsync(
+                loginId,
+                proxyState.Resolution);
+        }
+        catch
+        {
+            reuseLease?.Dispose();
+            if (!reuseLoginId)
+                await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+            throw;
+        }
+
+        reuseLease?.Dispose();
+        return await BuildQrLoginResponseAsync(
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            cancellationToken: cancellationToken);
     }
 
     private static async Task<IResult> PollAccountQrLoginAsync(
         AccountLoginSessionRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (request.LoginId <= 0)
             return Results.Ok(new AccountQrLoginResponseDto(false, request.LoginId, "expired", "扫码登录会话已失效，请重新生成二维码", null, null, null));
+        if (!loginProxy.HasState(request.LoginId))
+            return Results.Ok(new AccountQrLoginResponseDto(false, request.LoginId, "expired", "登录代理会话已失效，请重新生成二维码", null, null, null));
 
         var result = await accountService.PollQrLoginAsync(request.LoginId);
-        return await BuildQrLoginResponseAsync(result, accountService, accountManagement, configuration);
+        return await BuildQrLoginResponseAsync(
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            cancellationToken: cancellationToken);
     }
 
     private static async Task<IResult> SubmitAccountQrLoginPasswordAsync(
         AccountLoginPasswordRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (request.LoginId <= 0)
             return Results.Ok(new AccountQrLoginResponseDto(false, request.LoginId, "expired", "扫码登录会话已失效，请重新生成二维码", null, null, null));
+        if (!loginProxy.HasState(request.LoginId))
+            return Results.Ok(new AccountQrLoginResponseDto(false, request.LoginId, "expired", "登录代理会话已失效，请重新生成二维码", null, null, null));
 
         var password = request.Password ?? string.Empty;
         if (string.IsNullOrWhiteSpace(password))
@@ -1740,15 +2078,36 @@ public static class PanelAdminApiEndpoints
 
         var result = await accountService.SubmitQrPasswordAsync(request.LoginId, password);
         var passwordToSave = request.SaveTwoFactorPassword == true ? password : null;
-        return await BuildQrLoginResponseAsync(result, accountService, accountManagement, configuration, passwordToSave);
+        return await BuildQrLoginResponseAsync(
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            passwordToSave,
+            cancellationToken);
     }
 
     private static async Task<IResult> CancelAccountQrLoginAsync(
         AccountLoginSessionRequestDto request,
-        IAccountService accountService)
+        IAccountService accountService,
+        AccountLoginProxyCoordinator loginProxy)
     {
         if (request.LoginId > 0)
-            await accountService.CancelQrLoginAsync(request.LoginId);
+        {
+            try
+            {
+                await accountService.CancelQrLoginStrictAsync(request.LoginId);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new OperationResultDto(
+                    false,
+                    $"旧二维码登录客户端无法安全停止，已保留冻结路由：{ex.Message}"));
+            }
+
+            await loginProxy.AbandonAsync(request.LoginId, CancellationToken.None);
+        }
 
         return Results.Ok(new OperationResultDto(true, "扫码登录会话已取消"));
     }
@@ -1757,40 +2116,66 @@ public static class PanelAdminApiEndpoints
         AccountLoginCodeRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (request.LoginId <= 0)
             return Results.BadRequest(new OperationResultDto(false, "登录会话已失效，请重新发送验证码"));
+        if (!loginProxy.HasState(request.LoginId))
+            return Results.BadRequest(new OperationResultDto(false, "登录代理会话已失效，请重新发送验证码"));
 
         var code = (request.Code ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(code))
             return Results.BadRequest(new OperationResultDto(false, "请输入验证码"));
 
         var result = await accountService.SubmitCodeAsync(request.LoginId, code);
-        return await BuildLoginResponseAsync(request.LoginId, result, accountService, accountManagement, configuration);
+        return await BuildLoginResponseAsync(
+            request.LoginId,
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            cancellationToken: cancellationToken);
     }
 
     private static async Task<IResult> ResendAccountLoginCodeAsync(
         AccountLoginSessionRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (request.LoginId <= 0)
             return Results.BadRequest(new OperationResultDto(false, "登录会话已失效，请重新发送验证码"));
+        if (!loginProxy.HasState(request.LoginId))
+            return Results.BadRequest(new OperationResultDto(false, "登录代理会话已失效，请重新发送验证码"));
 
         var result = await accountService.ResendCodeAsync(request.LoginId);
-        return await BuildLoginResponseAsync(request.LoginId, result, accountService, accountManagement, configuration);
+        return await BuildLoginResponseAsync(
+            request.LoginId,
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            cancellationToken: cancellationToken);
     }
 
     private static async Task<IResult> SubmitAccountLoginPasswordAsync(
         AccountLoginPasswordRequestDto request,
         IAccountService accountService,
         AccountManagementService accountManagement,
-        IConfiguration configuration)
+        AccountLoginProxyCoordinator loginProxy,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         if (request.LoginId <= 0)
             return Results.BadRequest(new OperationResultDto(false, "登录会话已失效，请重新发送验证码"));
+        if (!loginProxy.HasState(request.LoginId))
+            return Results.BadRequest(new OperationResultDto(false, "登录代理会话已失效，请重新发送验证码"));
 
         var password = request.Password ?? string.Empty;
         if (string.IsNullOrWhiteSpace(password))
@@ -1798,15 +2183,37 @@ public static class PanelAdminApiEndpoints
 
         var result = await accountService.SubmitPasswordAsync(request.LoginId, password);
         var passwordToSave = request.SaveTwoFactorPassword == true ? password : null;
-        return await BuildLoginResponseAsync(request.LoginId, result, accountService, accountManagement, configuration, passwordToSave);
+        return await BuildLoginResponseAsync(
+            request.LoginId,
+            result,
+            accountService,
+            accountManagement,
+            loginProxy,
+            configuration,
+            passwordToSave,
+            cancellationToken);
     }
 
     private static async Task<IResult> ResetAccountLoginAsync(
         AccountLoginSessionRequestDto request,
-        IAccountService accountService)
+        IAccountService accountService,
+        AccountLoginProxyCoordinator loginProxy)
     {
         if (request.LoginId > 0)
-            await accountService.ReleaseClientAsync(request.LoginId);
+        {
+            try
+            {
+                await accountService.ReleaseClientStrictAsync(request.LoginId);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new OperationResultDto(
+                    false,
+                    $"旧登录客户端无法安全停止，已保留冻结路由：{ex.Message}"));
+            }
+
+            await loginProxy.AbandonAsync(request.LoginId, CancellationToken.None);
+        }
 
         return Results.Ok(new OperationResultDto(true, "登录会话已释放"));
     }
@@ -1832,6 +2239,7 @@ public static class PanelAdminApiEndpoints
             LocalConfigPath: localPath,
             LocalConfigExists: File.Exists(localPath),
             Telegram: new TelegramApiSettingsDto(configuration["Telegram:ApiId"] ?? "", configuration["Telegram:ApiHash"] ?? ""),
+            GlobalProxy: ReadGlobalProxySettings(configuration),
             CloudMail: new CloudMailSettingsDto(configuration["CloudMail:BaseUrl"] ?? "", configuration["CloudMail:Domain"] ?? "", configuration["CloudMail:Token"] ?? ""),
             Ai: new AiSettingsDto(
                 configuration["AI:OpenAI:Endpoint"] ?? "",
@@ -1899,6 +2307,280 @@ public static class PanelAdminApiEndpoints
         await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
         await telegramClientPool.RemoveAllClientsAsync();
         return Results.Ok(new OperationResultDto(true, "API 配置已保存，Telegram 客户端缓存已清理"));
+    }
+
+    private static GlobalProxySettingsDto ReadGlobalProxySettings(IConfiguration configuration)
+    {
+        var server = (configuration["Telegram:Proxy:Server"] ?? string.Empty).Trim();
+        var portText = (configuration["Telegram:Proxy:Port"] ?? string.Empty).Trim();
+        var secret = (configuration["Telegram:Proxy:Secret"] ?? string.Empty).Trim();
+        var configuredProtocol = (configuration["Telegram:Proxy:Protocol"] ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant();
+        var protocol = OutboundProxyProtocols.IsSupported(configuredProtocol)
+            ? configuredProtocol
+            : string.IsNullOrWhiteSpace(secret)
+                ? OutboundProxyProtocols.Socks5
+                : OutboundProxyProtocols.MtProto;
+
+        return new GlobalProxySettingsDto(
+            // 统一使用配置解析器判断启用状态。已有代理模式没有 Server/Port，
+            // 不能再按旧手动地址推断，否则后台显示会与运行时路由不一致。
+            Enabled: GlobalTelegramProxyConfiguration.IsEnabled(configuration),
+            Protocol: protocol,
+            Server: server,
+            Port: int.TryParse(portText, out var port) ? port : 0,
+            Username: configuration["Telegram:Proxy:Username"] ?? string.Empty,
+            HasPassword: protocol != OutboundProxyProtocols.MtProto
+                         && !string.IsNullOrWhiteSpace(configuration["Telegram:Proxy:Password"]),
+            HasSecret: protocol == OutboundProxyProtocols.MtProto
+                       && !string.IsNullOrWhiteSpace(secret),
+            SourceMode: GlobalTelegramProxyConfiguration.GetSourceMode(configuration),
+            ProxyId: GlobalTelegramProxyConfiguration.GetSelectedProxyId(
+                configuration,
+                requireEnabled: false));
+    }
+
+    private static async Task<IResult> GetGlobalProxySettingsAsync(
+        IConfiguration configuration,
+        ProxyManagementService proxyManagement,
+        CancellationToken cancellationToken)
+    {
+        var settings = ReadGlobalProxySettings(configuration);
+        if (settings.SourceMode != GlobalTelegramProxyConfiguration.ExistingSourceMode
+            || settings.ProxyId is not > 0)
+            return Results.Ok(settings);
+
+        var proxy = await proxyManagement.GetAsync(
+            settings.ProxyId.Value,
+            cancellationToken: cancellationToken);
+        return Results.Ok(settings with
+        {
+            ProxyName = proxy?.Name,
+            ProxyKind = proxy?.Kind
+        });
+    }
+
+    private static Task<IResult> SaveGlobalProxySettingsEndpointAsync(
+        SaveGlobalProxySettingsRequestDto request,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        ITelegramClientPool telegramClientPool,
+        ProxyManagementService proxyManagement,
+        CancellationToken cancellationToken) =>
+        SaveGlobalProxySettingsAsync(
+            request,
+            configuration,
+            environment,
+            telegramClientPool,
+            cancellationToken,
+            proxyManagement);
+
+    internal static async Task<IResult> SaveGlobalProxySettingsAsync(
+        SaveGlobalProxySettingsRequestDto request,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        ITelegramClientPool telegramClientPool,
+        CancellationToken cancellationToken,
+        ProxyManagementService? proxyManagement = null)
+    {
+        var root = await LoadLocalConfigRootAsync(LocalConfigFile.ResolvePath(configuration, environment));
+        var telegram = EnsureObject(root, "Telegram");
+
+        if (!request.Enabled)
+        {
+            var disabledProxy = EnsureObject(telegram, "Proxy");
+            disabledProxy["Enabled"] = false;
+            await PersistGlobalProxyChangeAsync(
+                proxyManagement,
+                nextEnabled: false,
+                nextSourceMode: GlobalTelegramProxyConfiguration.GetSourceMode(configuration),
+                nextProxyId: GlobalTelegramProxyConfiguration.GetSelectedProxyId(
+                    configuration,
+                    requireEnabled: false),
+                configuration,
+                environment,
+                root,
+                telegramClientPool,
+                cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "全局代理已关闭，Telegram 客户端缓存已清理"));
+        }
+
+        var sourceMode = (request.SourceMode ?? GlobalTelegramProxyConfiguration.ManualSourceMode)
+            .Trim()
+            .ToLowerInvariant();
+        if (sourceMode == GlobalTelegramProxyConfiguration.ExistingSourceMode)
+        {
+            if (request.ProxyId is not > 0)
+                return Results.BadRequest(new OperationResultDto(false, "请选择已有代理"));
+            if (proxyManagement == null)
+                return Results.BadRequest(new OperationResultDto(false, "无法解析已有代理，请刷新后重试"));
+
+            var selected = await proxyManagement.GetAsync(
+                request.ProxyId.Value,
+                cancellationToken: cancellationToken);
+            if (selected is not { IsEnabled: true })
+                return Results.BadRequest(new OperationResultDto(false, "所选代理不存在或已停用"));
+
+            var selectedProxy = EnsureObject(telegram, "Proxy");
+            selectedProxy["Enabled"] = true;
+            selectedProxy["SourceMode"] = GlobalTelegramProxyConfiguration.ExistingSourceMode;
+            selectedProxy["ProxyId"] = selected.Id;
+            // 引用已有代理时不写入 Server/Password/Secret，运行时始终从数据库读取。
+            selectedProxy.Remove("Server");
+            selectedProxy.Remove("Port");
+            selectedProxy.Remove("Protocol");
+            selectedProxy.Remove("Username");
+            selectedProxy.Remove("Password");
+            selectedProxy.Remove("Secret");
+            await PersistGlobalProxyChangeAsync(
+                proxyManagement,
+                nextEnabled: true,
+                nextSourceMode: GlobalTelegramProxyConfiguration.ExistingSourceMode,
+                nextProxyId: selected.Id,
+                configuration,
+                environment,
+                root,
+                telegramClientPool,
+                cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "全局代理已切换为已有代理，Telegram 客户端缓存已清理"));
+        }
+        if (sourceMode != GlobalTelegramProxyConfiguration.ManualSourceMode)
+            return Results.BadRequest(new OperationResultDto(false, "全局代理来源仅支持 manual 或 existing"));
+
+        var protocol = (request.Protocol ?? string.Empty).Trim().ToLowerInvariant();
+        if (!OutboundProxyProtocols.IsSupported(protocol))
+            return Results.BadRequest(new OperationResultDto(false, "全局代理协议仅支持 http、socks5 或 mtproto"));
+
+        var server = (request.Server ?? string.Empty).Trim().Trim('[', ']');
+        if (server.Length is 0 or > 253
+            || server.Any(char.IsControl)
+            || server.Any(char.IsWhiteSpace)
+            || server.Contains('/')
+            || server.Contains('@'))
+        {
+            return Results.BadRequest(new OperationResultDto(false, "全局代理主机格式无效"));
+        }
+        server = server.ToLowerInvariant();
+        if (request.Port is < 1 or > 65535)
+            return Results.BadRequest(new OperationResultDto(false, "全局代理端口必须在 1-65535 之间"));
+
+        var username = (request.Username ?? string.Empty).Trim();
+        var current = ReadGlobalProxySettings(configuration);
+        var submittedPassword = (request.Password ?? string.Empty).Trim();
+        if (Encoding.UTF8.GetByteCount(username) > 255
+            || Encoding.UTF8.GetByteCount(submittedPassword) > 255)
+        {
+            return Results.BadRequest(new OperationResultDto(
+                false,
+                "全局代理用户名或密码不能超过 255 个 UTF-8 字节"));
+        }
+
+        var submittedSecret = (request.Secret ?? string.Empty).Trim();
+        if (submittedSecret.Length > 500)
+            return Results.BadRequest(new OperationResultDto(false, "MTProxy Secret 不能超过 500 个字符"));
+        if (protocol == OutboundProxyProtocols.MtProto
+            && string.IsNullOrWhiteSpace(submittedSecret)
+            && !current.HasSecret)
+        {
+            return Results.BadRequest(new OperationResultDto(false, "MTProxy 必须填写 Secret"));
+        }
+
+        var proxy = EnsureObject(telegram, "Proxy");
+        proxy["Enabled"] = true;
+        proxy["SourceMode"] = GlobalTelegramProxyConfiguration.ManualSourceMode;
+        proxy.Remove("ProxyId");
+        proxy["Protocol"] = protocol;
+        proxy["Server"] = server;
+        proxy["Port"] = request.Port;
+        if (protocol == OutboundProxyProtocols.MtProto)
+        {
+            proxy.Remove("Username");
+            proxy.Remove("Password");
+            if (!string.IsNullOrWhiteSpace(submittedSecret))
+                proxy["Secret"] = submittedSecret;
+        }
+        else
+        {
+            proxy["Username"] = username;
+            if (request.ClearPassword)
+            {
+                // 写入空值才能覆盖仍存在的环境变量凭据。
+                proxy["Password"] = string.Empty;
+            }
+            else if (!string.IsNullOrWhiteSpace(submittedPassword))
+            {
+                proxy["Password"] = submittedPassword;
+            }
+            else if (current.Protocol == OutboundProxyProtocols.MtProto)
+            {
+                // 从 MTProxy 切换时不要激活此前被忽略的上游密码。
+                proxy["Password"] = string.Empty;
+            }
+
+            // 留空保持时不读取 IConfiguration 中的敏感值，避免把环境变量
+            // 密码物化到 appsettings.local.json；本地已有字段会原样保留。
+            proxy.Remove("Secret");
+        }
+
+        await PersistGlobalProxyChangeAsync(
+            proxyManagement,
+            nextEnabled: true,
+            nextSourceMode: GlobalTelegramProxyConfiguration.ManualSourceMode,
+            nextProxyId: null,
+            configuration,
+            environment,
+            root,
+            telegramClientPool,
+            cancellationToken);
+        return Results.Ok(new OperationResultDto(true, "全局代理配置已保存，Telegram 客户端缓存已清理"));
+    }
+
+    private static async Task PersistGlobalProxyChangeAsync(
+        ProxyManagementService? proxyManagement,
+        bool nextEnabled,
+        string nextSourceMode,
+        int? nextProxyId,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        JsonObject root,
+        ITelegramClientPool telegramClientPool,
+        CancellationToken cancellationToken)
+    {
+        async Task ApplyAsync(CancellationToken applyCancellationToken)
+        {
+            await SaveLocalRootAsync(
+                configuration,
+                environment,
+                root,
+                applyCancellationToken);
+            ReloadConfiguration(configuration);
+            // 配置生效后再严格清空客户端池。清理会提升连接代际，既能淘汰
+            // 保存前的旧客户端，也能拒绝保存窗口中按旧配置创建的客户端写回。
+            await telegramClientPool.RemoveAllClientsAsync();
+        }
+
+        if (proxyManagement != null)
+        {
+            await proxyManagement.ExecuteGlobalProxyChangeAsync(
+                nextEnabled,
+                nextSourceMode,
+                nextProxyId,
+                ApplyAsync,
+                cancellationToken);
+            return;
+        }
+        else
+        {
+            // 仅保留给没有注册代理管理服务的轻量测试/兼容调用方。
+            await ApplyAsync(cancellationToken);
+        }
+    }
+
+    private static void ReloadConfiguration(IConfiguration configuration)
+    {
+        if (configuration is IConfigurationRoot root)
+            root.Reload();
     }
 
     private static async Task<IResult> SaveCloudMailSettingsAsync(CloudMailSettingsDto request, IConfiguration configuration, IWebHostEnvironment environment, CancellationToken cancellationToken)
@@ -4161,7 +4843,7 @@ public static class PanelAdminApiEndpoints
             .OrderBy(x => x.Definition.Category ?? "", StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.Definition.Order)
             .ThenBy(x => x.Definition.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Select(x => ToDto(x.Definition))
+            .Select(ToDto)
             .ToList();
 
         return Results.Ok(new TaskCenterDto(taskList, scheduled, definitions, timeZone.Current.Id));
@@ -4232,6 +4914,7 @@ public static class PanelAdminApiEndpoints
         ValidateTaskSubmission(request.TaskType, request.ConfigJson);
         var task = await scheduledTasks.CreateAsync(new ScheduledTask
         {
+            Name = request.Name ?? string.Empty,
             TaskType = request.TaskType.Trim(),
             Total = Math.Max(0, request.Total),
             ConfigJson = NormalizeNullable(request.ConfigJson),
@@ -4256,6 +4939,8 @@ public static class PanelAdminApiEndpoints
         if (!string.Equals(task.TaskType, request.TaskType?.Trim(), StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new OperationResultDto(false, "不允许修改任务类型"));
 
+        if (request.Name is not null)
+            task.Name = request.Name;
         task.Total = Math.Max(0, request.Total);
         task.ConfigJson = NormalizeNullable(request.ConfigJson);
         task.CronExpression = request.CronExpression;
@@ -4810,7 +5495,21 @@ public static class PanelAdminApiEndpoints
             account.TelegramStatusSummary,
             account.TelegramStatusDetails,
             account.TelegramStatusOk,
-            account.TelegramStatusCheckedAtUtc);
+            account.TelegramStatusCheckedAtUtc,
+            account.UseGlobalProxy,
+            account.Proxy == null
+                ? null
+                : new AccountProxySummaryDto(
+                    account.Proxy.Id,
+                    account.Proxy.Name,
+                    account.Proxy.Kind,
+                    account.Proxy.Protocol,
+                    account.Proxy.Host,
+                    account.Proxy.Port,
+                    account.Proxy.ResinPlatform,
+                    account.Proxy.IsEnabled,
+                    account.Proxy.TestStatus,
+                    account.Proxy.EgressIp));
 
     private static RiskAccountDto ToRiskAccountDto(Account account)
     {
@@ -4902,6 +5601,7 @@ public static class PanelAdminApiEndpoints
     private static ScheduledTaskDto ToDto(ScheduledTask task) =>
         new(
             task.Id,
+            task.Name,
             task.TaskType,
             task.Status,
             task.Total,
@@ -4916,6 +5616,7 @@ public static class PanelAdminApiEndpoints
     private static ScheduledTaskDto ToScheduledTaskListDto(ScheduledTask task) =>
         new(
             task.Id,
+            task.Name,
             task.TaskType,
             task.Status,
             task.Total,
@@ -4927,19 +5628,20 @@ public static class PanelAdminApiEndpoints
             task.CreatedAt,
             task.UpdatedAt);
 
-    private static TaskDefinitionDto ToDto(ModuleTaskDefinition definition) =>
+    private static TaskDefinitionDto ToDto(RegisteredTaskDefinition registered) =>
         new(
-            definition.TaskType,
-            definition.DisplayName,
-            definition.Category,
-            definition.Description,
-            definition.Icon,
-            definition.CreateRoute,
-            definition.TaskCenter.CanPause,
-            definition.TaskCenter.CanResume,
-            definition.TaskCenter.CanEdit,
-            definition.TaskCenter.CanRerun,
-            definition.TaskCenter.AutoPauseBeforeEdit);
+            registered.Definition.TaskType,
+            registered.Definition.DisplayName,
+            registered.Definition.Category,
+            registered.Definition.Description,
+            registered.Definition.Icon,
+            registered.Definition.CreateRoute,
+            registered.CanCreate,
+            registered.Definition.TaskCenter.CanPause,
+            registered.Definition.TaskCenter.CanResume,
+            registered.Definition.TaskCenter.CanEdit,
+            registered.Definition.TaskCenter.CanRerun,
+            registered.Definition.TaskCenter.AutoPauseBeforeEdit);
 
     private static DataDictionaryDto ToDto(DataDictionary dictionary) =>
         new(
@@ -5488,6 +6190,47 @@ public static class PanelAdminApiEndpoints
     private static bool IsWebhookEnabled(IConfiguration configuration) =>
         string.Equals(configuration["Telegram:WebhookEnabled"]?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
 
+    internal static AccountProxyBindingInput? ParseImportProxyBinding(
+        string? strategy,
+        string? proxyId)
+    {
+        if (string.IsNullOrWhiteSpace(strategy)
+            || string.Equals(
+                strategy.Trim(),
+                "proxy_per_account",
+                StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var parsedProxyId = ParseNullableInt(proxyId);
+        return new AccountProxyBindingInput(strategy.Trim(), parsedProxyId);
+    }
+
+    private static async Task<int> ResolveLoginIdAsync(
+        int requestedLoginId,
+        AccountLoginProxyCoordinator loginProxy,
+        AccountManagementService accountManagement)
+    {
+        // 仅允许继续服务端已经登记的登录 ID。客户端自行传入的陌生 ID
+        // 可能撞上正式账号客户端池键，因此一律重新生成。
+        if (requestedLoginId > 0 && loginProxy.HasState(requestedLoginId))
+            return requestedLoginId;
+
+        int loginId;
+        do
+        {
+            loginId = Random.Shared.Next(1, int.MaxValue);
+        }
+        while (loginProxy.HasState(loginId)
+               || await accountManagement.GetAccountAsync(loginId) != null);
+
+        return loginId;
+    }
+
+    private static bool IsLoginProxyInputError(Exception exception) =>
+        exception is ArgumentException
+            or InvalidOperationException
+            or KeyNotFoundException;
+
     private static async Task<ImportAccountsResponseDto> BuildImportResponseAsync(
         IEnumerable<ImportResult> results,
         AccountManagementService accountManagement)
@@ -5518,28 +6261,88 @@ public static class PanelAdminApiEndpoints
     }
 
     private static ImportResultDto ToDto(ImportResult result) =>
-        new(result.Success, result.Phone, result.UserId, result.Username, result.SessionPath, result.Error);
+        new(
+            result.Success,
+            result.Phone,
+            result.UserId,
+            result.Username,
+            result.SessionPath,
+            result.Error,
+            result.SourceKey,
+            result.ProxyLine,
+            result.ProxyId,
+            result.ProxyName,
+            result.ProxyEgressIp);
 
     private static async Task<IResult> BuildLoginResponseAsync(
         int loginId,
         LoginResult result,
         IAccountService accountService,
         AccountManagementService accountManagement,
+        AccountLoginProxyCoordinator loginProxy,
         IConfiguration configuration,
-        string? twoFactorPasswordToSave = null)
+        string? twoFactorPasswordToSave = null,
+        CancellationToken cancellationToken = default)
     {
         if (result.Success && result.Account != null)
         {
-            var account = await SaveLoggedInAccountAsync(result.Account, accountManagement, configuration, twoFactorPasswordToSave);
+            if (!loginProxy.HasState(loginId))
+            {
+                await accountService.ReleaseClientAsync(loginId);
+                return Results.BadRequest(new AccountLoginResponseDto(
+                    false,
+                    loginId,
+                    null,
+                    "登录代理会话已失效，已阻止账号在未绑定代理时启用，请重新登录",
+                    null));
+            }
+
+            Account? account = null;
+            try
+            {
+                account = await SaveLoggedInAccountAsync(
+                    result.Account,
+                    accountManagement,
+                    configuration,
+                    twoFactorPasswordToSave,
+                    activate: false);
+                await loginProxy.CompleteAsync(
+                    loginId,
+                    account.Id,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+                try
+                {
+                    await accountService.ReleaseClientAsync(loginId);
+                    if (account != null && account.Id != loginId)
+                        await accountService.ReleaseClientAsync(account.Id);
+                }
+                catch
+                {
+                    // 已保持停用，释放失败不覆盖代理绑定错误。
+                }
+
+                return Results.BadRequest(new AccountLoginResponseDto(
+                    false,
+                    loginId,
+                    null,
+                    $"Telegram 登录成功，但代理绑定失败，账号已保持停用：{ex.Message}",
+                    account == null ? null : ToDto(account)));
+            }
+
             try
             {
                 await accountService.ReleaseClientAsync(loginId);
                 if (account.Id != loginId)
                     await accountService.ReleaseClientAsync(account.Id);
+                account = await accountManagement.GetAccountAsync(account.Id) ?? account;
             }
             catch
             {
-                // 忽略释放失败，避免影响登录成功返回
+                // 代理绑定和启用已经提交，清理临时客户端失败不能改写登录结果。
             }
 
             return Results.Ok(new AccountLoginResponseDto(
@@ -5550,11 +6353,31 @@ public static class PanelAdminApiEndpoints
                 ToDto(account)));
         }
 
-        if (!string.IsNullOrWhiteSpace(result.NextStep))
+        if (result.NextStep is "code" or "password")
         {
             return Results.Ok(new AccountLoginResponseDto(
                 false,
                 loginId,
+                result.NextStep,
+                result.Message,
+                null));
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.NextStep))
+        {
+            try
+            {
+                await accountService.ReleaseClientAsync(loginId);
+            }
+            catch
+            {
+                // 仍需继续回收登录代理资源。
+            }
+
+            await loginProxy.AbandonAsync(loginId, CancellationToken.None);
+            return Results.Ok(new AccountLoginResponseDto(
+                false,
+                0,
                 result.NextStep,
                 result.Message,
                 null));
@@ -5570,6 +6393,8 @@ public static class PanelAdminApiEndpoints
             {
                 // 忽略释放失败
             }
+
+            await loginProxy.AbandonAsync(loginId, CancellationToken.None);
         }
 
         return Results.BadRequest(new AccountLoginResponseDto(false, loginId, null, result.Message ?? "登录失败", null));
@@ -5579,21 +6404,74 @@ public static class PanelAdminApiEndpoints
         QrLoginResult result,
         IAccountService accountService,
         AccountManagementService accountManagement,
+        AccountLoginProxyCoordinator loginProxy,
         IConfiguration configuration,
-        string? twoFactorPasswordToSave = null)
+        string? twoFactorPasswordToSave = null,
+        CancellationToken cancellationToken = default)
     {
         if (result.Success && result.Account != null)
         {
-            var account = await SaveLoggedInAccountAsync(result.Account, accountManagement, configuration, twoFactorPasswordToSave);
+            if (!loginProxy.HasState(result.LoginId))
+            {
+                await accountService.ReleaseCompletedQrLoginAsync(result.LoginId);
+                return Results.Ok(new AccountQrLoginResponseDto(
+                    false,
+                    result.LoginId,
+                    "failed",
+                    "登录代理会话已失效，已阻止账号在未绑定代理时启用，请重新生成二维码",
+                    null,
+                    result.ExpiresAtUtc,
+                    null));
+            }
+
+            Account? account = null;
+            try
+            {
+                account = await SaveLoggedInAccountAsync(
+                    result.Account,
+                    accountManagement,
+                    configuration,
+                    twoFactorPasswordToSave,
+                    activate: false);
+                await loginProxy.CompleteAsync(
+                    result.LoginId,
+                    account.Id,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await loginProxy.AbandonAsync(result.LoginId, CancellationToken.None);
+                try
+                {
+                    await accountService.ReleaseCompletedQrLoginAsync(result.LoginId);
+                    if (account != null && account.Id != result.LoginId)
+                        await accountService.ReleaseClientAsync(account.Id);
+                }
+                catch
+                {
+                    // 已保持停用，释放失败不覆盖代理绑定错误。
+                }
+
+                return Results.Ok(new AccountQrLoginResponseDto(
+                    false,
+                    result.LoginId,
+                    "failed",
+                    $"Telegram 登录成功，但代理绑定失败，账号已保持停用：{ex.Message}",
+                    null,
+                    result.ExpiresAtUtc,
+                    account == null ? null : ToDto(account)));
+            }
+
             try
             {
                 await accountService.ReleaseCompletedQrLoginAsync(result.LoginId);
                 if (account.Id != result.LoginId)
                     await accountService.ReleaseClientAsync(account.Id);
+                account = await accountManagement.GetAccountAsync(account.Id) ?? account;
             }
             catch
             {
-                // session 文件已在服务层迁移完成，这里只做会话表清理
+                // 代理绑定和启用已经提交，清理临时客户端失败不能改写扫码结果。
             }
 
             return Results.Ok(new AccountQrLoginResponseDto(
@@ -5605,6 +6483,9 @@ public static class PanelAdminApiEndpoints
                 result.ExpiresAtUtc,
                 ToDto(account)));
         }
+
+        if (result.Status is "failed" or "expired")
+            await loginProxy.AbandonAsync(result.LoginId, CancellationToken.None);
 
         return Results.Ok(new AccountQrLoginResponseDto(
             false,
@@ -5620,7 +6501,8 @@ public static class PanelAdminApiEndpoints
         AccountInfo accountInfo,
         AccountManagementService accountManagement,
         IConfiguration configuration,
-        string? twoFactorPasswordToSave = null)
+        string? twoFactorPasswordToSave = null,
+        bool activate = true)
     {
         if (!TryGetTelegramApi(configuration, out var apiId, out var apiHash, out var apiError))
             throw new InvalidOperationException(apiError);
@@ -5638,7 +6520,7 @@ public static class PanelAdminApiEndpoints
             existing.UserId = accountInfo.TelegramUserId;
             existing.Username = accountInfo.Username;
             existing.Nickname = BuildNickname(accountInfo);
-            existing.IsActive = true;
+            existing.IsActive = activate;
             existing.ApiId = apiId;
             existing.ApiHash = apiHash;
             existing.TelegramStatusSummary = "正常";
@@ -5662,7 +6544,7 @@ public static class PanelAdminApiEndpoints
             SessionPath = Path.Combine(sessionsPath, $"{phoneDigits}.session"),
             ApiId = apiId,
             ApiHash = apiHash,
-            IsActive = true,
+            IsActive = activate,
             TwoFactorPassword = normalizedTwoFactorPassword,
             CreatedAt = DateTime.UtcNow,
             LastSyncAt = DateTime.UtcNow,
@@ -6401,7 +7283,21 @@ public sealed record AccountListItemDto(
     string? TelegramStatusSummary,
     string? TelegramStatusDetails,
     bool? TelegramStatusOk,
-    DateTime? TelegramStatusCheckedAtUtc);
+    DateTime? TelegramStatusCheckedAtUtc,
+    bool UseGlobalProxy,
+    AccountProxySummaryDto? Proxy);
+
+public sealed record AccountProxySummaryDto(
+    int Id,
+    string Name,
+    string Kind,
+    string Protocol,
+    string Host,
+    int Port,
+    string? ResinPlatform,
+    bool IsEnabled,
+    string TestStatus,
+    string? EgressIp);
 
 public sealed record AccountDetailDto(
     int Id,
@@ -6520,7 +7416,12 @@ public sealed record ImportResultDto(
     long? UserId,
     string? Username,
     string? SessionPath,
-    string? Error);
+    string? Error,
+    string? SourceKey = null,
+    int? ProxyLine = null,
+    int? ProxyId = null,
+    string? ProxyName = null,
+    string? ProxyEgressIp = null);
 public sealed record ImportAccountsResponseDto(
     IReadOnlyList<ImportResultDto> Results,
     IReadOnlyList<AccountListItemDto> Accounts);
@@ -6593,16 +7494,39 @@ public sealed record BatchChangeRecoveryEmailRequestDto(
     int? PollTimeoutSeconds,
     string? SendEmailFilter,
     string? SubjectFilter);
-public sealed record ImportStringSessionRequestDto(string? SessionString, int? CategoryId);
-public sealed record StartAccountLoginRequestDto(string? Phone, int LoginId = 0);
-public sealed record StartAccountQrLoginRequestDto(int LoginId = 0);
+public sealed record ImportStringSessionRequestDto(
+    string? SessionString,
+    int? CategoryId,
+    string? ProxyStrategy,
+    int? ProxyId);
+public sealed record StartAccountLoginRequestDto(
+    string? Phone,
+    int LoginId = 0,
+    string? ProxyStrategy = null,
+    int? ProxyId = null);
+public sealed record StartAccountQrLoginRequestDto(
+    int LoginId = 0,
+    string? ProxyStrategy = null,
+    int? ProxyId = null);
 public sealed record AccountLoginSessionRequestDto(int LoginId);
 public sealed record AccountLoginCodeRequestDto(int LoginId, string? Code);
 public sealed record AccountLoginPasswordRequestDto(int LoginId, string? Password, bool? SaveTwoFactorPassword = null);
 public sealed record CreateTaskRequestDto(string TaskType, int Total, string? Config);
 public sealed record UpdateTaskRequestDto(string TaskType, int Total, string? Config);
-public sealed record CreateScheduledTaskRequestDto(string TaskType, int Total, string? ConfigJson, string CronExpression, string? Status);
-public sealed record UpdateScheduledTaskRequestDto(string TaskType, int Total, string? ConfigJson, string CronExpression, string? Status);
+public sealed record CreateScheduledTaskRequestDto(
+    string TaskType,
+    int Total,
+    string? ConfigJson,
+    string CronExpression,
+    string? Status,
+    string? Name = null);
+public sealed record UpdateScheduledTaskRequestDto(
+    string TaskType,
+    int Total,
+    string? ConfigJson,
+    string CronExpression,
+    string? Status,
+    string? Name = null);
 public sealed record CleanupTasksRequestDto(string Mode);
 public sealed record TaskAssetUploadResultDto(string AssetPath, string FileName, string ScopeId);
 public sealed record SaveTextDictionaryRequestDto(
@@ -6629,6 +7553,7 @@ public sealed record BatchTaskDto(
 
 public sealed record ScheduledTaskDto(
     int Id,
+    string Name,
     string TaskType,
     string Status,
     int Total,
@@ -6647,6 +7572,7 @@ public sealed record TaskDefinitionDto(
     string? Description,
     string Icon,
     string? CreateRoute,
+    bool CanCreate,
     bool CanPause,
     bool CanResume,
     bool CanEdit,
@@ -6748,6 +7674,7 @@ public sealed record SettingsDto(
     string LocalConfigPath,
     bool LocalConfigExists,
     TelegramApiSettingsDto Telegram,
+    GlobalProxySettingsDto GlobalProxy,
     CloudMailSettingsDto CloudMail,
     AiSettingsDto Ai,
     BatchSettingsDto Batch,
@@ -6784,6 +7711,29 @@ public sealed record VersionApplyResultDto(
     string? LatestVersion);
 
 public sealed record TelegramApiSettingsDto(string ApiId, string ApiHash);
+public sealed record GlobalProxySettingsDto(
+    bool Enabled,
+    string? Protocol,
+    string? Server,
+    int Port,
+    string? Username,
+    bool HasPassword,
+    bool HasSecret,
+    string SourceMode = GlobalTelegramProxyConfiguration.ManualSourceMode,
+    int? ProxyId = null,
+    string? ProxyName = null,
+    string? ProxyKind = null);
+public sealed record SaveGlobalProxySettingsRequestDto(
+    bool Enabled,
+    string? Protocol,
+    string? Server,
+    int Port,
+    string? Username,
+    string? Password,
+    string? Secret,
+    bool ClearPassword = false,
+    string? SourceMode = null,
+    int? ProxyId = null);
 public sealed record CloudMailSettingsDto(string BaseUrl, string Domain, string Token);
 public sealed record GenerateCloudMailTokenRequestDto(string? BaseUrl, string? AdminEmail, string? AdminPassword);
 public sealed record CloudMailTokenResultDto(string Token);

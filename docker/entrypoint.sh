@@ -2,6 +2,7 @@
 set -eu
 
 # 修改入口状态协议时必须递增；应用只会用更高版本覆盖容器入口，避免持久旧程序降级新镜像脚本。
+# 镜像升级时还会依据 version.txt 选择更新后的镜像程序。
 ENTRYPOINT_PROTOCOL_VERSION=2
 APP_ENTRY="${TELEGRAM_PANEL_APP_ENTRY:-TelegramPanel.Web.dll}"
 DATA_DIR="${TELEGRAM_PANEL_DATA_DIR:-/data}"

@@ -133,6 +133,7 @@ public static class PanelAdminApiEndpoints
         secured.MapGet("/version-info", GetVersionInfoAsync);
         secured.MapPost("/version-info/check", CheckVersionInfoAsync);
         secured.MapPost("/version-info/apply", ApplyVersionUpdateAsync);
+        secured.MapPost("/version-info/mode", SaveUpdateModeAsync);
         secured.MapPost("/system/restart", RestartSystemAsync);
         secured.MapPost("/settings/telegram-api", SaveTelegramApiSettingsAsync);
         secured.MapGet("/settings/global-proxy", GetGlobalProxySettingsAsync);
@@ -244,26 +245,10 @@ public static class PanelAdminApiEndpoints
         secured.MapPatch("/tasks/{id:int}", UpdateTaskAsync);
         secured.MapPost("/tasks/assets/avatar", UploadTaskAvatarAssetAsync).DisableAntiforgery();
         secured.MapPost("/tasks/cleanup", CleanupTasksAsync);
-        secured.MapPost("/tasks/{id:int}/pause", async (int id, BatchTaskManagementService tasks) =>
-        {
-            await tasks.PauseTaskAsync(id);
-            return Results.Ok(new OperationResultDto(true, "任务已暂停"));
-        });
-        secured.MapPost("/tasks/{id:int}/resume", async (int id, BatchTaskManagementService tasks) =>
-        {
-            await tasks.ResumeTaskAsync(id);
-            return Results.Ok(new OperationResultDto(true, "任务已恢复"));
-        });
-        secured.MapPost("/tasks/{id:int}/cancel", async (int id, BatchTaskManagementService tasks) =>
-        {
-            await tasks.CancelTaskAsync(id);
-            return Results.Ok(new OperationResultDto(true, "任务已取消"));
-        });
-        secured.MapDelete("/tasks/{id:int}", async (int id, BatchTaskManagementService tasks) =>
-        {
-            await tasks.DeleteTaskAsync(id);
-            return Results.Ok(new OperationResultDto(true, "任务已删除"));
-        });
+        secured.MapPost("/tasks/{id:int}/pause", PauseBatchTaskAsync);
+        secured.MapPost("/tasks/{id:int}/resume", ResumeBatchTaskAsync);
+        secured.MapPost("/tasks/{id:int}/cancel", CancelBatchTaskAsync);
+        secured.MapDelete("/tasks/{id:int}", DeleteBatchTaskAsync);
 
         secured.MapGet("/scheduled-tasks/{id:int}", GetScheduledTaskAsync);
         secured.MapPost("/scheduled-tasks", CreateScheduledTaskAsync);
@@ -2286,6 +2271,22 @@ public static class PanelAdminApiEndpoints
         return result.Success
             ? Results.Ok(ToDto(result))
             : Results.BadRequest(ToDto(result));
+    }
+
+    private static async Task<IResult> SaveUpdateModeAsync(
+        UpdateModeRequestDto request,
+        UpdateModeStore updateModeStore,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        var mode = SelfUpdateOptions.NormalizeMode(request.Mode);
+        var root = await LoadLocalConfigRootAsync(LocalConfigFile.ResolvePath(configuration, environment));
+        var selfUpdate = EnsureObject(root, "SelfUpdate");
+        selfUpdate["Mode"] = mode;
+        await SaveLocalRootAsync(configuration, environment, root, cancellationToken);
+        await updateModeStore.SetModeAsync(mode, cancellationToken);
+        return Results.Ok(new UpdateModeResultDto(true, mode, "更新方式已保存，重启面板后生效"));
     }
 
     private static async Task<IResult> SaveTelegramApiSettingsAsync(
@@ -4857,6 +4858,88 @@ public static class PanelAdminApiEndpoints
         return task == null ? Results.NotFound() : Results.Ok(ToDto(task));
     }
 
+
+    private static async Task<IResult> PauseBatchTaskAsync(
+        int id,
+        BatchTaskExecutionControlService executionControl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await executionControl.PauseTaskAsync(id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "任务已暂停，旧执行实例已退出"));
+        }
+        catch (BatchTaskExecutionBarrierTimeoutException ex)
+        {
+            return Results.Conflict(new OperationResultDto(false, ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new OperationResultDto(false, ex.Message));
+        }
+    }
+
+    private static async Task<IResult> ResumeBatchTaskAsync(
+        int id,
+        BatchTaskExecutionControlService executionControl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await executionControl.ResumeTaskAsync(id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "任务已恢复"));
+        }
+        catch (BatchTaskExecutionBarrierTimeoutException ex)
+        {
+            return Results.Conflict(new OperationResultDto(false, ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new OperationResultDto(false, ex.Message));
+        }
+    }
+
+
+    private static async Task<IResult> CancelBatchTaskAsync(
+        int id,
+        BatchTaskExecutionControlService executionControl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await executionControl.CancelTaskAsync(id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "任务已取消，旧执行实例已退出"));
+        }
+        catch (BatchTaskExecutionBarrierTimeoutException ex)
+        {
+            return Results.Conflict(new OperationResultDto(false, ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new OperationResultDto(false, ex.Message));
+        }
+    }
+
+    private static async Task<IResult> DeleteBatchTaskAsync(
+        int id,
+        BatchTaskExecutionControlService executionControl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await executionControl.DeleteTaskAsync(id, cancellationToken);
+            return Results.Ok(new OperationResultDto(true, "任务已删除"));
+        }
+        catch (BatchTaskExecutionBarrierTimeoutException ex)
+        {
+            return Results.Conflict(new OperationResultDto(false, ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new OperationResultDto(false, ex.Message));
+        }
+    }
+
     private static async Task<IResult> GetScheduledTaskAsync(
         int id,
         ScheduledTaskService scheduledTasks,
@@ -4886,7 +4969,8 @@ public static class PanelAdminApiEndpoints
     private static async Task<IResult> UpdateTaskAsync(
         int id,
         UpdateTaskRequestDto request,
-        BatchTaskManagementService tasks)
+        BatchTaskManagementService tasks,
+        CancellationToken cancellationToken)
     {
         ValidateTaskSubmission(request.TaskType, request.Config);
         var existing = await tasks.GetTaskAsync(id);
@@ -4894,13 +4978,20 @@ public static class PanelAdminApiEndpoints
             return Results.NotFound(new OperationResultDto(false, "任务不存在或已被删除"));
 
         var status = GetDisplayStatus(existing);
-        if (status == "running")
-            return Results.BadRequest(new OperationResultDto(false, "任务正在执行中，请先暂停后再编辑"));
+        if (status is "pending" or "running")
+            return Results.BadRequest(new OperationResultDto(false, "任务尚未安全暂停，请先暂停后再编辑"));
 
         if (!string.Equals(existing.TaskType, request.TaskType?.Trim(), StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new OperationResultDto(false, "不允许修改任务类型"));
 
-        await tasks.UpdateTaskDraftAsync(id, Math.Max(0, request.Total), NormalizeNullable(request.Config));
+        var updatedDraft = await tasks.TryUpdateEditableTaskDraftAsync(
+            id,
+            Math.Max(0, request.Total),
+            NormalizeNullable(request.Config),
+            cancellationToken);
+        if (!updatedDraft)
+            return Results.Conflict(new OperationResultDto(false, "任务状态已变化，请暂停任务后重新编辑"));
+
         var updated = await tasks.GetTaskAsync(id);
         return updated == null
             ? Results.NotFound(new OperationResultDto(false, "任务不存在或已被删除"))
@@ -4972,7 +5063,9 @@ public static class PanelAdminApiEndpoints
     private static async Task<IResult> CleanupTasksAsync(
         CleanupTasksRequestDto request,
         BatchTaskManagementService tasks,
-        ImageAssetStorageService assetStorage)
+        BatchTaskExecutionControlService executionControl,
+        ImageAssetStorageService assetStorage,
+        CancellationToken cancellationToken)
     {
         var mode = (request.Mode ?? string.Empty).Trim();
         var historyOnly = string.Equals(mode, "history", StringComparison.OrdinalIgnoreCase);
@@ -4984,18 +5077,16 @@ public static class PanelAdminApiEndpoints
             ? allTasks.Where(x => IsHistoryStatus(GetDisplayStatus(x))).ToList()
             : allTasks;
 
-        if (!historyOnly)
-        {
-            foreach (var activeTask in allTasks.Where(x => x.Status is "pending" or "running" or "paused"))
-                await tasks.CompleteTaskAsync(activeTask.Id, success: false);
-        }
-
         foreach (var task in targets)
         {
+            if (historyOnly)
+                await tasks.DeleteTaskAsync(task.Id);
+            else
+                await executionControl.DeleteTaskAsync(task.Id, cancellationToken);
+
             var scopeId = TaskAssetScopeHelper.GetAssetScopeId(task.Config);
             if (!string.IsNullOrWhiteSpace(scopeId))
                 await assetStorage.DeleteScopeAsync(scopeId);
-            await tasks.DeleteTaskAsync(task.Id);
         }
 
         var message = historyOnly
@@ -5452,6 +5543,7 @@ public static class PanelAdminApiEndpoints
             info.Notes,
             info.CheckedAtUtc,
             info.IsDocker,
+            info.UpdateMode,
             info.CanApply,
             info.BlockedReason,
             info.AssetName,
@@ -7698,6 +7790,7 @@ public sealed record VersionInfoDto(
     string? Notes,
     DateTimeOffset CheckedAtUtc,
     bool IsDocker,
+    string UpdateMode,
     bool CanApply,
     string? BlockedReason,
     string? AssetName,
@@ -7709,6 +7802,9 @@ public sealed record VersionApplyResultDto(
     bool RestartScheduled,
     string? LatestTag,
     string? LatestVersion);
+
+public sealed record UpdateModeRequestDto(string? Mode);
+public sealed record UpdateModeResultDto(bool Success, string Mode, string Message);
 
 public sealed record TelegramApiSettingsDto(string ApiId, string ApiHash);
 public sealed record GlobalProxySettingsDto(

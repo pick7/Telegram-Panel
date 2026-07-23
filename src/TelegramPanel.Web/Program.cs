@@ -499,6 +499,7 @@ builder.Services.Configure<UpdateCheckOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<SelfUpdateOptions>(builder.Configuration.GetSection("SelfUpdate"));
 builder.Services.Configure<AiOpenAiOptions>(builder.Configuration.GetSection("AI:OpenAI"));
 builder.Services.AddSingleton<UpdateCheckService>();
+builder.Services.AddSingleton<UpdateModeStore>();
 builder.Services.AddSingleton<AppSelfUpdateService>();
 builder.Services.Configure<PanelTimeZoneOptions>(builder.Configuration.GetSection("System"));
 builder.Services.AddSingleton<PanelTimeZoneService>();
@@ -515,6 +516,7 @@ builder.Services.AddScoped<IModuleTaskHandler, GroupInviteUsersTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, ChannelGroupPrivateCreateTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, ChannelGroupPublicizeTaskHandler>();
 builder.Services.AddScoped<IModuleTaskHandler, AccountAutoSyncTaskHandler>();
+builder.Services.AddSingleton<BatchTaskExecutionControlService>();
 builder.Services.AddHostedService<BatchTaskBackgroundService>();
 builder.Services.AddHostedService<ScheduledTaskBackgroundService>();
 builder.Services.AddHostedService<AccountDataAutoSyncBackgroundService>();

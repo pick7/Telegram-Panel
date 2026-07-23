@@ -78,78 +78,67 @@ public class BatchTaskManagementService
 
     public async Task UpdateTaskProgressAsync(int taskId, int completed, int failed)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task != null)
-        {
-            task.Completed = completed;
-            task.Failed = failed;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+        await _batchTaskRepository.UpdateProgressColumnsAsync(taskId, completed, failed);
     }
 
     public async Task UpdateTaskConfigAsync(int taskId, string? config)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task != null)
-        {
-            task.Config = config;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+        await _batchTaskRepository.UpdateConfigColumnAsync(taskId, config);
     }
 
     public async Task UpdateTaskDraftAsync(int taskId, int total, string? config)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task != null)
-        {
-            if (total < 0) total = 0;
-            task.Total = total;
-            task.Config = config;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+        if (total < 0) total = 0;
+        await _batchTaskRepository.UpdateDraftColumnsAsync(taskId, total, config);
+    }
+
+    public async Task<bool> TryUpdateEditableTaskDraftAsync(
+        int taskId,
+        int total,
+        string? config,
+        CancellationToken cancellationToken = default)
+    {
+        if (total < 0) total = 0;
+        return await _batchTaskRepository.TryUpdateEditableDraftAsync(
+            taskId,
+            total,
+            config,
+            cancellationToken);
     }
 
     public async Task StartTaskAsync(int taskId)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task != null)
-        {
-            task.Status = "running";
-            task.StartedAt = DateTime.UtcNow;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+        await TryStartTaskAsync(taskId);
+    }
+
+    public async Task<bool> TryStartTaskAsync(int taskId, CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.TryStartAsync(taskId, DateTime.UtcNow, cancellationToken);
     }
 
     public async Task PauseTaskAsync(int taskId)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task == null)
-            return;
+        await TryPauseTaskAsync(taskId);
+    }
 
-        if (task.Status is "running" or "pending")
-        {
-            task.Status = "paused";
-            task.CompletedAt = null;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+    public async Task<bool> TryPauseTaskAsync(int taskId, CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.TryPauseAsync(taskId, cancellationToken);
     }
 
     public async Task ResumeTaskAsync(int taskId)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task == null)
-            return;
-
-        if (task.Status == "paused")
-        {
-            task.Status = "pending";
-            task.StartedAt = null;
-            task.CompletedAt = null;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-        }
+        await TryResumeTaskAsync(taskId);
     }
 
-    public async Task<int> RequeueRunningTasksAsync(Func<BatchTask, bool>? predicate = null)
+    public async Task<bool> TryResumeTaskAsync(int taskId, CancellationToken cancellationToken = default)
+    {
+        return await _batchTaskRepository.TryResumeAsync(taskId, cancellationToken);
+    }
+
+    public async Task<int> RequeueRunningTasksAsync(
+        Func<BatchTask, bool>? predicate = null,
+        CancellationToken cancellationToken = default)
     {
         var runningTasks = (await _batchTaskRepository.GetByStatusAsync("running")).ToList();
         if (runningTasks.Count == 0)
@@ -161,11 +150,8 @@ public class BatchTaskManagementService
             if (predicate != null && !predicate(task))
                 continue;
 
-            task.Status = "pending";
-            task.StartedAt = null;
-            task.CompletedAt = null;
-            await _batchTaskRepository.UpdateFreshAsync(task);
-            requeued++;
+            if (await _batchTaskRepository.TryRequeueAsync(task.Id, cancellationToken))
+                requeued++;
         }
 
         return requeued;
@@ -173,29 +159,34 @@ public class BatchTaskManagementService
 
     public async Task CompleteTaskAsync(int taskId, bool success = true)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task == null)
+        var transitioned = await _batchTaskRepository.TryCompleteAsync(
+            taskId,
+            success,
+            DateTime.UtcNow);
+        if (!transitioned)
             return;
 
-        task.Status = success ? "completed" : "failed";
-        task.CompletedAt = DateTime.UtcNow;
-        await _batchTaskRepository.UpdateFreshAsync(task);
         await TrimHistoryTasksIfNeededAsync();
     }
 
     public async Task CancelTaskAsync(int taskId)
     {
-        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
-        if (task == null)
-            return;
+        await TryCancelTaskAsync(taskId);
+    }
 
-        if (task.Status is "completed" or "failed" or "canceled")
-            return;
+    public async Task<bool> TryCancelTaskAsync(
+        int taskId,
+        CancellationToken cancellationToken = default)
+    {
+        var transitioned = await _batchTaskRepository.TryCancelAsync(
+            taskId,
+            DateTime.UtcNow,
+            cancellationToken);
+        if (!transitioned)
+            return false;
 
-        task.Status = "canceled";
-        task.CompletedAt = DateTime.UtcNow;
-        await _batchTaskRepository.UpdateFreshAsync(task);
-        await TrimHistoryTasksIfNeededAsync();
+        await TrimHistoryTasksIfNeededAsync(cancellationToken);
+        return true;
     }
 
     public async Task DeleteTaskAsync(int id)

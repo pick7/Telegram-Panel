@@ -620,7 +620,7 @@ function canEdit(task: BatchTask) {
   const def = taskDefinition(task.taskType)
   if (!def?.canEdit) return false
   const status = displayStatus(task)
-  return status !== 'running' || def.autoPauseBeforeEdit
+  return !['pending', 'running'].includes(status) || def.autoPauseBeforeEdit
 }
 
 async function load(options: { silent?: boolean } = {}) {
@@ -800,7 +800,6 @@ function hasTaskConfigForm(taskType: string) {
   return taskType === 'user_chat_active'
     || taskType === 'channel_group_private_create'
     || taskType === 'channel_group_publicize'
-    || taskType === 'user_message_report'
 }
 
 function emptyDraft(): TaskConfigDraft {
@@ -844,12 +843,13 @@ async function openEditTask(task: BatchTask) {
     ElMessage.warning('该任务当前不支持编辑')
     return
   }
-  if (displayStatus(task) === 'running') {
+  const status = displayStatus(task)
+  if (status === 'pending' || status === 'running') {
     if (!def.autoPauseBeforeEdit) {
-      ElMessage.warning('该任务正在执行中，请先暂停后再编辑')
+      ElMessage.warning('该任务尚未暂停，请先暂停后再编辑')
       return
     }
-    await ElMessageBox.confirm(`任务 #${task.id} 正在执行，将先自动暂停再打开编辑窗口。是否继续？`, '确认编辑', { type: 'warning' })
+    await ElMessageBox.confirm(`任务 #${task.id} 尚未暂停，将先停止并等待旧执行实例退出，再打开编辑窗口。是否继续？`, '确认编辑', { type: 'warning' })
     await panelApi.pauseTask(task.id)
     await load()
   }
@@ -1121,7 +1121,6 @@ function buildReadableConfigDetails(taskType: string, config: string) {
 
   if (taskType === 'channel_group_private_create') return buildPrivateCreateDetails(obj)
   if (taskType === 'channel_group_publicize') return buildPublicizeDetails(obj)
-  if (taskType === 'user_message_report') return buildMessageReportDetails(obj)
   if (taskType === 'account_auto_sync') return buildAccountSyncDetails(obj)
 
   return buildGenericConfigDetails(obj)
@@ -1162,19 +1161,6 @@ function buildPublicizeDetails(obj: Record<string, any>) {
   ]
 }
 
-function buildMessageReportDetails(obj: Record<string, any>) {
-  const messageLinks = Array.isArray(obj.message_links) ? obj.message_links : []
-  const optionKeywords = Array.isArray(obj.option_keywords) ? obj.option_keywords : []
-  return [
-    `账号分类: ${buildSelectedCategorySummary(obj)}`,
-    `举报目标数: ${messageLinks.length}`,
-    `间隔: ${formatDelaySeconds(Number(obj.delay_min_ms || 0))} ~ ${formatDelaySeconds(Number(obj.delay_max_ms || 0))} 秒`,
-    `最多举报: ${Number(obj.max_reports || 0) <= 0 ? '不设上限' : Number(obj.max_reports || 0)}`,
-    `举报类型: ${reportPresetName(obj.report_preset)}`,
-    `自定义关键词: ${optionKeywords.length > 0 ? optionKeywords.map((x) => String(x)).join(', ') : '-'}`,
-    `举报文案: ${formatTextValue(obj.comment)}`,
-  ]
-}
 
 function buildAccountSyncDetails(obj: Record<string, any>) {
   const lines = [
@@ -1275,11 +1261,6 @@ function configKeyName(key: string) {
     verification_keywords: '验证关键词',
     verification_regexes: '验证正则',
     verification_bot_usernames: '验证机器人',
-    message_links: '举报目标',
-    max_reports: '最多举报',
-    report_preset: '举报类型',
-    option_keywords: '自定义关键词',
-    comment: '举报文案',
     trigger: '触发方式',
     scope: '同步范围',
     includes: '包含内容',
@@ -1345,22 +1326,6 @@ function formatSecondsValue(value: unknown) {
   return number.toLocaleString('zh-CN', { maximumFractionDigits: 3 })
 }
 
-function reportPresetName(value: unknown) {
-  const preset = String(value || '').trim()
-  const labels: Record<string, string> = {
-    spam: '垃圾 / 骚扰',
-    violence: '暴力 / 威胁',
-    pornography: '色情 / 淫秽',
-    child_abuse: '儿童虐待',
-    copyright: '版权侵权',
-    illegal_drugs: '违禁药物',
-    personal_details: '隐私 / 个人信息',
-    other: '其他',
-    first_available: '直接选第一个选项',
-    custom: '自定义关键词',
-  }
-  return labels[preset] || preset || '-'
-}
 
 function syncTriggerName(value: unknown) {
   const trigger = String(value || '').trim()

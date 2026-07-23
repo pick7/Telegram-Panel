@@ -1,5 +1,6 @@
 @page "/tasks"
 @inject BatchTaskManagementService TaskManagement
+@inject BatchTaskExecutionControlService TaskExecutionControl
 @inject ScheduledTaskService ScheduledTaskManagement
 @inject ImageAssetStorageService AssetStorage
 @inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
@@ -788,9 +789,6 @@
         return parts.Count == 0 ? "-" : string.Join("，", parts);
     }
 
-    private static string FormatStringArray(IReadOnlyCollection<string> values) =>
-        values.Count == 0 ? "-" : string.Join(", ", values);
-
     private static string FormatSecondsValue(int seconds) =>
         seconds <= 0 ? "0" : seconds.ToString("0.###");
 
@@ -982,7 +980,8 @@
         if (!hasEditor && !hasStandaloneRoute)
             return false;
 
-        return !HasStatus(task, "running") || capabilities.AutoPauseBeforeEdit;
+        var status = GetDisplayStatus(task);
+        return status is not ("pending" or "running") || capabilities.AutoPauseBeforeEdit;
     }
 
     private bool CanRerunTask(BatchTask task)
@@ -1245,9 +1244,9 @@
 
         try
         {
-            await TaskManagement.PauseTaskAsync(task.Id);
+            await TaskExecutionControl.PauseTaskAsync(task.Id);
             await LoadTasks();
-            Snackbar.Add("任务已暂停，可编辑后继续运行", Severity.Success);
+            Snackbar.Add("任务已暂停，旧执行实例已退出，可安全编辑", Severity.Success);
         }
         catch (Exception ex)
         {
@@ -1265,7 +1264,7 @@
 
         try
         {
-            await TaskManagement.ResumeTaskAsync(task.Id);
+            await TaskExecutionControl.ResumeTaskAsync(task.Id);
             await LoadTasks();
             Snackbar.Add("任务已恢复为待执行", Severity.Success);
         }
@@ -1286,7 +1285,7 @@
         {
             try
             {
-                await TaskManagement.CancelTaskAsync(id);
+                await TaskExecutionControl.CancelTaskAsync(id);
                 await LoadTasks();
                 Snackbar.Add("任务已取消", Severity.Warning);
             }
@@ -1314,10 +1313,10 @@
         {
             try
             {
+                await TaskExecutionControl.DeleteTaskAsync(task.Id);
                 await CleanupBatchTaskAssetsAsync(task);
-                await TaskManagement.DeleteTaskAsync(task.Id);
                 await LoadTasks();
-                Snackbar.Add(isActive ? "任务已删除，后台执行将在下一次状态检查时停止" : "任务已删除", Severity.Success);
+                Snackbar.Add("任务已删除", Severity.Success);
             }
             catch (Exception ex)
             {
@@ -1374,13 +1373,10 @@
             }
             else
             {
-                foreach (var activeTask in allTasks.Where(t => t.Status is "pending" or "running" or "paused"))
-                    await TaskManagement.CompleteTaskAsync(activeTask.Id, success: false);
-
                 foreach (var item in allTasks)
                 {
+                    await TaskExecutionControl.DeleteTaskAsync(item.Id);
                     await CleanupBatchTaskAssetsAsync(item);
-                    await TaskManagement.DeleteTaskAsync(item.Id);
                 }
 
                 tasks.Clear();
@@ -1551,19 +1547,20 @@
         }
 
         var capabilities = definition.Definition.TaskCenter;
-        if (HasStatus(task, "running"))
+        var status = GetDisplayStatus(task);
+        if (status is "pending" or "running")
         {
             if (!capabilities.AutoPauseBeforeEdit)
             {
-                Snackbar.Add("该任务正在执行中，请先暂停后再编辑", Severity.Warning);
+                Snackbar.Add("该任务尚未暂停，请先暂停后再编辑", Severity.Warning);
                 return;
             }
 
             try
             {
-                await TaskManagement.PauseTaskAsync(task.Id);
+                await TaskExecutionControl.PauseTaskAsync(task.Id);
                 await LoadTasks();
-                Snackbar.Add("已自动暂停任务，正在打开编辑窗口", Severity.Info);
+                Snackbar.Add("已自动暂停并确认旧执行实例退出，正在打开编辑窗口", Severity.Info);
             }
             catch (Exception ex)
             {

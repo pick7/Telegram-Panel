@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using TelegramPanel.Data.Entities;
 
 namespace TelegramPanel.Data.Repositories;
@@ -23,6 +24,115 @@ public class BatchTaskRepository : Repository<BatchTask>, IBatchTaskRepository
         DetachTrackedEntity(entity.Id);
         _dbSet.Update(entity);
         await SaveChangesWithSqliteLockRetryAsync();
+    }
+
+    public Task<bool> TryStartAsync(int id, DateTime startedAt, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id && t.Status == "pending"),
+            setters => setters
+                .SetProperty(t => t.Status, "running")
+                .SetProperty(t => t.StartedAt, startedAt)
+                .SetProperty(t => t.CompletedAt, (DateTime?)null),
+            cancellationToken);
+    }
+
+    public Task<bool> TryPauseAsync(int id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id && (t.Status == "pending" || t.Status == "running")),
+            setters => setters
+                .SetProperty(t => t.Status, "paused")
+                .SetProperty(t => t.CompletedAt, (DateTime?)null),
+            cancellationToken);
+    }
+
+    public Task<bool> TryResumeAsync(int id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id && t.Status == "paused"),
+            setters => setters
+                .SetProperty(t => t.Status, "pending")
+                .SetProperty(t => t.StartedAt, (DateTime?)null)
+                .SetProperty(t => t.CompletedAt, (DateTime?)null),
+            cancellationToken);
+    }
+
+    public Task<bool> TryCancelAsync(int id, DateTime completedAt, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id
+                && (t.Status == "pending" || t.Status == "running" || t.Status == "paused")),
+            setters => setters
+                .SetProperty(t => t.Status, "canceled")
+                .SetProperty(t => t.CompletedAt, completedAt),
+            cancellationToken);
+    }
+
+    public Task<bool> TryCompleteAsync(int id, bool success, DateTime completedAt, CancellationToken cancellationToken = default)
+    {
+        var status = success ? "completed" : "failed";
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id && t.Status == "running"),
+            setters => setters
+                .SetProperty(t => t.Status, status)
+                .SetProperty(t => t.CompletedAt, completedAt),
+            cancellationToken);
+    }
+
+    public Task<bool> TryRequeueAsync(int id, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id && t.Status == "running"),
+            setters => setters
+                .SetProperty(t => t.Status, "pending")
+                .SetProperty(t => t.StartedAt, (DateTime?)null)
+                .SetProperty(t => t.CompletedAt, (DateTime?)null),
+            cancellationToken);
+    }
+
+    public async Task UpdateProgressColumnsAsync(int id, int completed, int failed, CancellationToken cancellationToken = default)
+    {
+        await ExecuteUpdateWithSqliteLockRetryAsync(
+            token => _dbSet.Where(t => t.Id == id).ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(t => t.Completed, completed)
+                    .SetProperty(t => t.Failed, failed),
+                token),
+            cancellationToken);
+    }
+
+    public async Task UpdateConfigColumnAsync(int id, string? config, CancellationToken cancellationToken = default)
+    {
+        await ExecuteUpdateWithSqliteLockRetryAsync(
+            token => _dbSet.Where(t => t.Id == id).ExecuteUpdateAsync(
+                setters => setters.SetProperty(t => t.Config, config), token),
+            cancellationToken);
+    }
+
+    public async Task UpdateDraftColumnsAsync(int id, int total, string? config, CancellationToken cancellationToken = default)
+    {
+        await ExecuteUpdateWithSqliteLockRetryAsync(
+            token => _dbSet.Where(t => t.Id == id).ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(t => t.Total, total)
+                    .SetProperty(t => t.Config, config),
+                token),
+            cancellationToken);
+    }
+
+    public Task<bool> TryUpdateEditableDraftAsync(int id, int total, string? config, CancellationToken cancellationToken = default)
+    {
+        return ExecuteConditionalUpdateAsync(
+            _dbSet.Where(t => t.Id == id
+                && (t.Status == "paused"
+                    || t.Status == "completed"
+                    || t.Status == "failed"
+                    || t.Status == "canceled")),
+            setters => setters
+                .SetProperty(t => t.Total, total)
+                .SetProperty(t => t.Config, config),
+            cancellationToken);
     }
 
     public async Task<IEnumerable<BatchTask>> GetByStatusAsync(string status)
@@ -142,5 +252,49 @@ public class BatchTaskRepository : Repository<BatchTask>, IBatchTaskRepository
             if (entry.Entity.Id == id)
                 entry.State = EntityState.Detached;
         }
+    }
+
+    private async Task<bool> ExecuteConditionalUpdateAsync(
+        IQueryable<BatchTask> query,
+        System.Linq.Expressions.Expression<Func<Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<BatchTask>, Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<BatchTask>>> setters,
+        CancellationToken cancellationToken)
+    {
+        var affected = await ExecuteUpdateWithSqliteLockRetryAsync(
+            token => query.ExecuteUpdateAsync(setters, token),
+            cancellationToken);
+        return affected == 1;
+    }
+
+    private static async Task<int> ExecuteUpdateWithSqliteLockRetryAsync(
+        Func<CancellationToken, Task<int>> update,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 5;
+        var delayMs = 200;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await update(cancellationToken);
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsSqliteLock(ex))
+            {
+                await Task.Delay(delayMs, cancellationToken);
+                delayMs = Math.Min(delayMs * 2, 2000);
+            }
+        }
+    }
+
+    private static bool IsSqliteLock(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            if (current is SqliteException sqliteException
+                && (sqliteException.SqliteErrorCode == 5 || sqliteException.SqliteErrorCode == 6))
+                return true;
+        }
+
+        return exception.Message.Contains("database is locked", StringComparison.OrdinalIgnoreCase)
+            || exception.Message.Contains("database is busy", StringComparison.OrdinalIgnoreCase);
     }
 }

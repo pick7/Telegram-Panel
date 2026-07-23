@@ -37,13 +37,27 @@ ghcr.io/moeacgx/telegram-panel:dev-latest
 
 ### 3. 部署云端测试环境
 
-在 GitHub Actions 手动运行 `Deploy Telegram Panel`，选择 `dev` 分支，镜像使用对应 `dev-latest` 或带 SHA 的不可变标签。工作流会：
+在 GitHub Actions 手动运行 `Deploy Telegram Panel`，选择 `dev` 分支，镜像使用对应 `dev-latest` 或带 SHA 的不可变标签，并在 `update_mode` 中选择 `auto`、`image` 或 `binary`。工作流会：
 
 1. 在云端 `/home/docker/Telegram-Panel` 拉取 `dev`；
 2. 备份 `docker-data` 中的 SQLite 数据文件；
 3. 拉取镜像并保留 `docker-compose.warp.yml` 等 override；
 4. 重建 `telegram-panel` 容器；
 5. 检查容器状态、最近日志、`/ui/dashboard` 和 `/api/panel/auth/me`。
+
+部署脚本会把选择的更新模式写入 `/data/update-mode.txt`，并比较镜像 `/app/version.txt` 与 `/api/panel/auth/me` 的实际运行版本；两者不一致时部署失败，避免工作流表面成功但容器仍运行旧的持久化程序。
+
+入口脚本会比较镜像内的 `version.txt` 与持久化自更新目录 `/data/app-current/version.txt`：
+
+- 镜像版本更高时，优先启动镜像版本，并将旧的持久化程序目录归档为 `/data/app-obsolete-*`；
+- 持久化自更新版本更高时，继续优先使用已确认启动成功的自更新版本；
+- 该比较同时适用于新版确认标记和旧版 `.telegram-panel-self-update` 标记，避免历史自更新目录永久遮住新镜像；
+- 镜像包含 `version.txt` 但旧持久化包没有该文件时，将旧包视为未知旧版本并归档，使用镜像目录，避免 v1.31.37 及更早更新包永久遮住新镜像；
+- 镜像也没有 `version.txt` 时保持旧兼容行为，仍按启动确认标记选择目录。
+
+可通过 `.env` 的 `TP_UPDATE_MODE` 明确选择 `auto`、`image` 或 `binary`。该策略同时注入入口脚本和应用配置，避免 UI 显示的更新方式与容器实际启动目录不一致。
+
+因此，升级 Docker 镜像后如果页面仍显示旧版本，应先查看容器日志中的版本选择记录和 `/data/app-obsolete-*`，确认是否存在旧自更新目录残留。
 
 部署完成不等于验收完成。验收时还要实际操作本次改动涉及的页面、API、后台任务或代理链路，并记录：
 

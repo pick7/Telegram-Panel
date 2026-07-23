@@ -129,7 +129,188 @@ public sealed class EntrypointScriptTests
         }
     }
 
-    private static void RunEntrypoint(string data, string imageApp, string resultPath)
+    [Fact]
+    public void Entrypoint_PrefersNewerImageOverConfirmedOlderSelfUpdate()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            Directory.CreateDirectory(imageApp);
+            CreateRunnableVersion(imageApp, "1.31.38");
+            File.WriteAllText(
+                Path.Combine(imageApp, "version.txt"),
+                "1.31.38",
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+            CreateRunnableVersion(current, "1.31.37");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(imageApp), File.ReadAllText(resultPath).Trim());
+            Assert.False(Directory.Exists(current));
+            var obsolete = Assert.Single(Directory.GetDirectories(data, "app-obsolete-*"));
+            Assert.Equal("1.31.37", File.ReadAllText(Path.Combine(obsolete, "version.txt")));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_PrefersNewerImageOverLegacyOlderSelfUpdate()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            CreateRunnableVersion(imageApp, "1.31.38");
+            CreateRunnableVersion(current, "1.31.37");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-self-update"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(imageApp), File.ReadAllText(resultPath).Trim());
+            Assert.False(Directory.Exists(current));
+            var obsolete = Assert.Single(Directory.GetDirectories(data, "app-obsolete-*"));
+            Assert.Equal("1.31.37", File.ReadAllText(Path.Combine(obsolete, "version.txt")));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_PrefersVersionedImageWhenLegacySelfUpdateHasNoVersionFile()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            CreateRunnableVersion(imageApp, "1.31.38");
+            CreateRunnableVersion(current, "1.31.37");
+            File.Delete(Path.Combine(current, "version.txt"));
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(imageApp), File.ReadAllText(resultPath).Trim());
+            Assert.False(Directory.Exists(current));
+            var obsolete = Assert.Single(Directory.GetDirectories(data, "app-obsolete-*"));
+            Assert.False(File.Exists(Path.Combine(obsolete, "version.txt")));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_PrefersNewerConfirmedSelfUpdateOverOlderImage()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            Directory.CreateDirectory(imageApp);
+            CreateRunnableVersion(imageApp, "1.31.37");
+            CreateRunnableVersion(current, "1.31.38");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath);
+
+            Assert.Equal(Path.GetFullPath(current), File.ReadAllText(resultPath).Trim());
+            Assert.True(Directory.Exists(current));
+            Assert.Empty(Directory.GetDirectories(data, "app-obsolete-*"));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_ImageModeAlwaysUsesImageDirectory()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            CreateRunnableVersion(imageApp, "1.31.37");
+            CreateRunnableVersion(current, "1.31.38");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath, "image");
+
+            Assert.Equal(Path.GetFullPath(imageApp), File.ReadAllText(resultPath).Trim());
+            Assert.True(Directory.Exists(current));
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Entrypoint_BinaryModeAlwaysUsesConfirmedBinaryDirectory()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var data = Path.Combine(root, "data");
+            var imageApp = Path.Combine(root, "app");
+            var current = Path.Combine(data, "app-current");
+            CreateRunnableVersion(imageApp, "1.31.38");
+            CreateRunnableVersion(current, "1.31.37");
+            File.WriteAllText(Path.Combine(current, ".telegram-panel-update-confirmed"), "{}");
+
+            var resultPath = Path.Combine(root, "started-from.txt");
+            RunEntrypoint(data, imageApp, resultPath, "binary");
+
+            Assert.Equal(Path.GetFullPath(current), File.ReadAllText(resultPath).Trim());
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+    }
+
+    private static void RunEntrypoint(string data, string imageApp, string resultPath, string? updateMode = null)
     {
         var scriptPath = FindRepositoryFile(Path.Combine("docker", "entrypoint.sh"));
         var startInfo = new ProcessStartInfo("/bin/sh")
@@ -143,6 +324,8 @@ public sealed class EntrypointScriptTests
         startInfo.Environment["TELEGRAM_PANEL_DEFAULT_APP_DIR"] = imageApp;
         startInfo.Environment["TELEGRAM_PANEL_DOTNET_COMMAND"] = "/bin/sh";
         startInfo.Environment["TELEGRAM_PANEL_TEST_RESULT"] = resultPath;
+        if (!string.IsNullOrWhiteSpace(updateMode))
+            startInfo.Environment["TELEGRAM_PANEL_UPDATE_MODE"] = updateMode;
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("无法启动入口脚本测试进程");
